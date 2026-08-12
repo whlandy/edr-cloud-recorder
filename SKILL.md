@@ -58,44 +58,53 @@ node <skill>/scripts/record.mjs --url https://app.example.com --name login-flow
 
 常用参数：`--api /api/`（只记录含该片段的请求）、`--out <目录>`、`REC_CHROME_BIN`（指定浏览器）。
 
-## 录制之后必须做的三件事
+## 生成的脚本已经做了什么
 
-**草稿不是成品。** 直接提交 codegen 或本工具的原始输出是自动化脚本腐烂最快的方式。
-录完请依次处理：
+两件最费手工的事是自动完成的。
 
-### 1. 收紧标了 `⚠ AMBIGUOUS` 的选择器
+### 撞车的文本会自动加作用域
 
-录制器会统计页面上有多少个元素的文本与目标完全相同。撞车的选择器在录制时能跑通
-（点的就是当前那个），**回放时却可能点到另一个** —— 这类失败最难查，因为脚本不报错，
-只是做错了事。
+页面上有三个「删除」时，`getByText('删除')` 录制时能跑通（点的就是当前那个），
+**回放时却可能点到另一行** —— 这类失败最难查，因为脚本不报错，只是做错了事。
 
-处理办法是加限定容器，而不是加 `.first()`：
-
-```ts
-// ❌ 草稿给的（能跑，但语义错了）
-await page.getByText('删除', { exact: true }).first().click();
-
-// ✅ 限定到具体行
-await page.getByRole('row', { name: /张三/ }).getByText('删除').click();
-```
-
-### 2. 把接口注释换成断言
-
-注释只是记录，不会失败。真正有价值的是让脚本验证接口行为：
+录制器不会甩个 `.first()` 了事，而是向上找到「该文本在其内部唯一」的最近祖先，
+为它算一个定位方式，生成的就是人工会写的那种：
 
 ```ts
-const resp = page.waitForResponse((r) =>
-  r.url().includes('/api/v1/policy/apply') && r.request().method() === 'POST');
-await page.getByRole('button', { name: '确认' }).click();
-expect((await resp).status()).toBe(200);
+await page.locator('tr', { hasText: '李四' }).getByText('删除', { exact: true }).click();
+await page.getByRole('dialog').getByText('确认', { exact: true }).click();
 ```
 
-想断言请求体，用 `waitForRequest` 拿 `postData()`。这比断言界面文字稳得多，
-因为界面文案会改，接口契约不会轻易改。
+作用域按可靠性挑：role + 无障碍名 > role 单独（弹窗最常见）> 标签 + 容器内的唯一文本。
+实在找不到才退回 `.first()` 并标 `⚠ AMBIGUOUS`，那时候需要人工处理。
 
-### 3. 删掉误操作
+### 写请求会自动变成断言
 
-录制会忠实记录一切，包括点错了又点回来。这些步骤留在脚本里只会拖慢速度、制造脆弱点。
+注释不会失败，断言才会。所以非 GET 的调用会被包成「等待响应 + 断言」：
+
+```ts
+const [resp1] = await Promise.all([
+  page.waitForResponse((r) => r.url().includes('/api/v1/policy') && r.request().method() === 'POST'),
+  page.getByRole('dialog').getByText('确认', { exact: true }).click(),
+]);
+expect(resp1.status()).toBe(200);
+expect(resp1.request().postDataJSON()).toMatchObject({
+  "name": "123",
+  "ruleList": [{ "category": 3, "baselineId": expect.any(String) }],
+});
+```
+
+请求体里的 UUID 和长数字 ID 会换成 `expect.any(String)` —— 直接把整个 body 塞进
+`toMatchObject` 会因为这些值每次都变而立刻失效，但整条删掉又丢了「这个字段必须存在」
+的信息。保留结构、放宽易变值，字段在不在、类型对不对仍然被守住。
+
+**GET 保持注释。** 一次点击可能连带十几个读请求，全断言只会让用例难读又易碎。
+
+### 剩下的人工部分
+
+- 删掉与意图无关的误操作 —— 录制会忠实记录一切，包括点错了又点回来
+- 会产生数据的用例补上清理逻辑
+- 仍标着 `⚠ AMBIGUOUS` 的选择器（少数）需要人工限定
 
 ## 选择器优先级
 

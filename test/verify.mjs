@@ -8,6 +8,7 @@
  *   node test/verify.mjs
  */
 import { execFileSync } from 'node:child_process';
+import { generateSpec } from '../scripts/generate-spec.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -30,8 +31,8 @@ const secret = find((s) => s.secret);
 chk('密码框标记为 secret', !!secret, secret?.sel);
 chk('密码明文未出现在记录里', !raw.includes('sup3rs3cret'), '全文搜索无明文');
 
-const amb = find((s) => s.ambiguous);
-chk('同名元素被标记歧义且计数正确', amb?.matches === 3, `${amb?.sel} → ${amb?.matches} 个匹配`);
+const amb = find((s) => s.matches > 1);
+chk('撞车文本被识别且计数正确', amb?.matches === 3, `${amb?.sel} → ${amb?.matches} 个匹配`);
 
 const gen = find((s) => s.css?.includes('close_x'));
 chk('运行时自增 id 未进入选择器', gen && !gen.css.includes('tip_box_10059'), gen?.css);
@@ -64,6 +65,20 @@ const navStep = find((s) => s.label?.includes('立刻跳转'));
 chk('点击后立即跳转的步骤未丢失', !!navStep, navStep?.sel);
 const afterNav = find((s) => s.sel.includes('after-nav'));
 chk('跳转后新页面仍在录制', !!afterNav, afterNav?.sel);
+
+// ── 生成器：把接口调用变成断言、给撞车的文本加作用域 ──
+const spec = generateSpec({ steps, net, startUrl: 'http://127.0.0.1/', name: 'gen-check' });
+
+chk('写请求生成状态码断言', /expect\(resp\d+\.status\(\)\)\.toBe\(200\);/.test(spec), spec.match(/expect\(resp\d+\.status\(\)\)\.toBe\(\d+\);/)?.[0]);
+chk('写请求生成请求体断言', spec.includes('postDataJSON()).toMatchObject('), spec.match(/"a": 1/) ? '含捕获到的字段' : '');
+chk('响应变量名不重复', (() => {
+  const names = [...spec.matchAll(/const \[(resp[\w]*)\]/g)].map((m) => m[1]);
+  return names.length === new Set(names).size;
+})(), [...spec.matchAll(/const \[(resp[\w]*)\]/g)].map((m) => m[1]).join(','));
+chk('GET 不生成断言，仍是注释', !/waitForResponse[^\n]*"GET"/.test(spec), 'GET 保持注释');
+
+const dele = steps.find((s) => s.label === '删除');
+chk('撞车文本自动加作用域（不再是 .first()）', dele && dele.kind === 'scoped' && !dele.sel.includes('.first()'), dele?.sel);
 
 let passed = 0;
 console.log(`\n  ${'检查项'.padEnd(34)}结果`);

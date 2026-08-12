@@ -69,6 +69,47 @@ export const RECORDER = () => {
       (x) => x.offsetParent && txt(x) === t && x.querySelectorAll('*').length === 0,
     ).length;
 
+  /**
+   * 为撞车的文本找一个作用域
+   *
+   * 向上逐层看：在这个祖先内部，目标文本是不是唯一？第一个满足的就是最小可用作用域。
+   * 然后给这个祖先算定位方式，按可靠性排序：
+   *   role（dialog / row / region…）+ 无障碍名  >  role 单独  >  标签 + 内部特征文本
+   *
+   * 最后一种是表格行的典型形态 —— page.locator('tr', { hasText: '张三' })，
+   * 用行内某个全局唯一的文本把行钉住，再在行内找按钮。
+   */
+  const scopeFor = (el, name) => {
+    let n = el.parentElement, depth = 0;
+    while (n && n !== document.body && depth < 8) {
+      const inside = [...n.querySelectorAll('*')].filter(
+        (x) => x.offsetParent && txt(x) === name && x.querySelectorAll('*').length === 0,
+      );
+      if (inside.length === 1) {
+        const role = n.getAttribute('role') || (n.tagName === 'TR' ? 'row' : n.tagName === 'DIALOG' ? 'dialog' : null);
+        if (role) {
+          const rn = (n.getAttribute('aria-label') || '').trim();
+          if (rn) return `getByRole(${JSON.stringify(role)}, { name: ${JSON.stringify(rn)} })`;
+          // 同 role 的容器只有一个时可以直接用 role 定位（弹窗最常见）
+          if (document.querySelectorAll(`[role="${role}"], ${n.tagName.toLowerCase()}`).length === 1) {
+            return `getByRole(${JSON.stringify(role)})`;
+          }
+        }
+        // 找一段能把这个容器和同类容器区分开的文本
+        const marker = [...n.querySelectorAll('*')]
+          .filter((x) => x.offsetParent && x.querySelectorAll('*').length === 0)
+          .map((x) => txt(x))
+          .find((t) => t && t !== name && t.length <= 30 && countText(t) === 1);
+        if (marker) {
+          const tag = n.tagName.toLowerCase();
+          return `locator(${JSON.stringify(tag)}, { hasText: ${JSON.stringify(marker)} })`;
+        }
+      }
+      n = n.parentElement; depth++;
+    }
+    return null;
+  };
+
   const selectorFor = (e) => {
     for (const attr of ['data-testid', 'data-test', 'data-cy', 'data-qa']) {
       const v = e.getAttribute?.(attr);
@@ -95,10 +136,19 @@ export const RECORDER = () => {
     }
     if (name) {
       const n = countText(name);
+      if (n <= 1) return { kind: 'text', code: `getByText(${JSON.stringify(name)}, { exact: true })` };
+
+      // 文本撞车。与其甩个 .first() 让人自己收拾，不如就地找一个作用域：
+      // 向上找到「该文本在其内部唯一」的最近祖先，再为那个祖先算一个稳定的定位方式。
+      // 这正是人工修选择器时会做的事（限定到某一行、某个弹窗），只是自动做了。
+      const scoped = scopeFor(e, name);
+      if (scoped) {
+        return { kind: 'scoped', code: `${scoped}.getByText(${JSON.stringify(name)}, { exact: true })`, matches: n };
+      }
       return {
         kind: 'text',
-        code: `getByText(${JSON.stringify(name)}, { exact: true })${n > 1 ? '.first()' : ''}`,
-        ambiguous: n > 1, matches: n,
+        code: `getByText(${JSON.stringify(name)}, { exact: true }).first()`,
+        ambiguous: true, matches: n,
       };
     }
     return { kind: 'css', code: `locator(${JSON.stringify(cssPath(e))})` };

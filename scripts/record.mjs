@@ -28,6 +28,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveChrome } from './chrome-path.mjs';
 import { RECORDER } from './recorder-inject.mjs';
+import { generateSpec } from './generate-spec.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -216,62 +217,13 @@ fs.mkdirSync(OUT_DIR, { recursive: true });
 const rawFile = path.join(OUT_DIR, `${NAME}.json`);
 fs.writeFileSync(rawFile, JSON.stringify({ startUrl: START_URL, recordedAt: new Date().toISOString(), steps: allSteps, net }, null, 1), 'utf-8');
 
-const strip = (u) => u.replace(ORIGIN, '');
-const between = (a, b) => net.filter((n) => n.t >= a && n.t < b && n.phase === 'res');
+const specText = generateSpec({ steps: allSteps, net, startUrl: START_URL, name: NAME });
 
-const lines = [
-  `import { test, expect } from '@playwright/test';`,
-  ``,
-  `// 由 web-record 生成：${NAME}`,
-  `// ⚠ 这是草稿，不是成品。至少要做三件事：`,
-  `//   1. 收紧标了 AMBIGUOUS 的选择器`,
-  `//   2. 把接口注释换成真正的断言（expect(resp.status()).toBe(200) 之类）`,
-  `//   3. 删掉与意图无关的误操作步骤`,
-  ``,
-  `test(${JSON.stringify(NAME)}, async ({ page }) => {`,
-  `  await page.goto(${JSON.stringify(strip(START_URL) || '/')});`,
-];
-
-allSteps.forEach((s, i) => {
-  const hi = allSteps[i + 1]?.t ?? Infinity;
-  const calls = between(s.t, hi);
-  const warn = s.ambiguous ? `   // ⚠ AMBIGUOUS: ${s.matches} 个元素匹配，回放时可能点错` : '';
-
-  // CSS 兜底选择器基本都是关闭弹窗/提示这类「有就点、没有就跳过」的动作。
-  // 生成成必经步骤会让脚本在弹窗不出现时直接失败。
-  if (s.kind === 'css' && s.type === 'click') {
-    lines.push(`  // ⚠ CSS 兜底（元素没有 role/label/稳定文本），建议改用语义定位`);
-    lines.push(`  {`);
-    lines.push(`    const el = page.${s.sel};`);
-    lines.push(`    if (await el.isVisible().catch(() => false)) await el.click();`);
-    lines.push(`  }`);
-  } else if (s.type === 'click') {
-    lines.push(`  await page.${s.sel}.click();${warn}`);
-  } else if (s.type === 'fill' && s.secret) {
-    lines.push(`  await page.${s.sel}.fill(process.env.REC_PASSWORD ?? '');${warn}`);
-  } else if (s.type === 'fill') {
-    lines.push(`  await page.${s.sel}.fill(${JSON.stringify(s.value ?? '')});${warn}`);
-  } else if (s.type === 'check') {
-    lines.push(`  await page.${s.sel}.check();${warn}`);
-  } else if (s.type === 'uncheck') {
-    lines.push(`  await page.${s.sel}.uncheck();${warn}`);
-  } else if (s.type === 'press') {
-    lines.push(`  await page.${s.sel}.press('Enter');${warn}`);
-  }
-
-  for (const c of calls) {
-    lines.push(`  //   ↳ ${c.method} ${strip(c.url)} -> ${c.status}`);
-    if (c.status >= 400 && c.body) {
-      lines.push(`  //     ⚠ 失败响应: ${c.body.slice(0, 200).replace(/\s+/g, ' ')}`);
-    }
-  }
-});
-
-lines.push(`});`, ``);
 const specFile = path.join(OUT_DIR, `${NAME}.spec.ts`);
-fs.writeFileSync(specFile, lines.join('\n'), 'utf-8');
+fs.writeFileSync(specFile, specText, 'utf-8');
 
 /* ---------- 小结 ---------- */
+const strip = (u) => u.replace(ORIGIN, '');
 const responses = net.filter((n) => n.phase === 'res');
 const writes = net.filter((n) => n.phase === 'req' && n.method !== 'GET');
 const failed = responses.filter((n) => n.status >= 400);
