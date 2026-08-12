@@ -83,12 +83,13 @@ await page.getByRole('dialog').getByText('确认', { exact: true }).click();
 注释不会失败，断言才会。所以非 GET 的调用会被包成「等待响应 + 断言」：
 
 ```ts
-const [resp1] = await Promise.all([
-  page.waitForResponse((r) => r.url().includes('/api/v1/policy') && r.request().method() === 'POST'),
+const [req1] = await Promise.all([
+  page.waitForRequest((r) => r.url().includes('/api/v1/policy') && r.method() === 'POST'),
   page.getByRole('dialog').getByText('确认', { exact: true }).click(),
 ]);
-expect(resp1.status()).toBe(200);
-expect(resp1.request().postDataJSON()).toMatchObject({
+const resp1 = await req1.response();
+expect(resp1?.status()).toBe(200);
+expect(req1.postDataJSON()).toMatchObject({
   "name": "123",
   "ruleList": [{ "category": 3, "baselineId": expect.any(String) }],
 });

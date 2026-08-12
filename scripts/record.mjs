@@ -106,6 +106,8 @@ const ORIGIN = new URL(START_URL).origin;
 /* ---------- 启动 ---------- */
 const net = [];
 const allSteps = [];
+const requestIds = new WeakMap();
+let requestSeq = 0;
 
 const chromeBin = resolveChrome();
 if (chromeBin) console.log(`浏览器: ${chromeBin.replace(process.env.HOME ?? '', '~')}`);
@@ -165,11 +167,13 @@ const wanted = (req) => {
 
 page.on('request', (r) => {
   if (!wanted(r)) return;
-  net.push({ t: Date.now(), phase: 'req', method: r.method(), url: r.url(), body: r.postData() ?? null });
+  const id = ++requestSeq;
+  requestIds.set(r, id);
+  net.push({ id, t: Date.now(), phase: 'req', method: r.method(), url: r.url(), body: r.postData() ?? null });
 });
 page.on('response', async (r) => {
   if (!wanted(r.request())) return;
-  const e = { t: Date.now(), phase: 'res', method: r.request().method(), url: r.url(), status: r.status() };
+  const e = { requestId: requestIds.get(r.request()), t: Date.now(), phase: 'res', method: r.request().method(), url: r.url(), status: r.status() };
   // 失败响应和写操作的响应体一定要留 —— 排查 4xx/5xx 时这是唯一有用的信息。
   // 成功的 GET 响应体可能有几十上百 KB，全存没有价值。
   if (r.status() >= 400 || r.request().method() !== 'GET') {

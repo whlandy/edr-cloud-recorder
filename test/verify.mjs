@@ -69,13 +69,13 @@ chk('跳转后新页面仍在录制', !!afterNav, afterNav?.sel);
 // ── 生成器：把接口调用变成断言、给撞车的文本加作用域 ──
 const spec = generateSpec({ steps, net, startUrl: 'http://127.0.0.1/', name: 'gen-check' });
 
-chk('写请求生成状态码断言', /expect\(resp\d+\.status\(\)\)\.toBe\(200\);/.test(spec), spec.match(/expect\(resp\d+\.status\(\)\)\.toBe\(\d+\);/)?.[0]);
+chk('写请求生成状态码断言', /expect\(resp\d+\?\.status\(\)\)\.toBe\(200\);/.test(spec), spec.match(/expect\(resp\d+\?\.status\(\)\)\.toBe\(\d+\);/)?.[0]);
 chk('写请求生成请求体断言', spec.includes('postDataJSON()).toMatchObject('), spec.match(/"a": 1/) ? '含捕获到的字段' : '');
 chk('响应变量名不重复', (() => {
-  const names = [...spec.matchAll(/const \[(resp[\w]*)\]/g)].map((m) => m[1]);
+  const names = [...spec.matchAll(/const (resp[\w]*) =/g)].map((m) => m[1]);
   return names.length === new Set(names).size;
-})(), [...spec.matchAll(/const \[(resp[\w]*)\]/g)].map((m) => m[1]).join(','));
-chk('GET 不生成断言，仍是注释', !/waitForResponse[^\n]*"GET"/.test(spec), 'GET 保持注释');
+})(), [...spec.matchAll(/const (resp[\w]*) =/g)].map((m) => m[1]).join(','));
+chk('GET 不生成断言，仍是注释', !/waitForRequest[^\n]*"GET"/.test(spec), 'GET 保持注释');
 
 const dele = steps.find((s) => s.label === '删除');
 chk('撞车文本自动加作用域（不再是 .first()）', dele && dele.kind === 'scoped' && !dele.sel.includes('.first()'), dele?.sel);

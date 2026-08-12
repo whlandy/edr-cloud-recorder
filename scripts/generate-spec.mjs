@@ -9,6 +9,25 @@ export function generateSpec({ steps, net, startUrl, name }) {
   const strip = (u) => u.replace(ORIGIN, '');
   const between = (a, b) => net.filter((n) => n.t >= a && n.t < b && n.phase === 'res');
 
+  // Playwright 的 response 能直接拿到其 request，但落盘后的录制数据没有对象引用。
+  // 按 method + URL 为每条请求维护 FIFO 队列，恢复响应与请求的一一对应关系。
+  // 不能简单找“响应之前最后一条同 URL 请求”：同一操作并发发两次相同请求时，
+  // 那会让两个响应都错误地关联到第二条请求。
+  const requestOf = new Map();
+  const requestsById = new Map(net.filter((event) => event.phase === 'req' && event.id != null).map((event) => [event.id, event]));
+  const pending = new Map();
+  for (const event of [...net].sort((a, b) => a.t - b.t || (a.phase === 'req' ? -1 : 1))) {
+    const key = `${event.method}\n${event.url}`;
+    if (event.phase === 'req') {
+      const queue = pending.get(key) ?? [];
+      queue.push(event);
+      pending.set(key, queue);
+    } else if (event.phase === 'res') {
+      const req = requestsById.get(event.requestId) ?? pending.get(key)?.shift();
+      if (req) requestOf.set(event, req);
+    }
+  }
+
 /**
  * 把抓到的请求体变成断言用的字面量
  *
@@ -36,7 +55,7 @@ export function generateSpec({ steps, net, startUrl, name }) {
 
 // 为某个响应找回它对应的请求体
   const reqBodyOf = (res) => {
-  const r = net.filter((n) => n.phase === 'req' && n.url === res.url && n.method === res.method && n.t <= res.t).pop();
+  const r = requestOf.get(res);
   if (!r?.body) return null;
   try { return JSON.parse(r.body); } catch { return null; }
 };
@@ -44,7 +63,10 @@ export function generateSpec({ steps, net, startUrl, name }) {
 // 生成一次操作的代码：若该操作触发了写请求，就把它包成「等待响应 + 断言」
   let respSeq = 0;
   const emitAction = (actionCode, calls, warn) => {
-  const writes = calls.filter((c) => c.method !== 'GET' && c.status < 400);
+  // 按请求发出次序生成等待，而不是响应完成次序；并发请求可能后发先回。
+  const writes = calls
+    .filter((c) => c.method !== 'GET' && c.status < 400)
+    .sort((a, b) => (requestOf.get(a)?.t ?? a.t) - (requestOf.get(b)?.t ?? b.t));
   if (!writes.length) {
     const out = [`  ${actionCode};${warn}`];
     for (const c of calls) {
@@ -60,18 +82,31 @@ export function generateSpec({ steps, net, startUrl, name }) {
   // 变量名必须全局唯一：整个 test 是一个作用域，重复的 const resp 会直接编译失败
     const base = ++respSeq;
     const names = writes.map((_, i) => (writes.length === 1 ? `resp${base}` : `resp${base}_${i + 1}`));
-  out.push(`  const [${names.join(', ')}] = await Promise.all([`);
+  // 同一步可能向同一端点并发发送多次请求。相同 predicate 的 waitForRequest
+  // 都会命中第一条请求，因此为每个 method + path 计算序号，让第 N 个等待只接第 N 条。
+  const occurrences = new Map();
+  const reqNames = names.map((name) => name.replace(/^resp/, 'req'));
+  out.push(`  const [${reqNames.join(', ')}] = await Promise.all([`);
   for (const w of writes) {
     const p = strip(w.url).split('?')[0];
-    out.push(`    page.waitForResponse((r) => r.url().includes(${JSON.stringify(p)}) && r.request().method() === ${JSON.stringify(w.method)}),`);
+    const key = `${w.method}\n${p}`;
+    const nth = (occurrences.get(key) ?? 0) + 1;
+    occurrences.set(key, nth);
+    const predicate = `r.url().includes(${JSON.stringify(p)}) && r.method() === ${JSON.stringify(w.method)}`;
+    if (nth === 1) {
+      out.push(`    page.waitForRequest((r) => ${predicate}),`);
+    } else {
+      out.push(`    (() => { let seen = 0; return page.waitForRequest((r) => ${predicate} && ++seen === ${nth}); })(),`);
+    }
   }
   out.push(`    ${actionCode.replace(/^await /, '')},`);
   out.push(`  ]);${warn}`);
   for (let i = 0; i < writes.length; i++) {
-    out.push(`  expect(${names[i]}.status()).toBe(${writes[i].status});`);
+    out.push(`  const ${names[i]} = await ${reqNames[i]}.response();`);
+    out.push(`  expect(${names[i]}?.status()).toBe(${writes[i].status});`);
     const body = reqBodyOf(writes[i]);
     if (body && typeof body === 'object') {
-      out.push(`  expect(${names[i]}.request().postDataJSON()).toMatchObject(${toMatcher(body)});`);
+      out.push(`  expect(${reqNames[i]}.postDataJSON()).toMatchObject(${toMatcher(body)});`);
     }
   }
   for (const c of calls.filter((c) => c.method === 'GET')) {
@@ -109,9 +144,13 @@ steps.forEach((s, i) => {
     lines.push(`  // ⚠ CSS 兜底（元素没有 role/label/稳定文本），建议改用语义定位`);
     lines.push(`  {`);
     lines.push(`    const el = page.${s.sel};`);
-    lines.push(`    if (await el.isVisible().catch(() => false)) await el.click();`);
+    lines.push(`    if (await el.isVisible().catch(() => false)) {`);
+    // 等确认元素存在后再建立响应等待，避免可选弹窗未出现时空等到超时。
+    for (const line of emitAction('await el.click()', calls, warn)) {
+      lines.push(`  ${line}`);
+    }
+    lines.push(`    }`);
     lines.push(`  }`);
-    for (const c of calls) lines.push(`  //   ↳ ${c.method} ${strip(c.url)} -> ${c.status}`);
     return;
   }
 

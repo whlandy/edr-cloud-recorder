@@ -42,10 +42,17 @@ await ctx.addInitScript(RECORDER);
 const page = await ctx.newPage();
 
 const net = [];
-page.on('request', r => { if (['xhr','fetch'].includes(r.resourceType())) net.push({t:Date.now(),phase:'req',method:r.method(),url:r.url(),body:r.postData()}); });
+const requestIds = new WeakMap();
+let requestSeq = 0;
+page.on('request', r => {
+  if (!['xhr','fetch'].includes(r.resourceType())) return;
+  const id = ++requestSeq;
+  requestIds.set(r, id);
+  net.push({id,t:Date.now(),phase:'req',method:r.method(),url:r.url(),body:r.postData()});
+});
 page.on('response', async r => {
   if (!['xhr','fetch'].includes(r.request().resourceType())) return;
-  const e = {t:Date.now(),phase:'res',method:r.request().method(),url:r.url(),status:r.status()};
+  const e = {requestId:requestIds.get(r.request()),t:Date.now(),phase:'res',method:r.request().method(),url:r.url(),status:r.status()};
   if (r.status()>=400 || r.request().method()!=='GET') e.body = await r.text().catch(()=>null);
   net.push(e);
 });
