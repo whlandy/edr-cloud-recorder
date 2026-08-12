@@ -104,10 +104,14 @@ expect((await resp).status()).toBe(200);
 | 顺序 | 方式 | 稳定性 |
 |---|---|---|
 | 1 | `getByTestId`（`data-testid` / `data-test` / `data-cy` / `data-qa`） | 最稳，专为测试而设 |
-| 2 | `getByRole(role, { name })` | 很稳，跟着无障碍语义走 |
-| 3 | `getByPlaceholder` | 稳，但占位符可能随文案改动 |
+| 2 | 输入框专用：`getByLabel` → `getByPlaceholder` | 稳，直接绑定表单语义 |
+| 3 | `getByRole(role, { name })` | 很稳，跟着无障碍语义走 |
 | 4 | `getByText` | 一般，需检查是否撞车 |
 | 5 | `locator(cssPath)` | 兜底，随时会失效 |
+
+输入框之所以插在 role 前面：只有 placeholder 的输入框，其无障碍名恰好**就是** placeholder，
+于是 role 分支会产出 `getByRole('textbox', { name: '请输入用户名' })`。那样能用，但一旦后来
+给它补了 `<label>`，无障碍名就变了，选择器随之失效。`getByPlaceholder` 只依赖 placeholder 本身。
 
 **运行时自增 id 会被自动跳过**（如 `tip_box_10059`），因为它们每次加载都变，
 用来定位必然在第二次运行时失败。同理，含 3 位以上数字的 class 也会被过滤。
@@ -134,6 +138,17 @@ expect((await resp).status()).toBe(200);
 | [references/selectors.md](references/selectors.md) | 选择器反复失效；动态表格；页签位置漂移；自定义组件没有 role |
 | [references/safe-writes.md](references/safe-writes.md) | 要验证会**改数据**的操作；需要抓请求体但不能真发出去 |
 | [references/troubleshooting.md](references/troubleshooting.md) | 浏览器起不来；证书报错；偶发 5xx；请求没被记录 |
+
+## 自检
+
+改动录制器后跑一遍，验证它仍然符合上面这些承诺：
+
+```bash
+node test/verify.mjs
+```
+
+它会造一个包含全部边界情况的页面（同名元素、自增 id、密码框、会发请求的按钮），
+用真实浏览器录一遍，逐条断言。13 项全过才退出 0。
 
 ## 素材
 
