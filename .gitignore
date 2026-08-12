@@ -1,0 +1,13 @@
+# 登录态 —— 等同于密码，绝不能提交
+.auth/
+**/cookies.json
+**/session-storage.json
+
+# 录制产物（可能含业务标识）
+recordings/*.json
+recordings/*.spec.ts
+
+node_modules/
+test-results/
+playwright-report/
+.DS_Store
