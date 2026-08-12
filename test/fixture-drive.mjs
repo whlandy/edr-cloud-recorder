@@ -16,10 +16,15 @@ const HTML = `<!doctype html><meta charset="utf-8"><body>
     <tr><td>王五</td><td><span class="op">删除</span></td></tr>
   </table>
   <div id="tip_box_10059"><span class="close_x">×</span></div>
+  <a id="go" href="/next">立刻跳转</a>
 </body>`;
+
+const NEXT = `<!doctype html><meta charset="utf-8"><body><h1>第二页</h1>
+  <button data-testid="after-nav">跳转后的按钮</button></body>`;
 
 const srv = http.createServer((req, res) => {
   if (req.url === '/') { res.writeHead(200, {'Content-Type':'text/html; charset=utf-8'}); return res.end(HTML); }
+  if (req.url === '/next') { res.writeHead(200, {'Content-Type':'text/html; charset=utf-8'}); return res.end(NEXT); }
   if (req.url === '/api/ok')  { res.writeHead(200, {'Content-Type':'application/json'}); return res.end('{"code":"200"}'); }
   if (req.url === '/api/bad') { res.writeHead(400, {'Content-Type':'application/json'}); return res.end('{"error":"subnetIdList 不能为空"}'); }
   res.writeHead(404); res.end();
@@ -29,6 +34,10 @@ const base = `http://127.0.0.1:${srv.address().port}`;
 
 const browser = await chromium.launch({ headless: true, executablePath: resolveChrome() });
 const ctx = await browser.newContext();
+const steps = [];
+const seen = new Set();
+const accept = (st) => { if (st?.id && !seen.has(st.id)) { seen.add(st.id); steps.push(st); } };
+await ctx.exposeBinding('__recPush', (_s, st) => accept(st));
 await ctx.addInitScript(RECORDER);
 const page = await ctx.newPage();
 
@@ -54,6 +63,12 @@ await page.locator('tr', {hasText:'李四'}).locator('.op').click();
 await page.click('#tip_box_10059 .close_x');
 await page.waitForTimeout(300);
 
-const steps = await page.evaluate(() => window.__rec.drain());
+// 关键场景：点完立刻跳转。步骤若只存在页面内数组里，会随页面卸载一起消失。
+await Promise.all([page.waitForURL('**/next'), page.click('#go')]);
+await page.click('[data-testid=after-nav]');
+await page.waitForTimeout(300);
+
+for (const st of await page.evaluate(() => (window.__rec ? window.__rec.drain() : []))) accept(st);
+steps.sort((a,b) => a.t - b.t);
 await browser.close(); srv.close();
 console.log(JSON.stringify({steps, net}, null, 1));

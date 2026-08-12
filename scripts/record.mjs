@@ -112,10 +112,14 @@ if (chromeBin) console.log(`浏览器: ${chromeBin.replace(process.env.HOME ?? '
 const browser = await chromium.launch({
   headless: false,
   executablePath: chromeBin,
-  args: ['--ignore-certificate-errors'],
+  args: ['--ignore-certificate-errors', '--start-maximized'],
 });
 
-const ctxOpts = { ignoreHTTPSErrors: true, viewport: { width: 1440, height: 900 } };
+// viewport: null —— 让页面跟着真实窗口尺寸走。
+// 录制是 headed 的，锁死 viewport 会把页面渲染在一个固定尺寸里，与窗口不一致：
+// 底部的操作按钮（应用/保存/提交）可能被挤到可视区外，看起来像「按钮不见了」。
+// 回放时该由 playwright.config.ts 决定 viewport，录制阶段不该替它做主。
+const ctxOpts = { ignoreHTTPSErrors: true, viewport: null };
 const stateFile = path.join(STATE_DIR, 'state.json');
 if (fs.existsSync(stateFile)) {
   ctxOpts.storageState = stateFile;
@@ -123,6 +127,20 @@ if (fs.existsSync(stateFile)) {
 }
 
 const context = await browser.newContext(ctxOpts);
+
+// 步骤上报通道。必须在 addInitScript 之前建立，这样页面里 window.__recPush 一定存在。
+// 页面产生一步就立刻推过来，不等轮询 —— 否则「点完就跳转」的步骤（登录按钮是最典型的）
+// 会随页面卸载一起消失。
+const seen = new Set();
+const acceptStep = (step) => {
+  if (!step?.id || seen.has(step.id)) return;   // 双通道上报，按 id 去重
+  seen.add(step.id);
+  allSteps.push(step);
+  const val = step.secret ? ' = <密码，未记录>' : step.value !== undefined ? ` = ${JSON.stringify(step.value)}` : '';
+  console.log(`  [录制] ${step.type.padEnd(6)} ${step.sel}${val}`);
+};
+await context.exposeBinding('__recPush', (_source, step) => acceptStep(step));
+
 await context.addInitScript(RECORDER);
 
 // storageState 不含 sessionStorage。有些站点把登录态放在 sessionStorage 里，
@@ -159,17 +177,10 @@ page.on('response', async (r) => {
   net.push(e);
 });
 
-// 页面跳转会清掉页面内的 steps，所以定时搬运到 Node 侧
+// 兜底轮询：捞走 binding 未能送达的步骤（去重由 acceptStep 负责）
 const pump = setInterval(async () => {
   try {
-    const s = await page.evaluate(() => (window.__rec ? window.__rec.drain() : []));
-    if (s?.length) {
-      allSteps.push(...s);
-      for (const x of s) {
-        const val = x.secret ? ' = <密码，未记录>' : x.value !== undefined ? ` = ${JSON.stringify(x.value)}` : '';
-        console.log(`  [录制] ${x.type.padEnd(6)} ${x.sel}${val}`);
-      }
-    }
+    for (const s of await page.evaluate(() => (window.__rec ? window.__rec.drain() : []))) acceptStep(s);
   } catch { /* 导航中，下次再取 */ }
 }, 800);
 
@@ -184,9 +195,11 @@ await page.waitForEvent('close', { timeout: 0 }).catch(() => {});
 clearInterval(pump);
 
 try {
-  const s = await page.evaluate(() => (window.__rec ? window.__rec.drain() : []));
-  if (s?.length) allSteps.push(...s);
+  for (const s of await page.evaluate(() => (window.__rec ? window.__rec.drain() : []))) acceptStep(s);
 } catch { /* 页面已关 */ }
+
+// 步骤可能来自两个通道，顺序不保证，按时间排好再输出
+allSteps.sort((a, b) => a.t - b.t);
 
 // 顺手存下登录态，下次录制免登录
 try {

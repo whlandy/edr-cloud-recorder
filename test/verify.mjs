@@ -58,6 +58,13 @@ chk('写请求的请求体被保留', okReq?.body === '{"a":1}', okReq?.body);
 const okRes = net.find((n) => n.phase === 'res' && n.url.includes('/api/ok'));
 chk('写请求的响应体被保留', !!okRes?.body, okRes?.body);
 
+// 点完立刻跳转的步骤最容易丢：页面卸载时，还留在页面内数组里的记录就没了。
+// 登录按钮是最典型的一例，所以这条单独验。
+const navStep = find((s) => s.label?.includes('立刻跳转'));
+chk('点击后立即跳转的步骤未丢失', !!navStep, navStep?.sel);
+const afterNav = find((s) => s.sel.includes('after-nav'));
+chk('跳转后新页面仍在录制', !!afterNav, afterNav?.sel);
+
 let passed = 0;
 console.log(`\n  ${'检查项'.padEnd(34)}结果`);
 console.log('  ' + '-'.repeat(86));

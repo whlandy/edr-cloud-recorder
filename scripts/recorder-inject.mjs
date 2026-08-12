@@ -117,17 +117,35 @@ export const RECORDER = () => {
     return e;
   };
 
+  let seq = 0;
+  const tag = Math.random().toString(36).slice(2, 8);
+
   const push = (type, el, extra) => {
     try {
       const t = meaningful(el);
       const sel = selectorFor(t);
-      steps.push({
+      const step = {
+        id: `${tag}-${++seq}`,
         t: Date.now(), type, sel: sel.code, kind: sel.kind,
         ambiguous: !!sel.ambiguous, matches: sel.matches,
         label: txt(t).slice(0, 60), css: cssPath(t),
         url: location.pathname + location.hash,
         ...extra,
-      });
+      };
+
+      // 双通道上报。
+      //
+      // 主通道 __recPush 由 Node 侧的 exposeBinding 提供，一产生就推走。
+      // 这很重要：「操作完立即跳转」的步骤（最典型的就是点登录按钮）会在页面
+      // 卸载时连同页面内的数组一起消失，靠轮询搬运必然丢。
+      //
+      // 副通道是本地数组，由 Node 侧定时 drain 兜底 —— 覆盖 binding 尚未注入
+      // 完成的极早期，以及 binding 调用本身失败的情况。
+      // 两个通道都带同一个 id，Node 侧按 id 去重。
+      steps.push(step);
+      if (typeof window.__recPush === 'function') {
+        try { window.__recPush(step); } catch { /* 页面正在卸载，靠副通道 */ }
+      }
     } catch { /* 录制出错绝不能影响用户操作 */ }
   };
 
