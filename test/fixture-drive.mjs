@@ -5,7 +5,7 @@ import { RECORDER } from '../scripts/recorder-inject.mjs';
 
 const HTML = `<!doctype html><meta charset="utf-8"><body>
   <button data-testid="save-btn">保存</button>
-  <button id="submit_9" onclick="fetch('/api/ok',{method:'POST',body: JSON.stringify({a:1})})">提交订单</button>
+  <button id="submit_9" onclick="sendOrder()">提交订单</button>
   <button onclick="fetch('/api/bad',{method:'POST',body:'{}'})">触发失败</button>
   <input placeholder="请输入用户名">
   <input type="password" placeholder="密码">
@@ -45,6 +45,13 @@ const HTML = `<!doctype html><meta charset="utf-8"><body>
   </div>
 
   <script>
+    // 请求体里混着三类值：稳定的、字符串型雪花 ID、数字型毫秒时间戳。
+    // 后两类每次运行都不同，钉进断言就等于让用例必挂。
+    function sendOrder() {
+      fetch('/api/ok', { method: 'POST', body: JSON.stringify({
+        a: 1, pageSize: 100, id: '39049753287328', endTime: Date.now(),
+      }) });
+    }
     sw1.addEventListener('click', () => sw1.setAttribute('aria-checked',
       sw1.getAttribute('aria-checked') === 'true' ? 'false' : 'true'));
     sw2.addEventListener('click', () => sw2.classList.toggle('off') || sw2.classList.toggle('on'));

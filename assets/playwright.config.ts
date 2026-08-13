@@ -42,7 +42,12 @@ function resolveChrome(): string | undefined {
 export default defineConfig({
   // 登录用例的失败现场含明文密码，跑完统一清除，见该文件注释
   globalTeardown: './tests/scrub-auth-artifacts.ts',
-  testDir: './tests',
+
+  // 录制草稿落在 recordings/，整理后的用例放 tests/ —— 两处都得能跑。
+  // 只认 tests/ 的话，刚录完的脚本 `npx playwright test` 根本看不见，
+  // 而那正是录完之后第一件想做的事。
+  testDir: '.',
+  testMatch: ['tests/**/*.spec.ts', 'recordings/**/*.spec.ts'],
   outputDir: './test-results',
   timeout: 120_000,
   expect: { timeout: 15_000 },
