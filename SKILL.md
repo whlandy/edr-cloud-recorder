@@ -171,17 +171,74 @@ expect(resp1.request().postDataJSON()).toMatchObject({
 - 会产生数据的用例补上清理逻辑
 - 仍标着 `⚠ AMBIGUOUS` 的选择器（少数）需要人工限定
 
+## 回放前过一遍这张清单
+
+草稿不是拿来直接跑的。下面几类问题录制器**原理上**看不见，只能人工过一遍 ——
+它们的共同点是：录制时那个"活人"顺手处理掉了，脚本却无从知道要处理。
+
+**① 前置遮罩：首次引导、公告、分辨率提示**
+
+这些东西出现与否取决于账号状态和历史操作。录制时人手一关就过去了，脚本会被
+`<div class="mask">` 拦住点击直到超时 —— 报错信息还只说"元素不可点击"。
+
+录制器把这些关闭动作记成了 CSS 兜底的「存在则点」，方向是对的，但选择器往往很脆。
+稳妥做法是在用例开头显式收拾一遍，用 `assets/fixtures.ts` 里的 `clickIfPresent`：
+
+```ts
+for (const sel of ['#dialog_panel .closeIcon', '.tipBox_close', '.introduce-skip']) {
+  await clickIfPresent(page.locator(sel).first());
+}
+```
+
+> **不要用 `el.remove()` 把遮罩从 DOM 里删掉。** 这招看着很爽，代价是：遮罩背后的
+> 应用状态没变（引导流程仍在进行、body 仍是 `overflow:hidden`），后面的操作会以更
+> 难查的方式失败；更糟的是，万一某天这个遮罩是**真 bug**（该关的没关），删 DOM 会
+> 让用例继续绿灯。用例的价值就在于该红的时候红。
+
+**② 登录段的步骤顺序**
+
+录制器按事件发生的时间顺序忠实记录，包括人类的自我修正：先在密码框回车、发现没填、
+再回去补上。人做这些毫无障碍，脚本照着跑就是先提交后填密码。
+
+实测遇到过 `press Enter` 录在 `fill 密码` 之前的情况。登录这类关键流程**必须**人工过一遍顺序。
+
+更好的做法是让登录彻底退出用例：登录是低频操作，`.auth/state.json` 存一次，之后
+用 `authedPage` fixture 复用。详见 [references/auth-and-session.md](references/auth-and-session.md)。
+
+**③ 深层导航改直达**
+
+侧边栏菜单在小 viewport 下要滚动才可见，录制时窗口大、回放时窗口小就点不到。
+一串菜单点击如果净效果只是"到某个页面"，换成 `page.goto()` 更稳也更快。
+生成的草稿里，地址发生变化的地方会带一条 `⇢ 地址已变为 ...` 的提示。
+
+> **不要靠加 `waitForTimeout` 来"修"失败。** Playwright 的定位器本身会等元素
+> 可见、可点、稳定，加 sleep 能"修好"的场景，绝大多数真实病因是别的：选择器撞车
+> （strict mode）、被遮罩挡住、或者点到了长得一样的另一个元素。sleep 只是把失败
+> 概率压低，换来的是每次跑都白等，以及在 CI 上偶发失败。
+>
+> 真需要等"某件事发生"时，等那件事本身：`expect.poll`、`waitForResponse`、
+> 对目标状态的 `expect`。`networkidle` 同样不推荐 —— 长轮询或心跳接口会让它永远等不到。
+
 ## 选择器优先级
 
 录制器按这个顺序取，遇到就停：
 
 | 顺序 | 方式 | 稳定性 |
 |---|---|---|
-| 1 | `getByTestId`（`data-testid` / `data-test` / `data-cy` / `data-qa`） | 最稳，专为测试而设 |
+| 1 | `getByTestId`（`data-testid` / `data-test` / `data-cy` / `data-qa`）**且全页唯一** | 最稳，专为测试而设 |
 | 2 | 输入框专用：`getByLabel` → `getByPlaceholder` | 稳，直接绑定表单语义 |
 | 3 | `getByRole(role, { name })` | 很稳，跟着无障碍语义走 |
 | 4 | `getByText` | 一般，需检查是否撞车 |
 | 5 | `locator(cssPath)` | 兜底，随时会失效 |
+
+**testid 排第一，但先验唯一性。** 它「本该」是为测试而设的唯一标识，可组件框架常常
+批量吐出同一个值 —— 实测遇到过 245 个元素共用 `data-testid="text-comp-span"`。那时它
+不但不是最稳的，反而是最坏的：回放必然 strict mode 报错，而且看代码完全看不出问题。
+所以录制器会数一遍，不唯一就当它不存在，往下走 role / text 分支。
+
+顺带一提，`getByTestId` 只认 Playwright 配置里的 `testIdAttribute`（默认 `data-testid`）。
+元素只有 `data-cy` / `data-qa` 时，录制器生成属性选择器 `locator('[data-cy="..."]')`，
+而不是 `getByTestId` —— 后者语法上没错，回放时却根本找不到元素。
 
 输入框之所以插在 role 前面：只有 placeholder 的输入框，其无障碍名恰好**就是** placeholder，
 于是 role 分支会产出 `getByRole('textbox', { name: '请输入用户名' })`。那样能用，但一旦后来
@@ -202,8 +259,42 @@ expect(resp1.request().postDataJSON()).toMatchObject({
 }
 ```
 
-认不出状态的开关（既无 aria 也无约定 class）会退化成普通点击 —— 宁可少做，
-也不猜一个可能相反的状态。
+**状态怎么表达的，也一并记下来。** 没有 aria 的自研开关多半把状态写在 class 上
+（`<div class="eui_toggle_container toggled">`）。只按 aria 那套生成的话，
+`getAttribute('aria-checked')` 恒为 `null`，于是每次都点、断言每次都挂。
+class 型的生成这样：
+
+```ts
+{
+  const sw = page.getByText('自保护', { exact: true });
+  const state = sw.locator('.eui_toggle_container').first();
+  const isOn = () => state.evaluate((e) => e.classList.contains("toggled"));
+  if ((await isOn()) !== true) await sw.click();
+  await expect.poll(isOn).toBe(true);
+}
+```
+
+注意**点的和读的不是同一个元素**：整行可点，但状态写在内层容器上。不记这个偏移，
+读到的永远是行、永远读不出状态。
+
+**开关是点击目标的后代时也能认出来。** 表单常把「标签 + 说明文字 + 开关」放一整行，
+整行都可点，这时事件目标是行容器，开关在它**里面**。只往上找会漏掉。
+
+还有一种静态看不出来的情形：class 型开关在「关」的时候往往什么标记都没有，只有开启
+才多一个 `toggled`。标记缺席既可能是关，也可能是这一层根本不带状态。录制器的办法是
+看拨完之后**哪一层的 class 变了** —— 变的那层就是状态层。恰好一层变化时才认，
+多层一起变说明猜不准。
+
+认不出状态的开关会退化成普通点击 —— 宁可少做，也不猜一个可能相反的状态。
+
+**二次确认要自己补。** 有些开关拨动时会弹确认框，有些不弹，同一个页面里都可能不一致。
+录制器把确认点击忠实记成了独立一步，但它是否出现取决于开关的方向和具体项，
+所以回放时该写成「存在则点」而不是必经步骤：
+
+```ts
+const confirm = page.getByRole('button', { name: '确认', exact: true });
+if (await confirm.isVisible().catch(() => false)) await confirm.click();
+```
 
 **浮层里的元素会被限定到浮层内。** 下拉选项常渲染在 portal 里（挂到 body 底下
 而不是触发器旁边），而且**触发器显示的值和选项文本往往一模一样**：
@@ -314,7 +405,10 @@ node test/verify.mjs
 ```
 
 它会造一个包含全部边界情况的页面（同名元素、自增 id、密码框、会发请求的按钮），
-用真实浏览器录一遍，逐条断言。13 项全过才退出 0。
+用真实浏览器录一遍，逐条断言。45 项全过才退出 0。
+
+**加了新能力就往里加断言。** 这个文件是上面所有承诺的唯一执行者 —— 承诺写进
+SKILL.md 却没有对应断言，下一次重构就会悄悄把它改没。
 
 ## 素材
 

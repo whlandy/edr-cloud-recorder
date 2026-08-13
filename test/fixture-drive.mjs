@@ -25,6 +25,19 @@ const HTML = `<!doctype html><meta charset="utf-8"><body>
   <!-- 自研开关：只有 class，没有 aria -->
   <div id="sw2" class="ui-switch off"><span class="knob"></span></div>
 
+  <!-- 整行可点，开关是点击目标的「后代」而不是祖先；状态写在内层 class 上 -->
+  <div id="row_sp" class="labelAndItem" style="padding:24px">
+    <span>行内自保护</span>
+    <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
+  </div>
+
+  <!-- 组件框架批量吐出的同名 testid：不唯一，用它回放必然 strict mode 失败 -->
+  <div data-testid="text-comp-span">重复标记甲</div>
+  <div data-testid="text-comp-span">重复标记乙</div>
+
+  <!-- 只有 data-cy：Playwright 默认的 testIdAttribute 是 data-testid，认不到 -->
+  <button data-cy="cy-only">仅有 data-cy</button>
+
   <!-- 触发器显示的值，和下面浮层里的选项文本一模一样 -->
   <div id="trigger">Windows系统</div>
   <div id="pop" role="listbox" style="position:absolute;z-index:999;display:none">
@@ -36,6 +49,8 @@ const HTML = `<!doctype html><meta charset="utf-8"><body>
       sw1.getAttribute('aria-checked') === 'true' ? 'false' : 'true'));
     sw2.addEventListener('click', () => sw2.classList.toggle('off') || sw2.classList.toggle('on'));
     trigger.addEventListener('click', () => { pop.style.display = 'block'; });
+    row_sp.addEventListener('click', () =>
+      row_sp.querySelector('.eui_toggle_container').classList.toggle('toggled'));
   </script>
 </body>`;
 
@@ -106,6 +121,16 @@ await page.click('#trigger');                // 打开浮层
 await page.waitForTimeout(300);
 await page.locator('#pop .opt', { hasText: 'Windows系统' }).click();   // 与触发器同名
 await page.waitForTimeout(400);
+
+// 整行可点的开关：点在行的 padding 上，开关是这一下的后代
+await page.click('#row_sp', { position: { x: 5, y: 5 } });
+await page.waitForTimeout(400);
+
+// 同名 testid + 只有 data-cy 的元素
+await page.locator('[data-testid=text-comp-span]').first().click();
+await page.waitForTimeout(300);
+await page.click('[data-cy=cy-only]');
+await page.waitForTimeout(300);
 
 // ── 断言菜单：右键 → 改 expected → 提交 ──
 await page.goto(base);                      // 回首页，元素齐全

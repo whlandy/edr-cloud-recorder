@@ -29,18 +29,36 @@ export const RECORDER = () => {
       /(^|[-_ ])(switch|toggle)([-_ ]|$)/i.test(cls);
     if (!looksLikeSwitch) return null;
 
-    let on = null;
-    if (aria !== null) on = aria === 'true';
-    else if (typeof e.checked === 'boolean') on = e.checked;
-    // 没有 aria 的自研开关，多数用 class 表示状态；认不出来就留 null，
-    // 由生成器退化成普通点击，而不是猜一个可能相反的状态
-    else if (/(^|[-_ ])(checked|active|on|selected)([-_ ]|$)/i.test(cls)) on = true;
-    else if (/(^|[-_ ])(unchecked|inactive|off)([-_ ]|$)/i.test(cls)) on = false;
+    // via 记录「状态是怎么表达的」，生成器据此产出对应的读法。
+    // 不记的话生成器只能假定 aria-checked —— 对 class 型开关必然读不到状态，
+    // 于是每次都点、每次断言都挂。
+    let on = null, via = null;
+    if (aria !== null) { on = aria === 'true'; via = { type: 'aria' }; }
+    else if (typeof e.checked === 'boolean') { on = e.checked; via = { type: 'checked' }; }
+    else {
+      // 没有 aria 的自研开关，多数用 class 表示状态。toggled 是实测遇到的写法：
+      // <div class="eui_toggle_container toggled">。认不出来就留 null，
+      // 由生成器退化成普通点击，而不是猜一个可能相反的状态。
+      const onHit = cls.match(/(^|[-_ ])(checked|active|on|selected|toggled|opened)([-_ ]|$)/i);
+      const offHit = cls.match(/(^|[-_ ])(unchecked|inactive|off|untoggled|closed)([-_ ]|$)/i);
+      if (onHit) { on = true; via = { type: 'class', token: onHit[2], polarity: 'on' }; }
+      else if (offHit) { on = false; via = { type: 'class', token: offHit[2], polarity: 'off' }; }
+    }
 
-    return { on, name: nameOf(e) };
+    return { on, via, name: nameOf(e) };
   };
 
-  /** 从事件目标往上找开关本体：开关内部常有滑块/背景等子元素 */
+  /** 点击目标内部所有像开关的元素（外壳、容器、轨道、滑块都可能算） */
+  const switchInside = (e) => [...(e.querySelectorAll?.('*') ?? [])].filter((x) => switchInfo(x));
+
+  /**
+   * 找开关本体
+   *
+   * 先往上：点在滑块/轨道上时，开关是事件目标的祖先。
+   * 再往下：很多表单把「标签 + 说明文字 + 开关」放在一整行里，整行都可点，
+   * 这时事件目标是行容器，开关是它的**后代** —— 只向上找会漏掉，退化成盲点击，
+   * 回放时朝反方向拨。要求行内开关唯一，多于一个就不猜是哪个。
+   */
   const switchAncestor = (e) => {
     let n = e, d = 0;
     while (n && n !== document.body && d < 4) {
@@ -48,6 +66,10 @@ export const RECORDER = () => {
       if (info) return { el: n, info };
       n = n.parentElement; d++;
     }
+    // 开关组件常是嵌套的（外壳 / 容器 / 轨道 / 滑块都带 toggle 字样），
+    // 但状态往往只写在其中一层上。挑能读出状态的那一层 —— 挑错层就等于读不到状态。
+    const stated = switchInside(e).filter((x) => switchInfo(x).on !== null);
+    if (stated.length === 1) return { el: stated[0], info: switchInfo(stated[0]) };
     return null;
   };
 
@@ -195,9 +217,19 @@ export const RECORDER = () => {
   };
 
   const selectorFor = (e) => {
+    // testid 排第一是因为它「本该」为测试唯一标识而设。但组件框架常常批量吐出
+    // 同一个 data-testid（实测有 245 个元素共用 text-comp-span），那时它不但不是
+    // 最稳的，反而是最不可靠的 —— 回放时必然 strict mode 报错。
+    // 所以先验唯一性：不唯一就当它不存在，往下走 role / text 分支。
     for (const attr of ['data-testid', 'data-test', 'data-cy', 'data-qa']) {
       const v = e.getAttribute?.(attr);
-      if (v) return { kind: 'testid', code: `getByTestId(${JSON.stringify(v)})` };
+      if (!v) continue;
+      if (document.querySelectorAll(`[${attr}=${JSON.stringify(v)}]`).length !== 1) continue;
+      // getByTestId 只认 Playwright 配置里的 testIdAttribute（默认 data-testid）。
+      // 其余几个属性得走属性选择器，否则生成的代码回放时根本找不到元素。
+      return attr === 'data-testid'
+        ? { kind: 'testid', code: `getByTestId(${JSON.stringify(v)})` }
+        : { kind: 'testid', code: `locator(${JSON.stringify(`[${attr}=${JSON.stringify(v)}]`)})` };
     }
     // 文本输入框优先用 label / placeholder，而不是 role+name。
     // 原因：只有 placeholder 的输入框，其无障碍名恰好就是 placeholder，
@@ -249,6 +281,33 @@ export const RECORDER = () => {
       n = n.parentElement; d++;
     }
     return e;
+  };
+
+  /**
+   * 状态元素相对于「步骤元素」的位置
+   *
+   * 开关的可点区域和承载状态的那一层常常不是同一个元素：整行可点，但 toggled
+   * 写在内层容器上。步骤的选择器指向行（那才是有名字、点得动的东西），读状态却
+   * 必须往里走一层 —— 不记下这个偏移，生成的 classList.contains 读的是行，
+   * 永远读不到，于是每次都点、断言必挂。
+   *
+   * 返回 '' 表示状态就在步骤元素本身；返回 undefined 表示够不着，
+   * 这时宁可退回普通点击，也不要生成一个读不到状态的"幂等"代码。
+   */
+  const stateWithin = (stateEl) => {
+    const root = meaningful(stateEl);
+    if (root === stateEl) return '';
+    const cls = String(stateEl.className || '').trim().split(/\s+/).filter(
+      (c) => c && !/\d{3,}/.test(c) && !/^\d/.test(c) &&
+        // 状态词本身不能进选择器：那样只有「开」的时候才选得中
+        !/^(checked|active|on|selected|toggled|opened|unchecked|inactive|off|untoggled|closed)$/i.test(c),
+    );
+    for (const c of cls) {
+      try {
+        if (root.querySelectorAll('.' + CSS.escape(c)).length === 1) return '.' + c;
+      } catch { /* 类名不合法就换下一个 */ }
+    }
+    return undefined;
   };
 
   const push = (type, el, extra) => {
@@ -436,7 +495,31 @@ export const RECORDER = () => {
       const before = sw.info.on;
       setTimeout(() => {
         const now = switchInfo(sw.el);
-        push('switch', sw.el, { to: now && now.on !== null ? now.on : !before });
+        const via = (now && now.via) || sw.info.via;
+        const within = stateWithin(sw.el);
+        if (within === undefined) return push('click', el);
+        push('switch', sw.el, {
+          to: now && now.on !== null ? now.on : !before,
+          via: { ...via, within },
+        });
+      }, 60);
+      return;
+    }
+
+    // 点击当下读不出状态的情形：class 型开关在「关」的时候往往什么标记都没有，
+    // 只有开启才多一个 toggled —— 标记缺席既可能是关，也可能是这一层根本不带状态，
+    // 静态看分不出来。那就看拨完之后**哪一层的 class 变了**：变的那层就是状态层。
+    // 只有恰好一层变化时才认，多层一起变说明猜不准，老实退回普通点击。
+    const inside = switchInside(el);
+    if (inside.length) {
+      const before = inside.map((x) => String(x.className));
+      setTimeout(() => {
+        const moved = inside.filter((x, i) => String(x.className) !== before[i]);
+        const info = moved.length === 1 ? switchInfo(moved[0]) : null;
+        const within = info ? stateWithin(moved[0]) : undefined;
+        if (info && info.on !== null && within !== undefined) {
+          push('switch', moved[0], { to: info.on, via: { ...info.via, within } });
+        } else push('click', el);
       }, 60);
       return;
     }

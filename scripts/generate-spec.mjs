@@ -99,6 +99,16 @@ export function generateSpec({ steps, net, startUrl, name }) {
 steps.forEach((s, i) => {
   const hi = steps[i + 1]?.t ?? Infinity;
   const calls = between(s.t, hi);
+
+  // 走到这一步时地址已经变了 —— 说明前面那串点击的净效果就是"导航到某个页面"。
+  // 提示出来是因为菜单点击对 viewport 敏感：侧边栏深层菜单在小窗口下要滚动才可见，
+  // 回放时 viewport 与录制时不同就点不到。直接 goto 没有这个问题。
+  const prevUrl = i > 0 ? steps[i - 1]?.url : null;
+  if (prevUrl && s.url && s.url !== prevUrl) {
+    lines.push(`  //   ⇢ 地址已变为 ${s.url}`);
+    lines.push(`  //     若前面几步只是为了导航到这里，可换成 page.goto(${JSON.stringify(s.url)})，`);
+    lines.push(`  //     避开侧边栏菜单在小 viewport 下需要滚动才可见的问题。`);
+  }
   const warn = s.ambiguous ? `   // ⚠ AMBIGUOUS: ${s.matches} 个元素匹配，回放时可能点错` : '';
 
   // CSS 兜底选择器基本都是关闭弹窗/提示这类「有就点、没有就跳过」的动作。
@@ -154,8 +164,29 @@ steps.forEach((s, i) => {
     const v = String(!!s.to);
     lines.push(`  {`);
     lines.push(`    const sw = ${root}.${s.sel};`);
-    lines.push(`    if ((await sw.getAttribute('aria-checked')) !== ${JSON.stringify(v)}) await sw.click();`);
-    lines.push(`    await expect(sw).toHaveAttribute('aria-checked', ${JSON.stringify(v)});`);
+    // 可点的是外层（有名字、点得动），状态常写在内层。点归点，读归读。
+    let st = 'sw';
+    if (s.via?.within) {
+      lines.push(`    const state = sw.locator(${JSON.stringify(s.via.within)}).first();`);
+      st = 'state';
+    }
+    if (s.via?.type === 'class') {
+      // class 型开关：状态写在 class 上，没有 aria-checked 可读。
+      // 按 aria 那套生成的话，getAttribute 恒为 null，于是每次都点、断言必挂。
+      const t = JSON.stringify(s.via.token);
+      const expr = s.via.polarity === 'off'
+        ? `!e.classList.contains(${t})`
+        : `e.classList.contains(${t})`;
+      lines.push(`    const isOn = () => ${st}.evaluate((e) => ${expr});`);
+      lines.push(`    if ((await isOn()) !== ${v}) await sw.click();`);
+      lines.push(`    await expect.poll(isOn).toBe(${v});`);
+    } else if (s.via?.type === 'checked') {
+      lines.push(`    if ((await ${st}.isChecked()) !== ${v}) await sw.click();`);
+      lines.push(`    await expect(${st}).${s.to ? 'toBeChecked()' : 'not.toBeChecked()'};`);
+    } else {
+      lines.push(`    if ((await ${st}.getAttribute('aria-checked')) !== ${JSON.stringify(v)}) await sw.click();`);
+      lines.push(`    await expect(${st}).toHaveAttribute('aria-checked', ${JSON.stringify(v)});`);
+    }
     lines.push(`  }${warn}`);
     for (const c of calls) {
       lines.push(`  //   ↳ ${c.method} ${strip(c.url)} -> ${c.status}`);
