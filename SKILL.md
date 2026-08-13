@@ -184,6 +184,7 @@ await page.frameLocator('iframe[src*="custom_login.html"]').getByPlaceholder('�
 | [references/selectors.md](references/selectors.md) | 选择器反复失效；动态表格；页签位置漂移；自定义组件没有 role |
 | [references/safe-writes.md](references/safe-writes.md) | 要验证会**改数据**的操作；需要抓请求体但不能真发出去 |
 | [references/troubleshooting.md](references/troubleshooting.md) | 浏览器起不来；证书报错；偶发 5xx；请求没被记录 |
+| [references/ui-assertions.md](references/ui-assertions.md) | 断言读到的和你以为的不一致；界面不刷新；连错窗口/连错机器；怎么选断言点 |
 
 ## 对旧录制重新生成
 
@@ -224,7 +225,12 @@ node test/verify.mjs
 - `playwright.config.ts` —— 忽略自签证书、失败重试、串行执行、失败时留 trace/截图/录像
 - `auth.setup.ts` —— 登录一次并导出登录态（**含 sessionStorage**，Playwright 原生不管这块）
 - `fixtures.ts` —— `authedPage` fixture，把登录态在页面脚本执行前注回去
+- `manual-login.mjs` —— 站点要求验证码时的兜底：人工登录一次，导出登录态复用
 - `tsconfig.json` / `package.json`
+
+**验证码不要绕。** 它存在的目的就是拦自动化登录，破解既不该做、也不可靠。
+正确做法是承认登录是低频操作：人过一次，之后复用会话，直到过期再来一次。
+`manual-login.mjs` 就是干这个的 —— 开一个窗口等你登录，检测到成功后自动导出并自检连通性。
 
 ## 判断这个 skill 是否用对了
 
