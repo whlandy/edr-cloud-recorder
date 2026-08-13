@@ -1,6 +1,10 @@
 import { test as setup, expect } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// package.json 里 type=module，Playwright 按 ESM 处理 TS，__dirname 不存在
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * 登录一次，把登录态导出给后续所有用例复用。
@@ -51,8 +55,22 @@ setup('登录并导出登录态', async ({ page, context }) => {
   if (await consent.isVisible().catch(() => false)) await consent.click().catch(() => {});
 
   // ── 改这里：换成实际的输入框定位 ──
-  await page.getByPlaceholder(/用户名|账号|username/i).fill(user);
-  await page.getByPlaceholder(/密码|password/i).fill(pass);
+  //
+  // 用稳定的 id 或 label，**不要**用 .or() 组合多种定位方式。
+  // 踩过的坑：某些登录页的密码框没有 placeholder（可访问名来自旁边的图标或标签），
+  // getByPlaceholder(/密码/).or('#password') 会解析到用户名框，
+  // 结果用户名和密码被填进同一个输入框 —— 而失败现场里那串明文就是泄露源。
+  const userBox = page.locator('#username');
+  const passBox = page.locator('#password');
+
+  await userBox.waitFor({ state: 'visible', timeout: 30_000 });
+  await passBox.waitFor({ state: 'visible', timeout: 30_000 });
+
+  await userBox.fill(user);
+  await passBox.fill(pass);
+  // 填完校验一次：填错框是静默失败，只有断言能把它变成显式失败
+  await expect(userBox, '用户名框内容异常，疑似把密码也填了进去').toHaveValue(user);
+
   await page.getByRole('button', { name: /登录|登入|Sign in/i }).click();
 
   // ── 改这里：换成可靠的登录成功判据 ──

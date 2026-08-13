@@ -104,6 +104,48 @@ for name in ("XSRF-TOKEN", "csrfToken", "_xsrf"):
 **不要凭空实现登录接口。** SSO 的登录 POST 往往有加密参数、验证码、时间戳签名。
 没抓过就写，写出来的是猜测。可靠做法是让 Playwright 完成登录并导出凭据，其他语言只负责复用。
 
+## 别让失败现场泄露密码
+
+Playwright 默认在失败时保留 trace、录像和截图。登录用例失败时，输入框里的**明文密码**
+会原样进到这些文件里 —— 这是凭据泄露最容易被忽视的一条路径，因为它不经过代码、
+不经过版本库，只是静静躺在 `test-results/` 里。
+
+给 setup 项目单独关掉：
+
+```ts
+{
+  name: 'setup',
+  testMatch: /auth\.setup\.ts/,
+  use: { trace: 'off', video: 'off', screenshot: 'off' },
+}
+```
+
+其他用例照常保留现场，它们不接触凭据。
+
+如果已经发生了，`test-results/` 和 `playwright-report/` 整个删掉 —— trace.zip 里
+是完整的 DOM 快照，光删截图不够。
+
+## 登录框定位：不要用 .or() 组合
+
+看起来稳妥的写法反而会出事：
+
+```ts
+// ❌ 密码框没有 placeholder 时，这会解析到用户名框
+const passBox = frame.getByPlaceholder(/密码/).or(frame.locator('#password')).first();
+```
+
+结果是用户名和密码被填进**同一个输入框**，登录失败，而失败现场里带着明文密码。
+
+用单一稳定的定位方式，填完再断言一次：
+
+```ts
+const userBox = frame.locator('#username');
+const passBox = frame.locator('#password');
+await userBox.fill(user);
+await passBox.fill(pass);
+await expect(userBox).toHaveValue(user);   // 填错框是静默失败，断言让它显式
+```
+
 ## 凭据管理
 
 - 用户名密码只从环境变量读，不写进代码，不落盘

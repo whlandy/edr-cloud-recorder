@@ -1,6 +1,10 @@
 import { test as base, expect, Page, Locator } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// package.json 里 type=module，Playwright 按 ESM 处理 TS，__dirname 不存在
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const AUTH_DIR = path.join(__dirname, '..', '.auth');
 const STORAGE_STATE = path.join(AUTH_DIR, 'state.json');

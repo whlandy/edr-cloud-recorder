@@ -72,7 +72,14 @@ export default defineConfig({
   },
 
   projects: [
-    { name: 'setup', testMatch: /auth\.setup\.ts/ },
+    {
+      name: 'setup',
+      testMatch: /auth\.setup\.ts/,
+      // 登录用例绝不留现场。trace / 录像 / 失败截图会把输入框里的明文密码
+      // 原样存到磁盘上 —— 这是凭据泄露最容易被忽视的一条路径。
+      // 其他用例照常保留现场，它们不接触凭据。
+      use: { trace: 'off', video: 'off', screenshot: 'off' },
+    },
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
