@@ -187,6 +187,38 @@ expect(resp1.request().postDataJSON()).toMatchObject({
 于是 role 分支会产出 `getByRole('textbox', { name: '请输入用户名' })`。那样能用，但一旦后来
 给它补了 `<label>`，无障碍名就变了，选择器随之失效。`getByPlaceholder` 只依赖 placeholder 本身。
 
+**开关会录成"拨到指定状态"，而不是盲点一下。** 自研开关多半是 `div` 加 class，
+不是 `input[type=checkbox]`。只录一次 `click` 的话，回放时初始状态一旦与录制时不同，
+就会**朝反方向拨** —— 脚本不报错，只是把开关设错了，这类失败极难查。
+
+录制器认 `role="switch"`、`aria-checked`，以及 class 里带 switch/toggle 的元素，
+记下"这一下要拨到什么状态"，生成幂等的代码：
+
+```ts
+{
+  const sw = page.getByRole('switch', { name: '自保护', exact: true });
+  if ((await sw.getAttribute('aria-checked')) !== "true") await sw.click();
+  await expect(sw).toHaveAttribute('aria-checked', "true");
+}
+```
+
+认不出状态的开关（既无 aria 也无约定 class）会退化成普通点击 —— 宁可少做，
+也不猜一个可能相反的状态。
+
+**浮层里的元素会被限定到浮层内。** 下拉选项常渲染在 portal 里（挂到 body 底下
+而不是触发器旁边），而且**触发器显示的值和选项文本往往一模一样**：
+
+```ts
+// ❌ 撞车：触发器显示「Windows系统」，选项也叫「Windows系统」
+await page.getByText('Windows系统', { exact: true }).first().click();
+
+// ✅ 限定到浮层
+await page.getByRole('listbox').getByText('Windows系统', { exact: true }).click();
+```
+
+识别方式：`role` 是 listbox/menu/dialog/tooltip 等，或者「绝对定位 + z-index ≥ 100」——
+后者是浮层最通用的特征，能覆盖没写 ARIA 的自研组件。
+
 **iframe 里的元素会自动加 frameLocator。** 登录表单放在 iframe 里是很常见的做法，
 而 `page.getByX()` 只搜主文档 —— 不处理的话录制时能跑通、回放必然找不到元素。
 录制器记录每一步的归属框架，生成时自动包一层：
