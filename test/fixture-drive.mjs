@@ -18,6 +18,25 @@ const HTML = `<!doctype html><meta charset="utf-8"><body>
   <div id="tip_box_10059"><span class="close_x">×</span></div>
   <a id="go" href="/next">立刻跳转</a>
   <iframe src="/login_frame.html" width="300" height="120"></iframe>
+
+  <!-- 标准开关：有 role 和 aria-checked -->
+  <div id="sw1" role="switch" aria-checked="false" tabindex="0">自保护</div>
+
+  <!-- 自研开关：只有 class，没有 aria -->
+  <div id="sw2" class="ui-switch off"><span class="knob"></span></div>
+
+  <!-- 触发器显示的值，和下面浮层里的选项文本一模一样 -->
+  <div id="trigger">Windows系统</div>
+  <div id="pop" role="listbox" style="position:absolute;z-index:999;display:none">
+    <div class="opt">Windows系统</div><div class="opt">Linux系统</div>
+  </div>
+
+  <script>
+    sw1.addEventListener('click', () => sw1.setAttribute('aria-checked',
+      sw1.getAttribute('aria-checked') === 'true' ? 'false' : 'true'));
+    sw2.addEventListener('click', () => sw2.classList.toggle('off') || sw2.classList.toggle('on'));
+    trigger.addEventListener('click', () => { pop.style.display = 'block'; });
+  </script>
 </body>`;
 
 const FRAME = `<!doctype html><meta charset="utf-8"><body>
@@ -77,6 +96,16 @@ await page.waitForTimeout(200);
 await Promise.all([page.waitForURL('**/next'), page.click('#go')]);
 await page.click('[data-testid=after-nav]');
 await page.waitForTimeout(300);
+
+// ── 开关与浮层 ──
+await page.goto(base);          // 前面测过导航，这里先回首页
+await page.waitForTimeout(500);
+await page.click('#sw1');                    // aria 开关：false → true
+await page.waitForTimeout(300);
+await page.click('#trigger');                // 打开浮层
+await page.waitForTimeout(300);
+await page.locator('#pop .opt', { hasText: 'Windows系统' }).click();   // 与触发器同名
+await page.waitForTimeout(400);
 
 // ── 断言菜单：右键 → 改 expected → 提交 ──
 await page.goto(base);                      // 回首页，元素齐全

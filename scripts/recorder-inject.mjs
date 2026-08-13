@@ -9,9 +9,53 @@ export const RECORDER = () => {
   const steps = [];
   const txt = (e) => ((e && e.textContent) || '').replace(/\s+/g, ' ').trim();
 
+  /**
+   * 开关识别
+   *
+   * 自研 UI 库的开关多半是 div/span 加个 class，不是 input[type=checkbox]：
+   * 没有 role、没有文本，一路掉到 CSS 兜底，选择器又脆又看不懂。
+   * 而且只录一次 click 的话，回放时若初始状态与录制时不同，就会朝反方向拨——
+   * 脚本不报错，只是把开关拨错了，这种失败最难查。
+   *
+   * 所以这里既认它是开关，也读出它的当前状态，交给生成器产出"拨到指定状态"的代码。
+   */
+  const switchInfo = (e) => {
+    if (!e || e.nodeType !== 1) return null;
+    const role = e.getAttribute('role');
+    const aria = e.getAttribute('aria-checked');
+    const cls = typeof e.className === 'string' ? e.className : '';
+    const looksLikeSwitch =
+      role === 'switch' || aria !== null ||
+      /(^|[-_ ])(switch|toggle)([-_ ]|$)/i.test(cls);
+    if (!looksLikeSwitch) return null;
+
+    let on = null;
+    if (aria !== null) on = aria === 'true';
+    else if (typeof e.checked === 'boolean') on = e.checked;
+    // 没有 aria 的自研开关，多数用 class 表示状态；认不出来就留 null，
+    // 由生成器退化成普通点击，而不是猜一个可能相反的状态
+    else if (/(^|[-_ ])(checked|active|on|selected)([-_ ]|$)/i.test(cls)) on = true;
+    else if (/(^|[-_ ])(unchecked|inactive|off)([-_ ]|$)/i.test(cls)) on = false;
+
+    return { on, name: nameOf(e) };
+  };
+
+  /** 从事件目标往上找开关本体：开关内部常有滑块/背景等子元素 */
+  const switchAncestor = (e) => {
+    let n = e, d = 0;
+    while (n && n !== document.body && d < 4) {
+      const info = switchInfo(n);
+      if (info) return { el: n, info };
+      n = n.parentElement; d++;
+    }
+    return null;
+  };
+
   const roleOf = (e) => {
     const r = e.getAttribute?.('role');
     if (r) return r;
+    // aria-checked 存在但没写 role 的，按 switch 处理 —— getByRole('switch') 找得到
+    if (e.getAttribute?.('aria-checked') !== null && e.getAttribute?.('aria-checked') !== undefined) return 'switch';
     const t = e.tagName.toLowerCase();
     if (t === 'button') return 'button';
     if (t === 'a' && e.getAttribute('href')) return 'link';
@@ -79,7 +123,47 @@ export const RECORDER = () => {
    * 最后一种是表格行的典型形态 —— page.locator('tr', { hasText: '张三' })，
    * 用行内某个全局唯一的文本把行钉住，再在行内找按钮。
    */
+  /**
+   * 判断元素是否在浮层里（下拉、菜单、弹窗、气泡）
+   *
+   * 下拉选项常渲染在 portal 中——挂到 body 底下而不是触发器旁边。这带来两个问题：
+   *   1. 往上找作用域会找到一个和业务无关的容器
+   *   2. 触发器显示的值和选项文本往往一模一样，直接撞车
+   * 认出浮层后把作用域限定到它，两个问题一起解决。
+   */
+  const FLOATING_ROLES = ['listbox', 'menu', 'dialog', 'tooltip', 'combobox', 'tree', 'grid'];
+  const floatingAncestor = (el) => {
+    let n = el, d = 0;
+    while (n && n !== document.body && d < 10) {
+      const role = n.getAttribute?.('role');
+      if (role && FLOATING_ROLES.includes(role)) return { el: n, role };
+      const st = getComputedStyle(n);
+      // 绝对/固定定位 + 明显的层级，是浮层最通用的特征
+      if ((st.position === 'fixed' || st.position === 'absolute') &&
+          Number(st.zIndex) >= 100) return { el: n, role: null };
+      n = n.parentElement; d++;
+    }
+    return null;
+  };
+
   const scopeFor = (el, name) => {
+    // 浮层优先：它天然把选项和页面其他同名文本隔开
+    const fl = floatingAncestor(el);
+    if (fl) {
+      const inside = [...fl.el.querySelectorAll('*')].filter(
+        (x) => x.offsetParent && txt(x) === name && x.querySelectorAll('*').length === 0);
+      if (inside.length === 1) {
+        if (fl.role && document.querySelectorAll(`[role="${fl.role}"]`).length === 1) {
+          return `getByRole(${JSON.stringify(fl.role)})`;
+        }
+        const cls = typeof fl.el.className === 'string'
+          ? fl.el.className.trim().split(/\s+/)
+              .filter((c) => c && !/\d{3,}/.test(c) && !/^\d/.test(c))[0]
+          : null;
+        if (cls) return `locator(${JSON.stringify('.' + cls)})`;
+      }
+    }
+
     let n = el.parentElement, depth = 0;
     while (n && n !== document.body && depth < 8) {
       const inside = [...n.querySelectorAll('*')].filter(
@@ -343,6 +427,20 @@ export const RECORDER = () => {
     if (el?.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) return;
     // 点 <label> 也会连带触发内部 input 的 change，同样跳过
     if (el?.closest?.('label')?.querySelector('input[type=checkbox],input[type=radio]')) return;
+
+    // 开关单独记：带上"这一下要把它拨到什么状态"。
+    // 只记 click 的话，回放时初始状态一旦不同就会朝反方向拨，而且不报错。
+    const sw = switchAncestor(el);
+    if (sw && sw.info.on !== null) {
+      // 状态在 click 之后才更新，等一拍再读，读不到就用取反兜底
+      const before = sw.info.on;
+      setTimeout(() => {
+        const now = switchInfo(sw.el);
+        push('switch', sw.el, { to: now && now.on !== null ? now.on : !before });
+      }, 60);
+      return;
+    }
+
     push('click', el);
   }, true);
   document.addEventListener('change', (e) => {

@@ -84,6 +84,24 @@ const frameStep = find((s) => s.value === 'frame-user');
 chk('iframe 内的操作被标记归属', frameStep?.inFrame === true, `framePath=${frameStep?.framePath}`);
 chk('生成 frameLocator 而非直接 page', spec.includes('frameLocator('), spec.match(/page\.frameLocator\([^)]*\)/)?.[0]);
 
+// ── 开关与浮层 ──
+const swStep = steps.find((s) => s.type === 'switch');
+chk('开关录成 switch 步骤而非普通 click', !!swStep, swStep?.sel);
+chk('开关记录了目标状态', swStep?.to === true, `to=${swStep?.to}`);
+chk('开关用 getByRole(switch)', swStep?.kind === 'role' && swStep.sel.includes('switch'), swStep?.sel);
+chk('生成状态感知的拨动而非盲点',
+  /getAttribute\('aria-checked'\)/.test(spec) && /toHaveAttribute\('aria-checked'/.test(spec),
+  spec.match(/if \(\(await sw[^\n]*/)?.[0]?.slice(0, 70));
+
+// 浮层里的选项与触发器同名（两处都叫 Windows系统），必须靠浮层作用域区分。
+// 注意按 css 找选项那一步 —— 只按 label 找会先命中触发器。
+const optStep = steps.find((s) => s.type === 'click' && (s.css || '').includes('#pop'));
+chk('浮层选项识别到撞车', optStep?.matches === 2, `matches=${optStep?.matches}`);
+chk('浮层选项被限定作用域，不是 .first()',
+  optStep?.kind === 'scoped' && !optStep.sel.includes('.first()'), optStep?.sel);
+const trigStep = steps.find((s) => s.type === 'click' && (s.css || '').includes('#trigger'));
+chk('触发器本身不受影响', trigStep?.kind === 'text', trigStep?.sel);
+
 // ── 断言菜单 ──
 const asserts = steps.filter((s) => s.type === 'assert');
 chk('右键能添加断言', asserts.length === 3, `${asserts.length} 条`);

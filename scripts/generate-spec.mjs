@@ -147,6 +147,23 @@ steps.forEach((s, i) => {
     return;
   }
 
+  // ── 开关：拨到指定状态，而不是盲目点一下 ──
+  // 只生成 click 的话，回放时初始状态若与录制时不同，就会朝反方向拨 ——
+  // 脚本不报错，只是把开关拨错了。先读当前状态、需要时才点，这样重复跑也安全。
+  if (s.type === 'switch') {
+    const v = String(!!s.to);
+    lines.push(`  {`);
+    lines.push(`    const sw = ${root}.${s.sel};`);
+    lines.push(`    if ((await sw.getAttribute('aria-checked')) !== ${JSON.stringify(v)}) await sw.click();`);
+    lines.push(`    await expect(sw).toHaveAttribute('aria-checked', ${JSON.stringify(v)});`);
+    lines.push(`  }${warn}`);
+    for (const c of calls) {
+      lines.push(`  //   ↳ ${c.method} ${strip(c.url)} -> ${c.status}`);
+      if (c.status >= 400 && c.body) lines.push(`  //     ⚠ 失败响应: ${c.body.slice(0, 160).replace(/\s+/g, ' ')}`);
+    }
+    return;
+  }
+
   const action =
     s.type === 'click' ? `await ${root}.${s.sel}.click()`
     : s.type === 'fill' && s.secret ? `await ${root}.${s.sel}.fill(process.env.REC_PASSWORD ?? '')`
