@@ -122,6 +122,16 @@ expect(resp1.request().postDataJSON()).toMatchObject({
 于是 role 分支会产出 `getByRole('textbox', { name: '请输入用户名' })`。那样能用，但一旦后来
 给它补了 `<label>`，无障碍名就变了，选择器随之失效。`getByPlaceholder` 只依赖 placeholder 本身。
 
+**iframe 里的元素会自动加 frameLocator。** 登录表单放在 iframe 里是很常见的做法，
+而 `page.getByX()` 只搜主文档 —— 不处理的话录制时能跑通、回放必然找不到元素。
+录制器记录每一步的归属框架，生成时自动包一层：
+
+```ts
+await page.frameLocator('iframe[src*="custom_login.html"]').getByPlaceholder('用户名').fill('...');
+```
+
+用 `src` 片段而不是整条 src 或 nth：src 常带随机 query，nth 会随布局变。
+
 **运行时自增 id 会被自动跳过**（如 `tip_box_10059`），因为它们每次加载都变，
 用来定位必然在第二次运行时失败。同理，含 3 位以上数字的 class 也会被过滤。
 

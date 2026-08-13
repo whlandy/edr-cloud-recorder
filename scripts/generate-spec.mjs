@@ -108,20 +108,26 @@ steps.forEach((s, i) => {
   if (s.kind === 'css' && s.type === 'click') {
     lines.push(`  // ⚠ CSS 兜底（元素没有 role/label/稳定文本），建议改用语义定位`);
     lines.push(`  {`);
-    lines.push(`    const el = page.${s.sel};`);
+    lines.push(`    const el = ${s.inFrame && s.framePath ? `page.frameLocator(${JSON.stringify(`iframe[src*="${s.framePath.split('/').pop()}"]`)})` : 'page'}.${s.sel};`);
     lines.push(`    if (await el.isVisible().catch(() => false)) await el.click();`);
     lines.push(`  }`);
     for (const c of calls) lines.push(`  //   ↳ ${c.method} ${strip(c.url)} -> ${c.status}`);
     return;
   }
 
+  // iframe 里的元素必须先进 frame。用 src 片段定位 iframe：比 nth 稳，
+  // 也比整条 src 宽容（src 常带随机 query）。
+  const root = s.inFrame && s.framePath
+    ? `page.frameLocator(${JSON.stringify(`iframe[src*="${s.framePath.split('/').pop()}"]`)})`
+    : 'page';
+
   const action =
-    s.type === 'click' ? `await page.${s.sel}.click()`
-    : s.type === 'fill' && s.secret ? `await page.${s.sel}.fill(process.env.REC_PASSWORD ?? '')`
-    : s.type === 'fill' ? `await page.${s.sel}.fill(${JSON.stringify(s.value ?? '')})`
-    : s.type === 'check' ? `await page.${s.sel}.check()`
-    : s.type === 'uncheck' ? `await page.${s.sel}.uncheck()`
-    : s.type === 'press' ? `await page.${s.sel}.press('Enter')`
+    s.type === 'click' ? `await ${root}.${s.sel}.click()`
+    : s.type === 'fill' && s.secret ? `await ${root}.${s.sel}.fill(process.env.REC_PASSWORD ?? '')`
+    : s.type === 'fill' ? `await ${root}.${s.sel}.fill(${JSON.stringify(s.value ?? '')})`
+    : s.type === 'check' ? `await ${root}.${s.sel}.check()`
+    : s.type === 'uncheck' ? `await ${root}.${s.sel}.uncheck()`
+    : s.type === 'press' ? `await ${root}.${s.sel}.press('Enter')`
     : null;
   if (!action) return;
 

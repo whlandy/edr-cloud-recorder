@@ -80,6 +80,10 @@ chk('GET 不生成断言，仍是注释', !/waitForResponse[^\n]*"GET"/.test(spe
 const dele = steps.find((s) => s.label === '删除');
 chk('撞车文本自动加作用域（不再是 .first()）', dele && dele.kind === 'scoped' && !dele.sel.includes('.first()'), dele?.sel);
 
+const frameStep = find((s) => s.value === 'frame-user');
+chk('iframe 内的操作被标记归属', frameStep?.inFrame === true, `framePath=${frameStep?.framePath}`);
+chk('生成 frameLocator 而非直接 page', spec.includes('frameLocator('), spec.match(/page\.frameLocator\([^)]*\)/)?.[0]);
+
 let passed = 0;
 console.log(`\n  ${'检查项'.padEnd(34)}结果`);
 console.log('  ' + '-'.repeat(86));

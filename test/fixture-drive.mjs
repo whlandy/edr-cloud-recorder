@@ -17,13 +17,19 @@ const HTML = `<!doctype html><meta charset="utf-8"><body>
   </table>
   <div id="tip_box_10059"><span class="close_x">×</span></div>
   <a id="go" href="/next">立刻跳转</a>
+  <iframe src="/login_frame.html" width="300" height="120"></iframe>
 </body>`;
+
+const FRAME = `<!doctype html><meta charset="utf-8"><body>
+  <input placeholder="iframe内用户名">
+  <button>iframe内登录</button></body>`;
 
 const NEXT = `<!doctype html><meta charset="utf-8"><body><h1>第二页</h1>
   <button data-testid="after-nav">跳转后的按钮</button></body>`;
 
 const srv = http.createServer((req, res) => {
   if (req.url === '/') { res.writeHead(200, {'Content-Type':'text/html; charset=utf-8'}); return res.end(HTML); }
+  if (req.url === '/login_frame.html') { res.writeHead(200, {'Content-Type':'text/html; charset=utf-8'}); return res.end(FRAME); }
   if (req.url === '/next') { res.writeHead(200, {'Content-Type':'text/html; charset=utf-8'}); return res.end(NEXT); }
   if (req.url === '/api/ok')  { res.writeHead(200, {'Content-Type':'application/json'}); return res.end('{"code":"200"}'); }
   if (req.url === '/api/bad') { res.writeHead(400, {'Content-Type':'application/json'}); return res.end('{"error":"subnetIdList 不能为空"}'); }
@@ -62,6 +68,10 @@ await page.waitForTimeout(400);
 await page.locator('tr', {hasText:'李四'}).locator('.op').click();
 await page.click('#tip_box_10059 .close_x');
 await page.waitForTimeout(300);
+
+// iframe 内的操作：回放时必须 frameLocator 进去，直接 page.getByX() 找不到
+await page.frameLocator('iframe').getByPlaceholder('iframe内用户名').fill('frame-user');
+await page.waitForTimeout(200);
 
 // 关键场景：点完立刻跳转。步骤若只存在页面内数组里，会随页面卸载一起消失。
 await Promise.all([page.waitForURL('**/next'), page.click('#go')]);

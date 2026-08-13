@@ -180,6 +180,10 @@ export const RECORDER = () => {
         ambiguous: !!sel.ambiguous, matches: sel.matches,
         label: txt(t).slice(0, 60), css: cssPath(t),
         url: location.pathname + location.hash,
+        // 元素在 iframe 里时，回放必须先 frameLocator 进去 —— 直接 page.getByX()
+        // 只搜主文档，一定找不到。登录表单放在 iframe 里是很常见的做法。
+        inFrame: window !== window.top,
+        framePath: window !== window.top ? location.pathname : undefined,
         ...extra,
       };
 
