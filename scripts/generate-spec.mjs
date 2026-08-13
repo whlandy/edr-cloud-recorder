@@ -31,6 +31,11 @@ export function generateSpec({ steps, net, startUrl, name }) {
     return `{\n${ks.map((k) => `${pad}  ${JSON.stringify(k)}: ${toMatcher(v[k], indent + 2)}`).join(',\n')}\n${pad}}`;
   }
   if (typeof v === 'string' && VOLATILE.test(v)) return 'expect.any(String)';
+  // 数字型的时间戳和雪花 ID 也要放宽。只处理字符串的话，像「最近 30 天」这种
+  // 默认查询条件会把录制那一刻的毫秒时间戳原样钉进断言 —— 下一次运行必然对不上，
+  // 而这恰恰是上面那段注释声称要防住的失效方式。
+  // 门槛取 1e9：10 位是秒级时间戳，13 位是毫秒级，业务上的页码、数量都远小于它。
+  if (typeof v === 'number' && Number.isInteger(v) && Math.abs(v) >= 1e9) return 'expect.any(Number)';
   return JSON.stringify(v);
 };
 

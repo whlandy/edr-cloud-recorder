@@ -163,6 +163,11 @@ expect(resp1.request().postDataJSON()).toMatchObject({
 `toMatchObject` 会因为这些值每次都变而立刻失效，但整条删掉又丢了「这个字段必须存在」
 的信息。保留结构、放宽易变值，字段在不在、类型对不对仍然被守住。
 
+**数字型的时间戳同样要放宽**，换成 `expect.any(Number)`。「最近 30 天」这类默认
+查询条件会把录制那一刻的毫秒时间戳带进请求体（实测 `endTime` 就是录制时的"现在"），
+只放宽字符串的话，这种断言下一次运行必然对不上。门槛取 1e9：10 位是秒级时间戳，
+13 位是毫秒级，业务上的页码、数量都远小于它。
+
 **GET 保持注释。** 一次点击可能连带十几个读请求，全断言只会让用例难读又易碎。
 
 ### 剩下的人工部分
@@ -425,13 +430,26 @@ SKILL.md 却没有对应断言，下一次重构就会悄悄把它改没。
 
 ## 素材
 
-`assets/` 里是可直接复制到目标项目的模板：
+`assets/` 里是可直接复制到目标项目的模板，**目录结构照搬**（`cp -r assets/* .`）：
 
-- `playwright.config.ts` —— 忽略自签证书、失败重试、串行执行、失败时留 trace/截图/录像
-- `auth.setup.ts` —— 登录一次并导出登录态（**含 sessionStorage**，Playwright 原生不管这块）
-- `fixtures.ts` —— `authedPage` fixture，把登录态在页面脚本执行前注回去
-- `manual-login.mjs` —— 站点要求验证码时的兜底：人工登录一次，导出登录态复用
-- `tsconfig.json` / `package.json`
+```
+playwright.config.ts     忽略自签证书、失败重试、串行执行、失败时留 trace/截图/录像
+tsconfig.json
+package.json
+manual-login.mjs         站点要求验证码时的兜底：人工登录一次，导出登录态复用
+tests/
+  auth.setup.ts          登录一次并导出登录态（含 sessionStorage，Playwright 原生不管这块）
+  fixtures.ts            authedPage fixture，把登录态在页面脚本执行前注回去
+  scrub-auth-artifacts.ts 跑完清掉含明文密码的失败现场
+```
+
+`tests/` 下那三个文件的位置是**配置写死的**：`globalTeardown` 指向 `./tests/scrub-auth-artifacts.ts`，
+`setup` 项目按 `auth.setup.ts` 匹配，`fixtures.ts` 按 `__dirname/../.auth` 找登录态。
+平铺到根目录的话，`npx playwright test` 连配置都加载不了。
+
+**录制草稿不用搬家也能跑。** `testDir` 是项目根，`testMatch` 同时收 `tests/**/*.spec.ts`
+和 `recordings/**/*.spec.ts` —— 只认 `tests/` 的话，刚录完的脚本 `npx playwright test`
+根本看不见它，而那正是录完之后第一件想做的事。
 
 **验证码不要绕。** 它存在的目的就是拦自动化登录，破解既不该做、也不可靠。
 正确做法是承认登录是低频操作：人过一次，之后复用会话，直到过期再来一次。

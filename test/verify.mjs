@@ -54,7 +54,11 @@ const bad = net.find((n) => n.phase === 'res' && n.status >= 400);
 chk('失败响应体被保留', bad?.body?.includes('subnetIdList'), bad?.body);
 
 const okReq = net.find((n) => n.phase === 'req' && n.url.includes('/api/ok'));
-chk('写请求的请求体被保留', okReq?.body === '{"a":1}', okReq?.body);
+// 原始记录里请求体必须**原样**保留：放宽是生成阶段的事，
+// 录制阶段就抹掉的话，重新生成时再想改放宽策略已经没有原料了
+chk('写请求的请求体被保留',
+  okReq?.body && JSON.parse(okReq.body).id === '39049753287328' && JSON.parse(okReq.body).a === 1,
+  okReq?.body);
 
 const okRes = net.find((n) => n.phase === 'res' && n.url.includes('/api/ok'));
 chk('写请求的响应体被保留', !!okRes?.body, okRes?.body);
@@ -71,6 +75,10 @@ const spec = generateSpec({ steps, net, startUrl: 'http://127.0.0.1/', name: 'ge
 
 chk('写请求生成状态码断言', /expect\(resp\d+\.status\(\)\)\.toBe\(200\);/.test(spec), spec.match(/expect\(resp\d+\.status\(\)\)\.toBe\(\d+\);/)?.[0]);
 chk('写请求生成请求体断言', spec.includes('postDataJSON()).toMatchObject('), spec.match(/"a": 1/) ? '含捕获到的字段' : '');
+// 易变值放宽，稳定值保留 —— 两边都要，否则断言不是每次必挂就是什么也没守住
+chk('字符串型雪花 ID 放宽', /"id": expect\.any\(String\)/.test(spec), spec.match(/"id": [^,\n]*/)?.[0]);
+chk('数字型时间戳放宽', /"endTime": expect\.any\(Number\)/.test(spec), spec.match(/"endTime": [^,\n]*/)?.[0]);
+chk('普通数字不受影响', /"pageSize": 100/.test(spec), spec.match(/"pageSize": [^,\n]*/)?.[0]);
 chk('响应变量名不重复', (() => {
   const names = [...spec.matchAll(/const \[(resp[\w]*)\]/g)].map((m) => m[1]);
   return names.length === new Set(names).size;
