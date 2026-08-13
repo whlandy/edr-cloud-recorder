@@ -126,6 +126,17 @@ await page.waitForTimeout(400);
 await page.click('#row_sp', { position: { x: 5, y: 5 } });
 await page.waitForTimeout(400);
 
+// 打字 + 回车：值在 change（失焦/回车之后）才记，按键当场就记，
+// 于是录出来会是「先回车后填值」—— 回放时等于在空框上回车
+await page.click('input[placeholder="请输入用户名"]');
+await page.fill('input[placeholder="请输入用户名"]', 'bob');
+await page.press('input[placeholder="请输入用户名"]', 'Enter');
+await page.waitForTimeout(300);
+
+// 点在页面空白处：会一路上溯到 html/body，回放时点了等于没点
+await page.mouse.click(2, 2);
+await page.waitForTimeout(300);
+
 // 同名 testid + 只有 data-cy 的元素
 await page.locator('[data-testid=text-comp-span]').first().click();
 await page.waitForTimeout(300);
