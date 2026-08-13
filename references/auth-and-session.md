@@ -122,8 +122,37 @@ Playwright 默认在失败时保留 trace、录像和截图。登录用例失败
 
 其他用例照常保留现场，它们不接触凭据。
 
+**关掉这三项还不够。** Playwright 另外会写一份 `error-context.md`，里面同样是失败时的
+页面快照，包含输入框里的明文密码，而且不受 trace/video/screenshot 开关控制。
+实测在关掉三项之后，密码依然进了这个文件。
+
+靠人记得清理迟早会漏，用 globalTeardown 做成机制（模板见 `assets/scrub-auth-artifacts.ts`）：
+
+```ts
+globalTeardown: './tests/scrub-auth-artifacts.ts',
+```
+
+它按目录名匹配 setup 项目的产物并整个删除；其他用例的现场保留，它们不碰凭据。
+验证方式是故意让登录失败一次，确认现场被清掉 —— 用不存在的用户名，
+别用错密码去撞真账号的锁定策略。
+
 如果已经发生了，`test-results/` 和 `playwright-report/` 整个删掉 —— trace.zip 里
 是完整的 DOM 快照，光删截图不够。
+
+## 登录后的状态轮询要容忍导航
+
+SSO 登录后页面会连续跳转。轮询里的 `page.evaluate` 一旦撞上导航就抛
+`Execution context was destroyed`，而 `expect.poll` **遇到异常是直接失败、不会重试** ——
+于是这一步变成靠运气：躲开导航窗口就过，撞上就挂。
+
+```ts
+await expect.poll(
+  () => page.evaluate(() => sessionStorage.getItem('userInfo') !== null).catch(() => false),
+  { timeout: 90_000, intervals: [500, 1000, 2000] },
+).toBe(true);
+```
+
+`.catch(() => false)` 把异常当作"还没就绪"，轮询才真正起作用。
 
 ## 登录框定位：不要用 .or() 组合
 

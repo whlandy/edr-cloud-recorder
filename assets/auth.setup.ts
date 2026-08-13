@@ -76,10 +76,17 @@ setup('登录并导出登录态', async ({ page, context }) => {
   // ── 改这里：换成可靠的登录成功判据 ──
   // 不要只判断 URL —— SSO 回调可能多跳几次，参数也不固定。
   // 判断应用侧的状态更准确。
+  // .catch(() => false) 不能省：SSO 登录后页面会连续跳转，轮询期间
+  // page.evaluate 撞上导航会抛 "Execution context was destroyed"，而
+  // expect.poll 遇到异常是直接失败、不会重试 —— 这一步就变成了靠运气。
+  // 把异常吞掉当作"还没就绪"，轮询才真正起作用。
   await expect
     .poll(
-      () => page.evaluate(() => sessionStorage.length > 0 || localStorage.getItem('token') !== null),
-      { timeout: 60_000, message: '登录后仍未检测到登录态，登录可能失败' },
+      () =>
+        page
+          .evaluate(() => sessionStorage.length > 0 || localStorage.getItem('token') !== null)
+          .catch(() => false),
+      { timeout: 60_000, intervals: [500, 1000, 2000], message: '登录后仍未检测到登录态，登录可能失败' },
     )
     .toBe(true);
 

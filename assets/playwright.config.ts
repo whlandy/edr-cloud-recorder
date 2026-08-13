@@ -40,6 +40,8 @@ function resolveChrome(): string | undefined {
 }
 
 export default defineConfig({
+  // 登录用例的失败现场含明文密码，跑完统一清除，见该文件注释
+  globalTeardown: './tests/scrub-auth-artifacts.ts',
   testDir: './tests',
   outputDir: './test-results',
   timeout: 120_000,

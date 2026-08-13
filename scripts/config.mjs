@@ -50,9 +50,10 @@ export function loadConfig(argv = process.argv) {
 
 /** 凭据：配置优先，回退环境变量。返回的对象不要打印。 */
 export function resolveAuth(cfg = {}) {
+  // 环境变量优先：配置文件是默认值，env 是临时覆盖
   return {
-    user: cfg.auth?.user || process.env.REC_USER || '',
-    password: cfg.auth?.password || process.env.REC_PASSWORD || '',
+    user: process.env.REC_USER || cfg.auth?.user || '',
+    password: process.env.REC_PASSWORD || cfg.auth?.password || '',
   };
 }
 
