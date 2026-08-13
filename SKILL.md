@@ -60,7 +60,14 @@ node <skill>/scripts/record.mjs --url https://app.example.com --name login-flow
 
 ### 配置文件
 
-重复输同样的参数很烦，可以在工作目录放一个 `config.json`（照抄 `config.example.json`）：
+重复输同样的参数很烦，可以放一个 `config.json`（照抄 `config.example.json`）。查找顺序：
+
+```
+--config 指定的路径
+./config.json                                  项目内覆盖
+~/.config/edr-cloud-recorder/config.json       用户级默认
+```
+
 
 ```json
 {
@@ -73,10 +80,10 @@ node <skill>/scripts/record.mjs --url https://app.example.com --name login-flow
 
 命令行参数优先级高于配置文件。
 
-**凭据放这里之前想清楚**：这个文件绝不能进版本库。加载器会在文件存了密码却权限过宽时
-提醒你 `chmod 600`，但挡不住 `git add -A`。更稳的做法是留空、走环境变量
-`REC_USER` / `REC_PASSWORD`。**尤其别把它放进公开仓库的目录里** —— 哪怕加了
-`.gitignore`，一次误操作就是永久公开。
+**存凭据请放用户级目录** `~/.config/edr-cloud-recorder/config.json`（`chmod 600`）。
+项目目录常常就是仓库目录，`.gitignore` 挡不住 `git add -A`；而 `~/.config` 根本不会被
+任何仓库看见。加载器在文件存了密码却权限过宽时会提醒。不想落盘就留空，走环境变量
+`REC_USER` / `REC_PASSWORD`。
 
 ## 生成的脚本已经做了什么
 

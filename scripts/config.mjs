@@ -1,25 +1,33 @@
 /**
  * 配置加载
  *
- * 查找顺序：--config 指定的路径 > cwd/config.json > 无配置。
+ * 查找顺序：
+ *   1. --config 指定的路径
+ *   2. ./config.json（项目内覆盖，便于一个工作区一套参数）
+ *   3. ~/.config/edr-cloud-recorder/config.json（用户级默认，遵循 XDG）
  *
- * 关于凭据：config.json 里可以填 auth.user / auth.password，但**这个文件绝不能进版本库**。
- * 加载器会在文件权限过宽（组或其他用户可读）时提醒，因为这类文件被顺手 commit 或
- * 被同机其他账号读到是最常见的泄露方式。
- * 不想落盘就留空，回退到环境变量 REC_USER / REC_PASSWORD。
+ * 凭据默认放在用户级目录而不是项目目录，因为项目目录常常就是仓库目录 ——
+ * .gitignore 挡不住 git add -A，而放在 ~/.config 下根本不会被任何仓库看见。
+ * 也可以留空，回退到环境变量 REC_USER / REC_PASSWORD。
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+
+export const USER_CONFIG = path.join(
+  process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+  'edr-cloud-recorder',
+  'config.json',
+);
 
 export function loadConfig(argv = process.argv) {
   const i = argv.indexOf('--config');
   const explicit = i >= 0 && argv[i + 1] ? path.resolve(argv[i + 1]) : null;
-  const candidate = explicit ?? path.resolve('config.json');
-
-  if (!fs.existsSync(candidate)) {
-    if (explicit) throw new Error(`--config 指定的文件不存在：${explicit}`);
-    return { _path: null };
+  if (explicit && !fs.existsSync(explicit)) {
+    throw new Error(`--config 指定的文件不存在：${explicit}`);
   }
+  const candidate = explicit ?? [path.resolve('config.json'), USER_CONFIG].find((p) => fs.existsSync(p));
+  if (!candidate) return { _path: null };
 
   let cfg;
   try {
