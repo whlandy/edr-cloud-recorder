@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveChrome } from './chrome-path.mjs';
 import { RECORDER } from './recorder-inject.mjs';
 import { generateSpec } from './generate-spec.mjs';
+import { loadConfig, withDefaults } from './config.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,7 +40,11 @@ const argOf = (k, d) => {
 };
 const hasFlag = (k) => args.includes(k);
 
-const START_URL = argOf('--url', process.env.REC_URL);
+// 配置文件提供默认值，命令行参数优先。凭据不在这里读 —— 录制器本身不需要，
+// 登录由使用者在浏览器里手动完成（或由 auth.setup 处理）。
+const cfg = loadConfig();
+const opts = withDefaults(cfg, args);
+const START_URL = opts.url;
 if (!START_URL || hasFlag('--help') || hasFlag('-h')) {
   console.error(`用法: node record.mjs --url <起始页> [选项]
 
@@ -48,6 +53,7 @@ if (!START_URL || hasFlag('--help') || hasFlag('-h')) {
   --name <名字>       输出文件名，默认按时间戳生成
   --api <路径片段>     只记录 URL 含该片段的请求，默认记录全部 XHR/fetch
   --out <目录>        输出目录，默认 ./recordings
+  --config <文件>     配置文件路径，默认读当前目录的 config.json
 
 环境变量:
   REC_CHROME_BIN     指定浏览器可执行文件（默认自动探测）
@@ -97,17 +103,17 @@ if (!pw) {
 }
 const { chromium } = pw;
 
-const OUT_DIR = path.resolve(argOf('--out', 'recordings'));
+const OUT_DIR = path.resolve(opts.outDir);
 const STATE_DIR = path.resolve(process.env.REC_STATE_DIR ?? '.auth');
 const NAME = argOf('--name', `session-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`);
-const API_FILTER = argOf('--api', null);
+const API_FILTER = opts.apiFilter;
 const ORIGIN = new URL(START_URL).origin;
 
 /* ---------- 启动 ---------- */
 const net = [];
 const allSteps = [];
 
-const chromeBin = resolveChrome();
+const chromeBin = opts.chromeBin || resolveChrome();
 if (chromeBin) console.log(`浏览器: ${chromeBin.replace(process.env.HOME ?? '', '~')}`);
 
 const browser = await chromium.launch({

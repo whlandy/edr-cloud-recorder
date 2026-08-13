@@ -56,7 +56,27 @@ node <skill>/scripts/record.mjs --url https://app.example.com --name login-flow
 | `<name>.json` | 原始记录：步骤 + 网络事件，都带毫秒时间戳 |
 | `<name>.spec.ts` | 可跑的脚本草稿，接口调用作为注释挂在对应步骤下 |
 
-常用参数：`--api /api/`（只记录含该片段的请求）、`--out <目录>`、`REC_CHROME_BIN`（指定浏览器）。
+常用参数：`--api /api/`（只记录含该片段的请求）、`--out <目录>`、`--config <文件>`。
+
+### 配置文件
+
+重复输同样的参数很烦，可以在工作目录放一个 `config.json`（照抄 `config.example.json`）：
+
+```json
+{
+  "baseUrl": "https://app.example.com",
+  "entryPath": "/index.html#/home",
+  "auth": { "user": "alice", "password": "" },
+  "record": { "apiFilter": "/api/", "outDir": "recordings" }
+}
+```
+
+命令行参数优先级高于配置文件。
+
+**凭据放这里之前想清楚**：这个文件绝不能进版本库。加载器会在文件存了密码却权限过宽时
+提醒你 `chmod 600`，但挡不住 `git add -A`。更稳的做法是留空、走环境变量
+`REC_USER` / `REC_PASSWORD`。**尤其别把它放进公开仓库的目录里** —— 哪怕加了
+`.gitignore`，一次误操作就是永久公开。
 
 ## 生成的脚本已经做了什么
 
