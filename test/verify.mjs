@@ -93,6 +93,29 @@ chk('生成状态感知的拨动而非盲点',
   /getAttribute\('aria-checked'\)/.test(spec) && /toHaveAttribute\('aria-checked'/.test(spec),
   spec.match(/if \(\(await sw[^\n]*/)?.[0]?.slice(0, 70));
 
+// 整行可点时，开关是点击目标的后代而不是祖先。只向上找会漏掉，
+// 退化成盲点击 —— 回放时朝反方向拨，脚本不报错但把开关设错了。
+const rowSw = steps.find((s) => s.type === 'switch' && s.label === '行内自保护');
+chk('后代开关也能被识别（整行可点的情形）', !!rowSw, rowSw?.sel);
+chk('记录了状态是靠 class 表达的', rowSw?.via?.type === 'class' && rowSw.via.token === 'toggled',
+  `${rowSw?.via?.type}:${rowSw?.via?.token}`);
+chk('记录了状态在内层哪一级', rowSw?.via?.within === '.eui_toggle_container', rowSw?.via?.within);
+chk('class 型开关生成 classList 读法而非 aria-checked',
+  /classList\.contains\("toggled"\)/.test(spec) && /expect\.poll\(isOn\)/.test(spec),
+  spec.match(/const isOn[^\n]*/)?.[0]);
+chk('点外层、读内层',
+  /const state = sw\.locator\("\.eui_toggle_container"\)/.test(spec) &&
+  /const isOn = \(\) => state\.evaluate/.test(spec) && /await sw\.click\(\)/.test(spec),
+  spec.match(/const state = sw[^\n]*/)?.[0]);
+
+// testid 本该最稳，但组件框架常批量吐出同一个值。不验唯一性就会生成
+// 命中几百个元素的 getByTestId，回放必然 strict mode 失败。
+const dupTid = steps.find((s) => s.label?.includes('重复标记甲'));
+chk('不唯一的 testid 不被采用', dupTid && !dupTid.sel.includes('getByTestId'), dupTid?.sel);
+const cyStep = steps.find((s) => s.label?.includes('仅有 data-cy'));
+chk('data-cy 生成属性选择器而非 getByTestId',
+  cyStep?.sel.includes('[data-cy=') && !cyStep.sel.includes('getByTestId'), cyStep?.sel);
+
 // 浮层里的选项与触发器同名（两处都叫 Windows系统），必须靠浮层作用域区分。
 // 注意按 css 找选项那一步 —— 只按 label 找会先命中触发器。
 const optStep = steps.find((s) => s.type === 'click' && (s.css || '').includes('#pop'));
