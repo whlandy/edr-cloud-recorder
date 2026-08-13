@@ -85,6 +85,44 @@ node <skill>/scripts/record.mjs --url https://app.example.com --name login-flow
 任何仓库看见。加载器在文件存了密码却权限过宽时会提醒。不想落盘就留空，走环境变量
 `REC_USER` / `REC_PASSWORD`。
 
+## 录制时加断言：右键元素
+
+录制器只会记录你**做了什么**，不会自己判断**应该是什么**。断言得由人给出 ——
+右键任意元素，弹出：
+
+```
+断言类型：[文本等于 ▼]
+Expected：[已完成        ]
+          ☐ 允许空值   取消   添加断言
+```
+
+- `Expected` 默认填入元素当前值，**可以改**。保存的是你确认过的那个值，不是运行时读到的值 ——
+  这是断言有意义的前提，否则就成了同义反复。
+- 留空时「添加断言」是禁用的。空字符串是合法断言（比如断言输入框被清空），
+  但必须勾「允许空值」明确表态，不能默默通过。
+- `可见性` / `勾选状态` 的 expected 是布尔，用下拉选 true/false。
+
+支持五种：
+
+| 类型 | expected | 生成 |
+|---|---|---|
+| 文本等于 | 字符串 | `toHaveText(expected)` |
+| 输入值等于 | 字符串 | `toHaveValue(expected)` |
+| 可见性 | 布尔 | `toBeVisible()` / `toBeHidden()` |
+| 勾选状态 | 布尔 | `toBeChecked()` / `not.toBeChecked()` |
+| 属性等于 | 字符串 + 属性名 | `toHaveAttribute(attr, expected)` |
+
+**所有断言都带 `expected`**，`visible: false` 和 `checked: false` 用值表达，
+不靠断言名隐含预期。这样"不可见""未选中"也能准确表达：
+
+```json
+{ "type": "assert", "assertion": "text",
+  "sel": "getByTestId(\"order-status\")", "expected": "已完成" }
+```
+
+菜单渲染在 Shadow DOM 里（页面 CSS 五花八门，不隔离会被改得没法用），
+它自身的点击也不会被当成被录的操作。按 Esc 或点别处关闭。
+
 ## 生成的脚本已经做了什么
 
 两件最费手工的事是自动完成的。
