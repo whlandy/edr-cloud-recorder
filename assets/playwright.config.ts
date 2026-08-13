@@ -43,11 +43,17 @@ export default defineConfig({
   // 登录用例的失败现场含明文密码，跑完统一清除，见该文件注释
   globalTeardown: './tests/scrub-auth-artifacts.ts',
 
-  // 录制草稿落在 recordings/，整理后的用例放 tests/ —— 两处都得能跑。
-  // 只认 tests/ 的话，刚录完的脚本 `npx playwright test` 根本看不见，
-  // 而那正是录完之后第一件想做的事。
+  // 默认只收 tests/ 里整理过的用例。录制草稿要跑得显式打开：
+  //   REC_DRAFTS=1 npx playwright test recordings/xxx.spec.ts
+  //
+  // 草稿不进默认收集，是因为它按定义就是半成品：可能引用还没写的 helper
+  // （一个文件解析失败会让整次收集归零），更要紧的是里面常有未经审阅的真实
+  // 写操作和明文密码登录 —— 不该被一句 `npx playwright test` 顺带跑掉。
+  // 但也不能让它压根跑不了，那样录完第一件想做的事就卡住了。
   testDir: '.',
-  testMatch: ['tests/**/*.spec.ts', 'recordings/**/*.spec.ts'],
+  testMatch: process.env.REC_DRAFTS
+    ? ['tests/**/*.spec.ts', 'recordings/**/*.spec.ts']
+    : ['tests/**/*.spec.ts'],
   outputDir: './test-results',
   timeout: 120_000,
   expect: { timeout: 15_000 },

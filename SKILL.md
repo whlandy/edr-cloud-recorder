@@ -447,9 +447,22 @@ tests/
 `setup` 项目按 `auth.setup.ts` 匹配，`fixtures.ts` 按 `__dirname/../.auth` 找登录态。
 平铺到根目录的话，`npx playwright test` 连配置都加载不了。
 
-**录制草稿不用搬家也能跑。** `testDir` 是项目根，`testMatch` 同时收 `tests/**/*.spec.ts`
-和 `recordings/**/*.spec.ts` —— 只认 `tests/` 的话，刚录完的脚本 `npx playwright test`
-根本看不见它，而那正是录完之后第一件想做的事。
+**录制草稿要跑，得显式打开：**
+
+```bash
+REC_DRAFTS=1 npx playwright test recordings/xxx.spec.ts
+```
+
+默认的 `npx playwright test` 只收 `tests/` 里整理过的用例。草稿不进默认收集有两个原因，
+第二个更要紧：
+
+- 草稿按定义是半成品，可能引用还没写的 helper。**一个文件解析失败会让整次收集归零** ——
+  实测过一份引用了不存在的 `./fixtures` 的草稿，把整个工程的用例列表打成 0。
+- 草稿里常有**未经审阅的真实写操作**和明文密码登录。它不该被一句 `npx playwright test`
+  顺带跑掉 —— 尤其是在你以为自己只是在跑回归测试的时候。
+
+但也不能让它压根跑不了：`testDir` 只写 `./tests` 的话，`recordings/` 里的草稿连显式指定
+文件名都跑不了（Playwright 不收 testDir 之外的文件），而那正是录完之后第一件想做的事。
 
 **验证码不要绕。** 它存在的目的就是拦自动化登录，破解既不该做、也不可靠。
 正确做法是承认登录是低频操作：人过一次，之后复用会话，直到过期再来一次。
