@@ -167,9 +167,6 @@ export const RECORDER = () => {
     return e;
   };
 
-  let seq = 0;
-  const tag = Math.random().toString(36).slice(2, 8);
-
   const push = (type, el, extra) => {
     try {
       const t = meaningful(el);
@@ -203,7 +200,142 @@ export const RECORDER = () => {
     } catch { /* 录制出错绝不能影响用户操作 */ }
   };
 
+  let seq = 0;
+  const tag = Math.random().toString(36).slice(2, 8);
+
+  /* ────────── 断言菜单 ────────── */
+
+  const MENU_ID = '__rec_assert_menu__';
+
+  // 断言类型 → 该类型的 expected 怎么取默认值、用什么控件编辑
+  const ASSERTIONS = {
+    text:      { label: '文本等于',   kind: 'string', of: (e) => txt(e) },
+    value:     { label: '输入值等于', kind: 'string', of: (e) => String(e.value ?? '') },
+    visible:   { label: '可见性',     kind: 'bool',   of: () => true },
+    checked:   { label: '勾选状态',   kind: 'bool',   of: (e) => !!e.checked },
+    attribute: { label: '属性等于',   kind: 'attr',   of: () => '' },
+  };
+
+  const closeMenu = () => document.getElementById(MENU_ID)?.remove();
+
+  const openMenu = (el, x, y) => {
+    closeMenu();
+    const host = document.createElement('div');
+    host.id = MENU_ID;
+    Object.assign(host.style, {
+      position: 'fixed', left: `${x}px`, top: `${y}px`, zIndex: 2147483647,
+    });
+    // Shadow DOM 隔离：页面自己的 CSS 五花八门，不隔离的话菜单会被改得没法用
+    const sh = host.attachShadow({ mode: 'open' });
+    sh.innerHTML = `
+      <style>
+        :host { all: initial; }
+        .box { font: 13px/1.5 system-ui, sans-serif; background:#fff; color:#222;
+               border:1px solid #bbb; border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,.18);
+               padding:10px; min-width:260px; }
+        .row { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+        label { flex:0 0 68px; color:#555; }
+        select, input[type=text] { flex:1; padding:3px 5px; border:1px solid #ccc;
+                                   border-radius:3px; font:inherit; min-width:0; }
+        .hint { color:#a00; font-size:12px; min-height:16px; margin-bottom:4px; }
+        .acts { display:flex; justify-content:flex-end; gap:8px; }
+        button { font:inherit; padding:3px 12px; border-radius:4px; border:1px solid #bbb;
+                 background:#f6f6f6; cursor:pointer; }
+        button.primary { background:#1a73e8; color:#fff; border-color:#1a73e8; }
+        button[disabled] { opacity:.45; cursor:not-allowed; }
+        .empty { display:flex; align-items:center; gap:4px; font-size:12px; color:#666; }
+      </style>
+      <div class="box">
+        <div class="row"><label>断言类型</label>
+          <select id="t">${Object.entries(ASSERTIONS)
+            .map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></div>
+        <div class="row" id="attrRow" style="display:none"><label>属性名</label>
+          <input type="text" id="attr" placeholder="如 href、data-state"></div>
+        <div class="row"><label>Expected</label>
+          <select id="eb" style="display:none">
+            <option value="true">true</option><option value="false">false</option>
+          </select>
+          <input type="text" id="es"></div>
+        <div class="hint" id="hint"></div>
+        <div class="acts">
+          <span class="empty"><input type="checkbox" id="allowEmpty"><label for="allowEmpty"
+            style="flex:none;cursor:pointer">允许空值</label></span>
+          <button id="cancel">取消</button>
+          <button id="ok" class="primary">添加断言</button>
+        </div>
+      </div>`;
+    document.documentElement.appendChild(host);
+
+    const $ = (id) => sh.getElementById(id);
+    const sync = () => {
+      const a = ASSERTIONS[$('t').value];
+      $('attrRow').style.display = a.kind === 'attr' ? 'flex' : 'none';
+      $('eb').style.display = a.kind === 'bool' ? 'block' : 'none';
+      $('es').style.display = a.kind === 'bool' ? 'none' : 'block';
+      if (a.kind === 'bool') $('eb').value = String(a.of(el));
+      else $('es').value = String(a.of(el) ?? '');
+      validate();
+    };
+    const validate = () => {
+      const a = ASSERTIONS[$('t').value];
+      let bad = '';
+      if (a.kind === 'attr' && !$('attr').value.trim()) bad = '请填写属性名';
+      // expected 不能默默为空：空字符串是合法断言，但必须是明确的选择
+      else if (a.kind !== 'bool' && !$('es').value && !$('allowEmpty').checked)
+        bad = 'Expected 为空。确实要断言空字符串就勾「允许空值」';
+      $('hint').textContent = bad;
+      $('ok').disabled = !!bad;
+    };
+    sh.addEventListener('input', validate);
+    $('t').addEventListener('change', sync);
+    $('cancel').addEventListener('click', closeMenu);
+    $('ok').addEventListener('click', () => {
+      const type = $('t').value;
+      const a = ASSERTIONS[type];
+      const expected = a.kind === 'bool' ? $('eb').value === 'true' : $('es').value;
+      pushAssert(el, type, expected, a.kind === 'attr' ? $('attr').value.trim() : undefined);
+      closeMenu();
+    });
+    sync();
+  };
+
+  const pushAssert = (el, assertion, expected, attribute) => {
+    try {
+      const t = meaningful(el);
+      const sel = selectorFor(t);
+      const step = {
+        id: `${tag}-${++seq}`, t: Date.now(),
+        type: 'assert', assertion, expected, sel: sel.code, kind: sel.kind,
+        ambiguous: !!sel.ambiguous, matches: sel.matches,
+        label: txt(t).slice(0, 60), css: cssPath(t),
+        url: location.pathname + location.hash,
+        inFrame: window !== window.top,
+        framePath: window !== window.top ? location.pathname : undefined,
+      };
+      if (attribute) step.attribute = attribute;
+      steps.push(step);
+      if (typeof window.__recPush === 'function') {
+        try { window.__recPush(step); } catch { /* 页面正在卸载 */ }
+      }
+    } catch { /* 录制出错不能影响用户操作 */ }
+  };
+
+  // 右键打开断言菜单。菜单自身的交互不能被当成被录的操作，
+  // 所以下面所有监听都先检查事件是否来自菜单内部（composedPath 才能穿透 Shadow DOM）。
+  const fromMenu = (e) => e.composedPath?.().some((n) => n?.id === MENU_ID);
+
+  document.addEventListener('contextmenu', (e) => {
+    if (fromMenu(e)) return;
+    e.preventDefault();
+    openMenu(e.target, e.clientX, e.clientY);
+  }, true);
+
+  document.addEventListener('mousedown', (e) => {
+    if (!fromMenu(e)) closeMenu();
+  }, true);
+
   document.addEventListener('click', (e) => {
+    if (fromMenu(e)) return;
     // 复选框和单选框的 click 会紧跟一个 change，两个都记就会生成
     // 「先 click 再 check」这种连续操作同一元素的冗余步骤。
     // change 携带了勾选状态，信息更完整，所以 click 这边跳过它们。
@@ -214,6 +346,7 @@ export const RECORDER = () => {
     push('click', el);
   }, true);
   document.addEventListener('change', (e) => {
+    if (fromMenu(e)) return;
     const el = e.target;
     if (el.type === 'checkbox' || el.type === 'radio') {
       push(el.checked ? 'check' : 'uncheck', el);
@@ -226,6 +359,8 @@ export const RECORDER = () => {
     }
   }, true);
   document.addEventListener('keydown', (e) => {
+    if (fromMenu(e)) return;
+    if (e.key === 'Escape') { closeMenu(); return; }
     if (e.key === 'Enter') push('press', e.target, { key: 'Enter' });
   }, true);
 

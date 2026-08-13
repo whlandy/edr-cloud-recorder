@@ -103,6 +103,38 @@ steps.forEach((s, i) => {
 
   // CSS 兜底选择器基本都是关闭弹窗/提示这类「有就点、没有就跳过」的动作。
   // 生成成必经步骤会让脚本在弹窗不出现时直接失败。
+  // iframe 里的元素必须先进 frame。用 src 片段定位 iframe：比 nth 稳，
+  // 也比整条 src 宽容（src 常带随机 query）。
+  const root = s.inFrame && s.framePath
+    ? `page.frameLocator(${JSON.stringify(`iframe[src*="${s.framePath.split('/').pop()}"]`)})`
+    : 'page';
+
+  // ── 断言步骤 ──
+  // expected 一律从录制数据里取，不在生成时重新推导：
+  // 断言的意义就在于"当时人确认过的那个值"，生成器擅自改写等于把断言变成同义反复。
+  if (s.type === 'assert') {
+    const loc = `${root}.${s.sel}`;
+    if (s.assertion === 'text') {
+      lines.push(`  await expect(${loc}).toHaveText(${JSON.stringify(s.expected)});${warn}`);
+    } else if (s.assertion === 'value') {
+      lines.push(`  await expect(${loc}).toHaveValue(${JSON.stringify(s.expected)});${warn}`);
+    } else if (s.assertion === 'visible') {
+      lines.push(s.expected
+        ? `  await expect(${loc}).toBeVisible();${warn}`
+        : `  await expect(${loc}).toBeHidden();${warn}`);
+    } else if (s.assertion === 'checked') {
+      lines.push(s.expected
+        ? `  await expect(${loc}).toBeChecked();${warn}`
+        : `  await expect(${loc}).not.toBeChecked();${warn}`);
+    } else if (s.assertion === 'attribute') {
+      lines.push(`  await expect(${loc}).toHaveAttribute(${JSON.stringify(s.attribute)}, ${JSON.stringify(s.expected)});${warn}`);
+    } else {
+      lines.push(`  // ⚠ 未知断言类型 ${JSON.stringify(s.assertion)}，已跳过`);
+    }
+    for (const c of calls) lines.push(`  //   ↳ ${c.method} ${strip(c.url)} -> ${c.status}`);
+    return;
+  }
+
   // CSS 兜底基本都是关弹窗/提示条这类「有就点、没有就跳过」的动作。
   // 生成成必经步骤会让脚本在弹窗不出现时直接失败。
   if (s.kind === 'css' && s.type === 'click') {
@@ -114,12 +146,6 @@ steps.forEach((s, i) => {
     for (const c of calls) lines.push(`  //   ↳ ${c.method} ${strip(c.url)} -> ${c.status}`);
     return;
   }
-
-  // iframe 里的元素必须先进 frame。用 src 片段定位 iframe：比 nth 稳，
-  // 也比整条 src 宽容（src 常带随机 query）。
-  const root = s.inFrame && s.framePath
-    ? `page.frameLocator(${JSON.stringify(`iframe[src*="${s.framePath.split('/').pop()}"]`)})`
-    : 'page';
 
   const action =
     s.type === 'click' ? `await ${root}.${s.sel}.click()`

@@ -78,7 +78,50 @@ await Promise.all([page.waitForURL('**/next'), page.click('#go')]);
 await page.click('[data-testid=after-nav]');
 await page.waitForTimeout(300);
 
+// ── 断言菜单：右键 → 改 expected → 提交 ──
+await page.goto(base);                      // 回首页，元素齐全
+await page.waitForTimeout(500);
+
+const menu = () => page.locator('#__rec_assert_menu__');
+const sh = (sel) => menu().locator(sel);
+
+// 1) 文本断言，用户把默认值改掉
+await page.locator('[data-testid=save-btn]').click({ button: 'right' });
+await page.waitForTimeout(300);
+await sh('#es').fill('用户确认过的值');
+await sh('#ok').click();
+await page.waitForTimeout(300);
+
+// 2) 空 expected 必须被挡住，勾了「允许空值」才能提交
+await page.locator('[data-testid=save-btn]').click({ button: 'right' });
+await page.waitForTimeout(300);
+await sh('#es').fill('');
+await page.waitForTimeout(200);
+const blocked = await sh('#ok').isDisabled();
+await sh('#allowEmpty').check();
+await page.waitForTimeout(200);
+const unblocked = !(await sh('#ok').isDisabled());
+await sh('#cancel').click();
+
+// 3) 勾选状态断言：expected 用布尔
+await page.locator('#agree').click({ button: 'right' });
+await page.waitForTimeout(300);
+await sh('#t').selectOption('checked');
+await page.waitForTimeout(200);
+await sh('#ok').click();
+await page.waitForTimeout(300);
+
+// 4) 可见性断言，显式选 false
+await page.locator('[data-testid=save-btn]').click({ button: 'right' });
+await page.waitForTimeout(300);
+await sh('#t').selectOption('visible');
+await page.waitForTimeout(200);
+await sh('#eb').selectOption('false');
+await sh('#ok').click();
+await page.waitForTimeout(300);
+
 for (const st of await page.evaluate(() => (window.__rec ? window.__rec.drain() : []))) accept(st);
 steps.sort((a,b) => a.t - b.t);
+globalThis.__emptyGuard = { blocked, unblocked };
 await browser.close(); srv.close();
-console.log(JSON.stringify({steps, net}, null, 1));
+console.log(JSON.stringify({steps, net, emptyGuard: globalThis.__emptyGuard}, null, 1));

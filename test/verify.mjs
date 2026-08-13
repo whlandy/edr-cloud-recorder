@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const raw = execFileSync('node', [path.join(dir, 'fixture-drive.mjs')], { encoding: 'utf-8', maxBuffer: 32 * 1024 * 1024 });
-const { steps, net } = JSON.parse(raw);
+const { steps, net, emptyGuard } = JSON.parse(raw);
 
 const find = (p) => steps.find(p);
 const checks = [];
@@ -83,6 +83,29 @@ chk('撞车文本自动加作用域（不再是 .first()）', dele && dele.kind 
 const frameStep = find((s) => s.value === 'frame-user');
 chk('iframe 内的操作被标记归属', frameStep?.inFrame === true, `framePath=${frameStep?.framePath}`);
 chk('生成 frameLocator 而非直接 page', spec.includes('frameLocator('), spec.match(/page\.frameLocator\([^)]*\)/)?.[0]);
+
+// ── 断言菜单 ──
+const asserts = steps.filter((s) => s.type === 'assert');
+chk('右键能添加断言', asserts.length === 3, `${asserts.length} 条`);
+
+const textA = asserts.find((s) => s.assertion === 'text');
+chk('expected 保存的是用户改过的值，不是元素当前值',
+  textA?.expected === '用户确认过的值', JSON.stringify(textA?.expected));
+
+chk('expected 为空时提交被禁用', emptyGuard?.blocked === true, `disabled=${emptyGuard?.blocked}`);
+chk('勾选「允许空值」后可提交', emptyGuard?.unblocked === true, `enabled=${emptyGuard?.unblocked}`);
+
+const checkedA = asserts.find((s) => s.assertion === 'checked');
+chk('checked 断言用布尔 expected', typeof checkedA?.expected === 'boolean', String(checkedA?.expected));
+
+const visA = asserts.find((s) => s.assertion === 'visible');
+chk('visible 可以显式断言 false', visA?.expected === false, String(visA?.expected));
+
+chk('生成 toHaveText 且带 expected',
+  spec.includes('toHaveText("用户确认过的值")'), spec.match(/toHaveText\([^)]*\)/)?.[0]);
+chk('visible=false 生成 toBeHidden', spec.includes('toBeHidden()'), spec.match(/toBe(Visible|Hidden)\(\)/)?.[0]);
+chk('checked=false 生成 not.toBeChecked',
+  /not\.toBeChecked\(\)|toBeChecked\(\)/.test(spec), spec.match(/(not\.)?toBeChecked\(\)/)?.[0]);
 
 let passed = 0;
 console.log(`\n  ${'检查项'.padEnd(34)}结果`);
