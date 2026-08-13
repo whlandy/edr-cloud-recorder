@@ -1,5 +1,6 @@
 import { test as setup, expect } from '@playwright/test';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -30,16 +31,48 @@ const COOKIES_EXPORT = path.join(AUTH_DIR, 'cookies.json');
 // 改成应用的入口地址
 const ENTRY_URL = process.env.REC_ENTRY_PATH ?? '/';
 
+/**
+ * 凭据来源，与 record.mjs 保持同一套查找顺序：
+ *   环境变量 > ./config.json（项目内覆盖） > ~/.config/edr-cloud-recorder/config.json
+ *
+ * 两边必须一致，否则会出现「录制能登进去、回放却报缺凭据」这种莫名其妙的差异。
+ *
+ * 配置文件推荐放用户级目录而不是项目目录：项目目录常常就是仓库目录 ——
+ * .gitignore 挡不住 git add -A，而 ~/.config 根本不会被任何仓库看见。
+ *
+ * 环境变量优先级最高：配置文件是默认值，env 是临时覆盖。反过来的话，
+ * 想换个账号跑一次就得改配置文件，改完还容易忘记还原。
+ */
+function resolveAuth(): { user: string; password: string } {
+  let cfg: any = {};
+  const candidates = [
+    path.join(__dirname, '..', 'config.json'),
+    path.join(
+      process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+      'edr-cloud-recorder',
+      'config.json',
+    ),
+  ];
+  for (const p of candidates) {
+    if (!fs.existsSync(p)) continue;
+    try { cfg = JSON.parse(fs.readFileSync(p, 'utf-8')); break; } catch { /* 换下一个 */ }
+  }
+  return {
+    user: process.env.REC_USER || cfg.auth?.user || '',
+    password: process.env.REC_PASSWORD || cfg.auth?.password || '',
+  };
+}
+
 setup('登录并导出登录态', async ({ page, context }) => {
-  const user = process.env.REC_USER;
-  const pass = process.env.REC_PASSWORD;
+  const { user, password: pass } = resolveAuth();
 
   if (!user || !pass) {
     throw new Error(
-      '缺少凭据。请先设置环境变量：\n' +
-        '  export REC_USER=...\n' +
-        '  export REC_PASSWORD=...\n' +
-        '凭据只从环境变量读取，不写进代码库。',
+      '缺少凭据。按以下任一方式提供（优先级从高到低）：\n' +
+        '  1. export REC_USER=... REC_PASSWORD=...\n' +
+        '  2. ./config.json 里的 auth.user / auth.password\n' +
+        '  3. ~/.config/edr-cloud-recorder/config.json（推荐，chmod 600）\n' +
+        '与 record.mjs 用的是同一套查找顺序。',
     );
   }
 
