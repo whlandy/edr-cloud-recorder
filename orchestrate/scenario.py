@@ -1,0 +1,114 @@
+"""
+云端 + 端侧交替编排
+
+核心难点不是"怎么调两边"，而是**两边之间的时间差**：
+
+  云端接口返回 200 只代表服务端记下了配置。终端上的 Agent 要等下一次心跳才拉到
+  新策略，中间几秒到几分钟不等。而云侧接口**未必暴露这个进度** —— 实测过一个产品，
+  一次真实下发前后，策略详情和资产树里的 enableStatus 都纹丝不动，
+  根本没有可用的云侧收敛信号。
+
+  所以"等生效"只能**朝端侧轮询**：反复读终端上的界面或日志，直到它反映出新配置。
+  用固定 sleep 是错的：短了必然偶发失败，长了每个场景白等几分钟。
+
+这个模块提供三种步骤和一个执行器，把上面这条约束固化下来，
+让写场景的人不必每次重新想一遍。
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Callable
+
+try:
+    from .endpoint import EndpointError
+except ImportError:                 # 允许被当作脚本直接 import
+    from endpoint import EndpointError
+
+
+@dataclass
+class StepResult:
+    name: str
+    side: str            # cloud | endpoint | sync
+    ok: bool
+    seconds: float
+    detail: str = ""
+
+
+@dataclass
+class Scenario:
+    """一串交替的步骤。执行到第一个失败就停，并把已完成的步骤报出来。"""
+
+    name: str
+    steps: list[tuple[str, str, Callable]] = field(default_factory=list)
+    results: list[StepResult] = field(default_factory=list)
+
+    # ---------- 声明 ----------
+
+    def cloud(self, name: str, fn: Callable) -> "Scenario":
+        self.steps.append((name, "cloud", fn))
+        return self
+
+    def endpoint(self, name: str, fn: Callable) -> "Scenario":
+        self.steps.append((name, "endpoint", fn))
+        return self
+
+    def until(self, name: str, probe: Callable[[], bool],
+              timeout: float = 300.0, interval: float = 10.0) -> "Scenario":
+        """
+        轮询直到 probe() 为真 —— 这是云端到端侧那段时间差的唯一正确等法。
+
+        interval 按被观测对象的更新节奏选：策略下发这类心跳驱动的用 10s 起步，
+        立即生效的操作用 5s 就够。1s 一次通常只是徒增负载。
+        """
+        def _wait():
+            deadline = time.time() + timeout
+            n = 0
+            while time.time() < deadline:
+                n += 1
+                if probe():
+                    return f"第 {n} 次探测命中"
+                time.sleep(interval)
+            raise TimeoutError(f"{timeout:.0f}s 内未等到（探测 {n} 次）")
+
+        self.steps.append((name, "sync", _wait))
+        return self
+
+    # ---------- 执行 ----------
+
+    def run(self, stop_on_fail: bool = True) -> bool:
+        print(f"\n=== {self.name} ===")
+        all_ok = True
+        for label, side, fn in self.steps:
+            tag = {"cloud": "云", "endpoint": "端", "sync": "等"}[side]
+            t0 = time.time()
+            try:
+                detail = fn()
+                r = StepResult(label, side, True, time.time() - t0, str(detail or ""))
+                print(f"  [{tag}] {label:<34} ✅ {r.seconds:5.1f}s  {r.detail[:60]}")
+            except Exception as e:
+                r = StepResult(label, side, False, time.time() - t0, f"{type(e).__name__}: {e}")
+                print(f"  [{tag}] {label:<34} ❌ {r.seconds:5.1f}s  {r.detail[:100]}")
+                # 把"哪一边坏了"直接说出来，省掉一轮猜测
+                if isinstance(e, EndpointError):
+                    print("       ↑ 端侧失败：先确认目标机器上的 MCP 服务和被测程序都在")
+                all_ok = False
+            self.results.append(r)
+            if not r.ok and stop_on_fail:
+                print(f"  —— 在第 {len(self.results)} 步中断，后面 "
+                      f"{len(self.steps) - len(self.results)} 步未执行")
+                break
+        self._summary()
+        return all_ok
+
+    def _summary(self) -> None:
+        ok = sum(1 for r in self.results if r.ok)
+        secs = sum(r.seconds for r in self.results)
+        print(f"  —— {ok}/{len(self.results)} 步通过，用时 {secs:.1f}s")
+        # 点出最慢的一步：交替场景里它几乎总是那个"等生效"，
+        # 是判断轮询间隔和超时是否需要调整的依据
+        if self.results:
+            slow = max(self.results, key=lambda r: r.seconds)
+            if slow.seconds > 5:
+                print(f"     最慢：{slow.name}（{slow.seconds:.1f}s）")

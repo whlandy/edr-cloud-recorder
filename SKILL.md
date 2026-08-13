@@ -185,6 +185,7 @@ await page.frameLocator('iframe[src*="custom_login.html"]').getByPlaceholder('�
 | [references/safe-writes.md](references/safe-writes.md) | 要验证会**改数据**的操作；需要抓请求体但不能真发出去 |
 | [references/troubleshooting.md](references/troubleshooting.md) | 浏览器起不来；证书报错；偶发 5xx；请求没被记录 |
 | [references/ui-assertions.md](references/ui-assertions.md) | 断言读到的和你以为的不一致；界面不刷新；连错窗口/连错机器；怎么选断言点 |
+| [references/endpoint-orchestration.md](references/endpoint-orchestration.md) | 云端改了、要到**终端上**验证是否生效；edr-wd 怎么装、怎么配合 |
 
 ## 对旧录制重新生成
 
@@ -206,6 +207,33 @@ fs.writeFileSync('recordings/old.spec.ts',
 选择器（包括撞车文本的作用域）是在**录制当时**依据活的 DOM 算出来的，结果已经固化在
 JSON 里。页面早就不在了，重新生成时无从判断「这个文本在哪个容器内唯一」。
 所以旧录制里的 `.first()` 不会因为重新生成而消失 —— 那需要重录。
+
+## 云端 + 端侧联动（orchestrate/）
+
+有些效果**只在终端上才看得见**：云端下发一条策略，接口返回 200 只说明服务端记下了，
+终端有没有真的生效是另一回事。`orchestrate/` 把两边串起来。
+
+```python
+sc = Scenario("某策略的云→端联动")
+sc.cloud("读取当前配置", read_cloud)
+sc.endpoint("连接并校验身份", lambda: ep.connect().assert_matches(obj_name))
+sc.endpoint("采集端侧基线",  lambda: snapshot(ep.table_rows(refresh_text="Refresh")))
+sc.cloud("下发变更",        apply_change)
+sc.until("等待端侧出现新记录", probe, timeout=90, interval=5)   # ← 时间差在这里
+sc.endpoint("断言新记录符合预期", assert_new)
+sc.cloud("还原",            restore)
+sc.run()
+```
+
+端侧能力来自 **edr-wd**（独立项目，通过 MCP 驱动 Windows/macOS GUI），
+这里只做一层薄封装。安装、配置、以及它和本 skill 的分工，见
+[references/endpoint-orchestration.md](references/endpoint-orchestration.md)。
+
+**关键约束：等生效只能朝端侧轮询。** 云端接口未必暴露"终端是否已应用"的进度 ——
+实测过一个产品，真实下发前后云侧的状态字段纹丝不动。固定 `sleep` 是错的：
+短了偶发失败，长了每个场景白等几分钟。`until` 就是为此存在的。
+
+`orchestrate/example_scenario.py` 是可照抄的模板，云端部分留了接口给你实现。
 
 ## 自检
 
