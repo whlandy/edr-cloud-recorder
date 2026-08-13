@@ -148,6 +148,27 @@ expect(resp1.request().postDataJSON()).toMatchObject({
 | [references/safe-writes.md](references/safe-writes.md) | 要验证会**改数据**的操作；需要抓请求体但不能真发出去 |
 | [references/troubleshooting.md](references/troubleshooting.md) | 浏览器起不来；证书报错；偶发 5xx；请求没被记录 |
 
+## 对旧录制重新生成
+
+生成器是独立模块（`scripts/generate-spec.mjs`），可以拿一份旧的 `<name>.json` 重新产出脚本：
+
+```js
+import { generateSpec } from '<skill>/scripts/generate-spec.mjs';
+const d = JSON.parse(fs.readFileSync('recordings/old.json', 'utf-8'));
+fs.writeFileSync('recordings/old.spec.ts',
+  generateSpec({ steps: d.steps, net: d.net, startUrl: d.startUrl, name: 'old' }));
+```
+
+**但要清楚它能修什么、不能修什么**：
+
+| 能 | 不能 |
+|---|---|
+| 断言生成、易变值放宽、变量命名、代码结构 | 选择器 |
+
+选择器（包括撞车文本的作用域）是在**录制当时**依据活的 DOM 算出来的，结果已经固化在
+JSON 里。页面早就不在了，重新生成时无从判断「这个文本在哪个容器内唯一」。
+所以旧录制里的 `.first()` 不会因为重新生成而消失 —— 那需要重录。
+
 ## 自检
 
 改动录制器后跑一遍，验证它仍然符合上面这些承诺：

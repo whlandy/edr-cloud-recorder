@@ -76,3 +76,7 @@ references/
 ## 依赖
 
 Node 18+、`@playwright/test`、一个 Chromium 构建（系统装的或 Playwright 缓存里的都行）。
+
+## 许可
+
+[MIT](LICENSE)
