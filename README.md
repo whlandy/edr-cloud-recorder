@@ -49,7 +49,12 @@ assets/               可直接复制到目标项目的模板
   playwright.config.ts  忽略自签证书 / 失败重试 / 串行 / 失败留 trace
   auth.setup.ts         登录并导出登录态（含 sessionStorage）
   fixtures.ts           authedPage + clickIfPresent / confirmAndCapture / snapshot
+orchestrate/
+  scenario.py           云端+端侧交替编排：cloud / endpoint / until 三种步骤
+  endpoint.py           edr-wd 薄封装（驱动终端 GUI）
+  example_scenario.py   可照抄的模板
 references/
+  endpoint-orchestration.md  edr-wd 是什么、怎么装、怎么和本 skill 配合
   auth-and-session.md   脚本第二次跑就跳登录页怎么办
   selectors.md          怎么让选择器活过第二次运行
   safe-writes.md        安全地验证会改数据的操作
@@ -75,7 +80,10 @@ references/
 
 ## 依赖
 
-Node 18+、`@playwright/test`、一个 Chromium 构建（系统装的或 Playwright 缓存里的都行）。
+**录制器**：Node 18+、`@playwright/test`、一个 Chromium 构建（系统装的或 Playwright 缓存里的都行）。
+
+**编排（可选）**：Python 3.10+，以及 [edr-wd](references/endpoint-orchestration.md)
+——只有需要到终端上验证效果时才用得上，录制器本身不依赖它。
 
 ## 许可
 
