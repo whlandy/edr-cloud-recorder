@@ -116,6 +116,22 @@ const cyStep = steps.find((s) => s.label?.includes('仅有 data-cy'));
 chk('data-cy 生成属性选择器而非 getByTestId',
   cyStep?.sel.includes('[data-cy=') && !cyStep.sel.includes('getByTestId'), cyStep?.sel);
 
+// 「打字 + 回车」录出来是 press 在 fill 前面（值等 change 才记，按键当场记）。
+// 照原样回放就是在空输入框上回车 —— 登录流程每次都栽在这里。
+const bobFill = steps.findIndex((s) => s.type === 'fill' && s.value === 'bob');
+const bobPress = steps.findIndex((s) => s.type === 'press' && s.sel.includes('请输入用户名'));
+chk('录制忠实记下了 press 在 fill 之前', bobPress >= 0 && bobFill >= 0 && bobPress < bobFill,
+  `press@${bobPress} fill@${bobFill}`);
+const iFill = spec.indexOf(`.fill("bob")`);
+const iPress = spec.indexOf(`getByPlaceholder("请输入用户名").press('Enter')`);
+chk('生成时把顺序纠正为先填值后回车', iFill >= 0 && iPress >= 0 && iFill < iPress,
+  iFill < iPress ? 'fill 在 press 之前' : 'press 仍在 fill 之前');
+
+// 点在空白处会上溯到 html/body，留在草稿里只会让人猜它是不是有意义
+chk('点在空白处不产生步骤',
+  !steps.some((s) => s.sel === 'locator("html")' || s.sel === 'locator("body")'),
+  steps.filter((s) => /locator\("(html|body)"\)/.test(s.sel)).length + ' 条');
+
 // 浮层里的选项与触发器同名（两处都叫 Windows系统），必须靠浮层作用域区分。
 // 注意按 css 找选项那一步 —— 只按 label 找会先命中触发器。
 const optStep = steps.find((s) => s.type === 'click' && (s.css || '').includes('#pop'));

@@ -80,6 +80,27 @@ export function generateSpec({ steps, net, startUrl, name }) {
   return out;
 };
 
+  /**
+   * 修正「先回车、后填值」
+   *
+   * 值是在 change 事件里记的，而 change 要等失焦或回车**之后**才触发；按键则是
+   * 按下就记。于是「打字 + 回车」这个最普通的登录动作，录出来必然是 press 在
+   * fill 前面 —— 照原样回放就是在空输入框上回车，然后才填值。
+   *
+   * 同一个字段上「先回车、再填值」不可能成立：那个值本来就是回车之前打进去的。
+   * 所以直接交换，不设时间阈值 —— 阈值只会在人打字慢的时候漏修。
+   */
+  steps = steps.slice();
+  for (let i = 0; i < steps.length - 1; i++) {
+    const a = steps[i], b = steps[i + 1];
+    if (a.type === 'press' && b.type === 'fill' && a.sel === b.sel && a.inFrame === b.inFrame) {
+      // 时间戳跟着换：接口是按时间窗口挂到步骤下面的，不换的话窗口会倒过来，
+      // 回车触发的登录请求会挂到填值那一步下面。
+      steps[i] = { ...b, t: a.t };
+      steps[i + 1] = { ...a, t: b.t };
+    }
+  }
+
   const lines = [
   `import { test, expect } from '@playwright/test';`,
   ``,

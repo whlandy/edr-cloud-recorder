@@ -313,6 +313,9 @@ export const RECORDER = () => {
   const push = (type, el, extra) => {
     try {
       const t = meaningful(el);
+      // 点在页面空白处会一路上溯到 html/body。这种步骤回放时点了等于没点，
+      // 却会以 locator("html") 的形式留在草稿里，读的人还得判断它是不是有意义。
+      if (type === 'click' && (t === document.body || t === document.documentElement)) return;
       const sel = selectorFor(t);
       const step = {
         id: `${tag}-${++seq}`,
