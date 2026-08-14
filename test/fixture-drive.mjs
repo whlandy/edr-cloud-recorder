@@ -38,6 +38,11 @@ const HTML = `<!doctype html><meta charset="utf-8"><body>
   <!-- 只有 data-cy：Playwright 默认的 testIdAttribute 是 data-testid，认不到 -->
   <button data-cy="cy-only">仅有 data-cy</button>
 
+  <!-- 两个 placeholder 完全相同的输入框：真的那个有 id，另一个是诱饵。
+       录制时点哪个都能跑通，回放必然 strict mode 报错。 -->
+  <div id="real_box"><input id="real_user" placeholder="账号/手机号"></div>
+  <div id="decoy_box"><input placeholder="账号/手机号" autocomplete="on"></div>
+
   <!-- 触发器显示的值，和下面浮层里的选项文本一模一样 -->
   <div id="trigger">Windows系统</div>
   <div id="pop" role="listbox" style="position:absolute;z-index:999;display:none">
@@ -148,6 +153,12 @@ await page.waitForTimeout(300);
 await page.locator('[data-testid=text-comp-span]').first().click();
 await page.waitForTimeout(300);
 await page.click('[data-cy=cy-only]');
+await page.waitForTimeout(300);
+
+// 同 placeholder 的两个输入框，填真的那个。
+// 必须失焦：fill 的值是在 change 事件里记的，不失焦就不会产生步骤。
+await page.fill('#real_user', 'zhangsan');
+await page.locator('#real_user').blur();
 await page.waitForTimeout(300);
 
 // ── 断言菜单：右键 → 改 expected → 提交 ──

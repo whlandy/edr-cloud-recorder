@@ -201,11 +201,21 @@ export const RECORDER = () => {
             return `getByRole(${JSON.stringify(role)})`;
           }
         }
-        // 找一段能把这个容器和同类容器区分开的文本
+        // 找一段能把这个容器和同类容器区分开的文本。
+        //
+        // 但**不能用时间、数字 id 这类会变的值**。实测栽过：一行合规检查结果被
+        // 锚在 hasText: "2026-08-14 10:22:29" 上，当时跑三遍全绿，几小时后检查
+        // 重跑、时间推进，整条用例就再也找不到那一行了。
+        // 这类失败最坏的地方在于**延迟发作**：录完当场验证不出来。
+        const volatileMarker = (t) =>
+          /\d{4}-\d{2}-\d{2}/.test(t) ||           // 2026-08-14
+          /\d{1,2}:\d{2}(:\d{2})?/.test(t) ||      // 10:22:29
+          /\d{6,}/.test(t) ||                      // 雪花 id / 时间戳
+          /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t);    // UUID
         const marker = [...n.querySelectorAll('*')]
           .filter((x) => x.offsetParent && x.querySelectorAll('*').length === 0)
           .map((x) => txt(x))
-          .find((t) => t && t !== name && t.length <= 30 && countText(t) === 1);
+          .find((t) => t && t !== name && t.length <= 30 && !volatileMarker(t) && countText(t) === 1);
         if (marker) {
           const tag = n.tagName.toLowerCase();
           return `locator(${JSON.stringify(tag)}, { hasText: ${JSON.stringify(marker)} })`;
@@ -236,21 +246,47 @@ export const RECORDER = () => {
     // 于是 role 分支会产出 getByRole('textbox', { name: '请输入用户名' })。
     // 那样能用，但一旦后来给它补了 <label>，无障碍名就变了，选择器随之失效 ——
     // 而 getByPlaceholder 只依赖 placeholder 本身，更稳也更直观。
+    //
+    // label / placeholder 同样要验唯一性。实测一个登录表单里有两个 placeholder
+    // 完全相同的输入框（真的那个有 id，另一个是诱饵），录制时点的是哪个都能跑通，
+    // 回放必然 strict mode 报错 —— 而且是在第一步就挂，看起来像"页面变了"。
     if (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA') {
       if (e.labels?.[0]) {
         const lab = txt(e.labels[0]);
-        if (lab) return { kind: 'label', code: `getByLabel(${JSON.stringify(lab)}, { exact: true })` };
+        const same = [...document.querySelectorAll('input,textarea,select')]
+          .filter((x) => x.labels?.[0] && txt(x.labels[0]) === lab).length;
+        if (lab && same === 1) return { kind: 'label', code: `getByLabel(${JSON.stringify(lab)}, { exact: true })` };
       }
       const ph = (e.getAttribute('placeholder') || '').trim();
-      if (ph) return { kind: 'placeholder', code: `getByPlaceholder(${JSON.stringify(ph)})` };
+      if (ph && document.querySelectorAll(`[placeholder=${JSON.stringify(ph)}]`).length === 1) {
+        return { kind: 'placeholder', code: `getByPlaceholder(${JSON.stringify(ph)})` };
+      }
+      // label 和 placeholder 都撞车时，稳定的 id 是最好的退路。
+      // 含 3 位以上数字的 id 多半是运行时生成的（tip_box_10059），第二次跑就变了，
+      // 所以只认不带长数字的。实测的登录表单正是这种情况：两个输入框 placeholder
+      // 一模一样，真的那个有 id="username"。
+      const id = e.getAttribute('id');
+      if (id && !/\d{3,}/.test(id) && document.querySelectorAll(`#${CSS.escape(id)}`).length === 1) {
+        return { kind: 'id', code: `locator(${JSON.stringify('#' + id)})` };
+      }
     }
 
     const role = roleOf(e);
     const name = nameOf(e);
     if (role && name) {
-      return { kind: 'role', code: `getByRole(${JSON.stringify(role)}, { name: ${JSON.stringify(name)}, exact: true })` };
+      // role + 无障碍名也会撞车：两个 placeholder 相同的输入框，无障碍名同样相同。
+      // 不验的话只是把 strict mode 报错从 placeholder 分支挪到了 role 分支。
+      const sameRoleName = [...document.querySelectorAll('*')]
+        .filter((x) => x.offsetParent && roleOf(x) === role && nameOf(x) === name).length;
+      if (sameRoleName <= 1) {
+        return { kind: 'role', code: `getByRole(${JSON.stringify(role)}, { name: ${JSON.stringify(name)}, exact: true })` };
+      }
     }
-    if (name) {
+    // 表单控件不能走 getByText —— 它按文本内容匹配，而 input 没有文本内容。
+    // 这里的 name 是无障碍名（多半来自 placeholder 或 label），拿它去 getByText
+    // 会生成一个语法正确、回放却永远找不到元素的选择器。
+    const isFormControl = ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.tagName);
+    if (name && !isFormControl) {
       const n = countText(name);
       if (n <= 1) return { kind: 'text', code: `getByText(${JSON.stringify(name)}, { exact: true })` };
 
