@@ -10,25 +10,32 @@
 Playwright 的 `page.route()` 可以拦截请求并返回伪造的响应。请求体照样能读到，
 但一个字节都不会到服务端。
 
-```ts
-let captured: any = null;
+```python
+import json
 
-await page.route('**/api/v1/**', async (route) => {
-  if (route.request().method() === 'GET') return route.continue();
-  captured = JSON.parse(route.request().postData() ?? '{}');
-  await route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ code: '200', msg: 'success' }),
-  });
-});
+captured = {}
 
-// 正常操作界面，包括点「确认」
-await page.getByRole('button', { name: '强制应用' }).click();
-await page.getByRole('button', { name: '确认' }).click();
 
-expect(captured.scope).toMatchObject({ type: 'group', mode: 'force' });
+def intercept(route):
+    if route.request.method == "GET":
+        return route.continue_()
+    captured.update(json.loads(route.request.post_data or "{}"))
+    route.fulfill(status=200, content_type="application/json",
+                  body=json.dumps({"code": "200", "msg": "success"}))
+
+
+page.route("**/api/v1/**", intercept)
+
+# 正常操作界面，包括点「确认」
+page.get_by_role("button", name="强制应用").click()
+page.get_by_role("button", name="确认").click()
+
+assert_subset(captured["scope"], {"type": "group", "mode": "force"})
 ```
+
+注意 `route.continue_()` 有下划线 —— `continue` 是 Python 关键字。
+`assert_subset` 在 `rec_assert.py` 里，对应 JS 的 `toMatchObject`（Python 版
+Playwright 没有这个匹配器）。
 
 这个办法特别适合枚举**危险选项的组合**。比如一个「强制应用 + 应用到下级」的操作会覆盖
 一整组对象的配置，还原成本极高 —— 但你可以把四种勾选组合全点一遍，把请求体差异摸清楚，
@@ -53,13 +60,16 @@ expect(captured.scope).toMatchObject({ type: 'group', mode: 'force' });
 比对必须用原始文本，不能用解析后的对象做深比较。字段顺序、数字精度、空值表示
 （`null` vs 缺失）的差异，只有字节比较才抓得住。
 
-```ts
-const before = await readState(page, objectId);       // 返回 response.text()
-await applyUnchanged(page);
-await revert(page);
-const after = await readState(page, objectId);
-expect(after, '未能还原到基线').toBe(before);
+```python
+before = read_state(page, object_id)       # 返回 response.text()
+apply_unchanged(page)
+revert(page)
+after = read_state(page, object_id)
+assert after == before, "未能还原到基线"
 ```
+
+`rec_helpers.snapshot(page, url)` 就是这里的 `read_state` —— 它返回原始文本而不是
+解析后的对象，正是为了让比对能逐字节做。
 
 ### 先弄清楚「原值重放」到底改了什么
 
@@ -88,10 +98,9 @@ expect(after, '未能还原到基线').toBe(before);
 
 这类操作一律用做法一（路由拦截）。在脚本里显式拒绝：
 
-```ts
-if (scope === 'group' && cascade) {
-  throw new Error('级联写入不做真实执行，请用路由拦截验证请求体');
-}
+```python
+if scope == "group" and cascade:
+    raise RuntimeError("级联写入不做真实执行，请用路由拦截验证请求体")
 ```
 
 ## 把还原写进用例，而不是靠人记得
@@ -100,55 +109,60 @@ if (scope === 'group' && cascade) {
 
 这是最容易写错、代价又最大的一处。下面这种写法看着完整，其实只在**顺利跑完**时才还原：
 
-```ts
-// ❌ 中间任何一步挂掉，revert 都不会执行，对象就被留在改动后的状态
-const before = await readState(page, TARGET);
-await applyAndCapture(page);
-expect(status).toBe(200);      // ← 这里一挂，下面就不走了
-await revert(page);
+```python
+# ❌ 中间任何一步挂掉，revert 都不会执行，对象就被留在改动后的状态
+before = read_state(page, TARGET)
+apply_and_capture(page)
+assert status == 200      # ← 这里一挂，下面就不走了
+revert(page)
 ```
 
 失败恰恰是最需要还原的时刻 —— 而且失败往往是连锁的：第一次跑挂在中途留下脏状态，
 第二次跑的「基线」读到的就是那个脏状态，于是错误被固化下来，越查越乱。
 
-```ts
-// ✅ 无论成败都还原
-let touched = false;
-try {
-  await setState(page, TARGET, 'off');
-  touched = true;
-  const { status } = await applyAndCapture(page);
-  expect(status).toBe(200);
-} finally {
-  if (touched) {
-    await setState(page, TARGET, before).catch(() => {});
-    const back = await applyAndCapture(page).catch(() => null);
-    console.log(back ? `已还原（${back.status}）` : '⚠ 还原失败，需人工检查');
-  }
-}
+```python
+# ✅ 无论成败都还原
+touched = False
+try:
+    set_state(page, TARGET, "off")
+    touched = True
+    cap = apply_and_capture(page)
+    assert cap.status == 200
+finally:
+    if touched:
+        try:
+            set_state(page, TARGET, before)
+            back = apply_and_capture(page)
+            print(f"已还原（{back.status}）")
+        except Exception as e:
+            print(f"⚠ 还原失败，需人工检查: {e}")
 ```
 
 `touched` 这个标记不能省：还没改动就失败时（比如根本没找到那个开关），
 不该再去"还原"一个没被动过的对象 —— 那是凭空多出来的一次写操作。
 
-还原本身也要容错（`.catch`）并把结果打出来。还原失败是必须让人看见的事，
-不能被 `finally` 里的异常吞掉，更不能悄悄过去。
+还原本身也要容错并把结果打出来。还原失败是必须让人看见的事，不能被 `finally` 里的
+异常吞掉 —— 注意 `finally` 块里抛出的异常会**替换掉**原本的失败原因，
+那才是真正想看的那个。所以 `finally` 里的每一步都要自己接住异常。
 
 ### 真实写入要有显式闸门
 
 写入型用例默认**不应该**真的写。定位、找元素、读状态这些都跑，到真正下发前停住：
 
-```ts
-const WRITE = !!process.env.POLICY_WRITE;
+```python
+import os
+import pytest
 
-// ...定位、读基线，全部照跑...
+WRITE = bool(os.environ.get("POLICY_WRITE"))
 
-if (!WRITE) {
-  console.log('只读模式：定位全部通过，未下发。加 POLICY_WRITE=1 才真的执行。');
-  test.skip(true, '默认只读');
-  return;
-}
+# ...定位、读基线，全部照跑...
+
+if not WRITE:
+    pytest.skip("只读模式：定位全部通过，未下发。加 POLICY_WRITE=1 才真的执行。")
 ```
+
+用 `pytest.skip()` 而不是 `pytest.mark.skipif`：后者在收集阶段就决定跳过，
+定位代码根本不会跑 —— 而「验证界面结构还在」正是只读模式的全部价值。
 
 这样一条用例有两种用法，而且**共用同一份定位代码**：
 
