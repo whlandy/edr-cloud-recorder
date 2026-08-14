@@ -12,6 +12,7 @@
 | role + 无障碍名 | 按钮改了文案 | ★★★★ |
 | placeholder | 文案改动 | ★★★ |
 | 可见文本 | 文案改动、i18n 切换、同名元素出现 | ★★ |
+| 手写的 id | 有人改了它；被换成运行时生成的 | ★★★ |
 | CSS 路径 | 布局微调、加个 div、className 哈希变化 | ★ |
 | 坐标 | 几乎任何改动 | ☆ |
 
@@ -23,21 +24,28 @@
 录制器会标 `⚠ AMBIGUOUS: N 个元素匹配`。这是最危险的一类问题，因为**脚本不会报错，
 只会做错事** —— 它点了页面上第 1 个「删除」，而你想删的是第 3 行。
 
-不要用 `.first()` 打发它。正确做法是加语义限定：
+不要用 `.first` 打发它。正确做法是加语义限定：
 
-```ts
-// ❌ 能跑，但删错行只是时间问题
-await page.getByText('删除', { exact: true }).first().click();
+```python
+# ❌ 能跑，但删错行只是时间问题
+page.get_by_text("删除", exact=True).first.click()
 
-// ✅ 限定到目标行
-await page.getByRole('row', { name: /张三/ }).getByText('删除').click();
+# ✅ 限定到目标行
+page.get_by_role("row", name=re.compile("张三")).get_by_text("删除").click()
 
-// ✅ 限定到区域
-await page.getByRole('dialog').getByRole('button', { name: '确认' }).click();
+# ✅ 限定到区域
+page.get_by_role("dialog").get_by_role("button", name="确认").click()
 
-// ✅ 限定到容器（自定义组件没有 role 时）
-await page.locator('.toolbar').getByText('导出').click();
+# ✅ 限定到容器（自定义组件没有 role 时）
+page.locator(".toolbar").get_by_text("导出").click()
 ```
+
+注意 Python 的 `.first` 是**属性**不是方法，写成 `.first()` 会 `TypeError`。
+
+> **数撞车要把隐藏元素算进去。** `get_by_text` / `get_by_placeholder` /
+> `get_by_label` / `get_by_test_id` 都匹配隐藏元素，只有 `get_by_role` 走无障碍树
+> 不匹配。所以「收起的浮层里有个同名选项」照样会让你 strict mode 失败 ——
+> 录制器的计数已经按这个规则来，手写时也别只看屏幕上有几个。
 
 ## 陷阱二：位置会漂
 
@@ -52,8 +60,8 @@ await page.locator('.toolbar').getByText('导出').click();
 
 如果确实需要按位置取（比如「表格第一行」），用语义化的方式：
 
-```ts
-await page.getByRole('row').nth(1).click();   // 而不是 CSS nth-of-type
+```python
+page.get_by_role("row").nth(1).click()   # 而不是 CSS nth-of-type
 ```
 
 ## 陷阱三：运行时生成的 id 和 class
@@ -63,7 +71,9 @@ await page.getByRole('row').nth(1).click();   // 而不是 CSS nth-of-type
 <div class="Button_root__x7Fq2">  <!-- CSS Modules 哈希，构建一次变一次 -->
 ```
 
-录制器会自动跳过含 3 位以上数字的 id 和 class。但如果你手写选择器，注意别踩。
+录制器会自动跳过含 3 位以上数字的 id 和 class；反过来，**不含长数字且全页唯一的 id 是
+录制器倒数第二档的退路**（在 CSS 路径之前），因为手写的 id 通常比位置路径稳得多。
+但如果你手写选择器，注意别踩上面这两种。
 
 判断方法：刷新页面，看这个值变不变。
 
@@ -74,15 +84,15 @@ await page.getByRole('row').nth(1).click();   // 而不是 CSS nth-of-type
 
 **优先找可见文本。** 下拉框通常会把当前值显示出来：
 
-```ts
-await page.locator('.form-item', { hasText: '系统类型' }).getByText('Windows').click();
+```python
+page.locator(".form-item", has_text="系统类型").get_by_text("Windows").click()
 ```
 
 **利用 label 和控件的位置关系。** 很多表单是 `label + 控件` 并排：
 
-```ts
-const row = page.locator('.form-row', { hasText: '系统类型' });
-await row.locator('input').click();
+```python
+row = page.locator(".form-row", has_text="系统类型")
+row.locator("input").click()
 ```
 
 **实在不行就推动加 `data-testid`。** 这是唯一的根治办法。一个 `data-testid` 换来的
@@ -95,13 +105,15 @@ await row.locator('input').click();
 
 录制器对 CSS 兜底的点击会自动包成「存在则点」。手写时也照此处理：
 
-```ts
-const banner = page.getByRole('button', { name: '我知道了' });
-if (await banner.isVisible().catch(() => false)) await banner.click();
+```python
+banner = page.get_by_role("button", name="我知道了")
+if is_present(banner):
+    banner.click()
 ```
 
-注意 `.catch(() => false)` —— 元素不存在时 `isVisible()` 会抛错，不接住的话
-容错逻辑本身会变成失败点。
+`is_present`（在 `rec_helpers.py` 里）对应 JS 的 `isVisible().catch(() => false)` ——
+元素不存在时 `is_visible()` 会抛错，不接住的话容错逻辑本身会变成失败点。
+Python 的 `if` 里塞不进 try，所以单独成一个函数。
 
 ## 陷阱六：确认弹窗
 
@@ -110,12 +122,13 @@ if (await banner.isVisible().catch(() => false)) await banner.click();
 
 把「操作 + 确认」封装成一个函数，别让调用方有机会忘：
 
-```ts
-async function confirmAction(page: Page, trigger: string) {
-  await page.getByRole('button', { name: trigger, exact: true }).click();
-  await page.getByRole('button', { name: '确认', exact: true }).click();
-}
+```python
+def confirm_action(page, trigger: str) -> None:
+    page.get_by_role("button", name=trigger, exact=True).click()
+    page.get_by_role("button", name="确认", exact=True).click()
 ```
+
+`rec_helpers.confirm_and_capture` 就是这个模式加上接口断言。
 
 更好的做法是顺便断言接口真的发出去了，见 [safe-writes.md](safe-writes.md)。
 
@@ -136,19 +149,19 @@ async function confirmAction(page: Page, trigger: string) {
 
 **定位到承担你要的那个语义的子元素上**，不要点容器：
 
-```ts
-// ❌ 点在哪个功能上取决于行宽和文字长度
-await page.locator('.eui_tree_node_cont', { hasText: 'default-group' }).click();
+```python
+# ❌ 点在哪个功能上取决于行宽和文字长度
+page.locator(".eui_tree_node_cont", has_text="default-group").click()
 
-// ✅ 明确点「名称」那一段
-await page.locator('.eui_tree_text', { hasText: 'default-group' }).click();
+# ✅ 明确点「名称」那一段
+page.locator(".eui_tree_text", has_text="default-group").click()
 ```
 
 识别方法：先把整行的子元素打出来看一眼，别凭截图猜。
 
-```ts
-console.log(await row.evaluate((e) =>
-  [...e.children].map((c) => `${c.tagName}.${c.className} "${c.textContent.trim()}"`)));
+```python
+print(row.evaluate(
+    "(e) => [...e.children].map(c => `${c.tagName}.${c.className} \"${c.textContent.trim()}\"`)"))
 ```
 
 ## 陷阱八：点已经选中的东西，什么都不会发生
@@ -156,12 +169,10 @@ console.log(await row.evaluate((e) =>
 选中类操作（树节点、页签、单选项）在**已经处于选中态**时通常是空操作 ——
 不重新渲染，也不发请求。于是这样写就会时灵时不灵：
 
-```ts
-// ❌ 该节点恰好已被选中时，这里会一直等到超时
-const [resp] = await Promise.all([
-  page.waitForResponse((r) => r.url().includes('/policy-config/')),
-  node.click(),
-]);
+```python
+# ❌ 该节点恰好已被选中时，这里会一直等到超时
+with page.expect_response(lambda r: "/policy-config/" in r.url):
+    node.click()
 ```
 
 更麻烦的是，**选中态常被 sessionStorage 记住**。同一份脚本在你机器上跑得好好的，
@@ -180,15 +191,20 @@ const [resp] = await Promise.all([
 
 界面操作常常并发出好几个请求。等待条件写得宽，就会抓到**不是这一下触发的**那条：
 
-```ts
-// ❌ 抓到过上一次作用域还在飞的响应，于是选终端却读出一个组 id
-page.waitForResponse((r) => r.url().includes('/policy-config/') &&
-  new URL(r.url()).searchParams.has('type'));
+```python
+from urllib.parse import urlparse, parse_qs
 
-// ✅ 把「我期望的是哪一种」写进条件
-page.waitForResponse((r) => r.url().includes('/policy-config/') &&
-  new URL(r.url()).searchParams.get('type') === 'asset');
+# ❌ 抓到过上一次作用域还在飞的响应，于是选终端却读出一个组 id
+page.expect_response(lambda r: "/policy-config/" in r.url
+                     and "type" in parse_qs(urlparse(r.url).query))
+
+# ✅ 把「我期望的是哪一种」写进条件
+page.expect_response(lambda r: "/policy-config/" in r.url
+                     and parse_qs(urlparse(r.url).query).get("type") == ["asset"])
 ```
+
+生成器对同一端点的并发请求用的是另一招：`nth_request(path, method, n)` 给每个等待器
+一个独立计数器，第 N 个只接第 N 条 —— 条件写得再窄也分不开两条一模一样的请求。
 
 这类错误特别隐蔽：脚本不报错，只是拿到一个**看起来合法**的值，然后用它去请求，
 后面全都 200 —— 只是全都打在了错的对象上。
@@ -200,22 +216,20 @@ page.waitForResponse((r) => r.url().includes('/policy-config/') &&
 
 实测（EUI 的搜索框）：
 
-```ts
-await box.fill('11.26');
-await box.inputValue();      // → ""     值没进去
-await magnifier.click();     // → 零请求  拿着空关键字去搜
+```python
+box.fill("11.26")
+box.input_value()      # → ""     值没进去
+magnifier.click()      # → 零请求  拿着空关键字去搜
 ```
 
 同一个框改成逐字敲就正常：
 
-```ts
-await box.click();
-await box.pressSequentially('11.26', { delay: 30 });
-await expect(box).toHaveValue('11.26');   // ← 这一句是关键，别省
-await Promise.all([
-  page.waitForResponse((r) => r.url().includes('assetName=')),
-  page.locator('span.eui_searchInput_search').click(),
-]);
+```python
+box.click()
+box.press_sequentially("11.26", delay=30)
+expect(box).to_have_value("11.26")   # ← 这一句是关键，别省
+with page.expect_response(lambda r: "assetName=" in r.url):
+    page.locator("span.eui_searchInput_search").click()
 ```
 
 **填完就断言值真的进去了。** 这一条不是多余的谨慎：填不进去时没有任何报错，
@@ -226,8 +240,8 @@ await Promise.all([
 未必都有效：实测这个组件**回车零请求**，只有点放大镜才发。判断标准只有一个 ——
 **有没有真的发出请求**，界面看起来有没有反应不算数：
 
-```ts
-page.on('request', (r) => console.log(r.method(), new URL(r.url()).pathname));
+```python
+page.on("request", lambda r: print(r.method, urlparse(r.url).path))
 ```
 
 顺带一提：搜索的匹配规则未必是「包含即命中」。所以搜索这条路值得配一条兜底路径

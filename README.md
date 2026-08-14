@@ -1,20 +1,20 @@
 # web-record
 
-把网页上的手工操作录制成可重复执行的 Playwright 脚本，同时抓取每一步触发的 HTTP 接口
-（含请求体、状态码、失败响应）。
+把网页上的手工操作录制成可重复执行的 Playwright (Python) 脚本，同时抓取每一步触发的
+HTTP 接口（含请求体、状态码、失败响应）。
 
 这是一个 [Agent Skill](https://docs.claude.com/en/docs/agents-and-tools/agent-skills)，
-但脚本本身**不依赖任何特定 agent 或浏览器扩展** —— 只要 Node + Playwright，
+但脚本本身**不依赖任何特定 agent 或浏览器扩展** —— 只要 Python + Playwright，
 在终端里直接跑也可以。
 
 ## 和 `playwright codegen` 的区别
 
 codegen 只回答「点了哪里」，不回答「点完之后发生了什么」。本工具把两件事绑在一起：
 
-```ts
-await page.getByRole('button', { name: '确认', exact: true }).click();
-//   ↳ POST /api/v1/policy/apply -> 200
-//   ↳ GET  /api/v1/policy/status -> 200
+```python
+page.get_by_role("button", name="确认", exact=True).click()
+#   ↳ POST /api/v1/policy/apply -> 200
+#   ↳ GET  /api/v1/policy/status -> 200
 ```
 
 当你的目的是搞清楚接口契约、或者想让脚本断言「这一步应该触发某个 POST 并返回 200」时，
@@ -24,11 +24,11 @@ codegen 给不了答案。
 
 ```bash
 # 在目标项目里准备环境
-cp <此仓库>/assets/{package.json,playwright.config.ts,tsconfig.json} .
-npm install
+cp -r <此仓库>/assets/* .
+python -m pip install -r requirements.txt
 
 # 录制
-node <此仓库>/scripts/record.mjs --url https://app.example.com --name login-flow
+python <此仓库>/scripts/record.py --url https://app.example.com --name login-flow
 ```
 
 浏览器窗口弹出 → 正常操作 → 关闭窗口 → 输出到 `recordings/`：
@@ -36,54 +36,88 @@ node <此仓库>/scripts/record.mjs --url https://app.example.com --name login-f
 | 文件 | 内容 |
 |---|---|
 | `<name>.json` | 原始记录：步骤 + 网络事件，都带毫秒时间戳 |
-| `<name>.spec.ts` | 可跑的脚本草稿，接口调用作为注释挂在对应步骤下 |
+| `test_<name>.py` | 可跑的脚本草稿，接口调用作为注释挂在对应步骤下 |
+
+回放：
+
+```bash
+pytest recordings/test_login-flow.py
+```
 
 ## 结构
 
 ```
 SKILL.md              技能定义：触发条件、工作流、录制后必做的三件事
 scripts/
-  record.mjs          录制器
-  chrome-path.mjs     跨平台探测本机 Chromium（避免为版本号重下 170MB）
+  record.py           录制驱动
+  recorder-inject.mjs 页面内录制器（唯一的 JS —— 它在浏览器里跑）
+  generate_spec.py    从录制数据生成 pytest 草稿
+  selector_py.py      把 JS 语法的选择器转成 Python 语法
+  recorder_loader.py  把注入层原样喂给 add_init_script
 assets/               可直接复制到目标项目的模板
-  playwright.config.ts  忽略自签证书 / 失败重试 / 串行 / 失败留 trace
-  auth.setup.ts         登录并导出登录态（含 sessionStorage）
-  fixtures.ts           authedPage + clickIfPresent / confirmAndCapture / snapshot
+  conftest.py         登录一次 + authed_page + 超时 + 产物清理
+  auth_setup.py       登录流程（要改的地方都在这里）
+  rec_helpers.py      dismiss_overlays / confirm_and_capture / is_present / nth_request …
+  rec_assert.py       assert_subset / ANY_STR / ANY_NUM / poll_until
+  rec_config.py       配置加载与凭据解析（env > config.json）
+  chrome_path.py      跨平台探测本机 Chromium（避免为版本号重下 170MB）
+  manual_login.py     站点要求验证码时的兜底
+  pytest.ini          trace/录像/截图、重试、超时、默认收集范围
+test/
+  test_verify.py      自检：65 项，每项守一条 SKILL.md 里的承诺
+  fixture_drive.py    造一个含全部边界情况的页面并驱动一遍
 orchestrate/
-  scenario.py           云端+端侧交替编排：cloud / endpoint / until 三种步骤
-  endpoint.py           edr-wd 薄封装（驱动终端 GUI）
-  example_scenario.py   可照抄的模板
-references/
-  endpoint-orchestration.md  edr-wd 是什么、怎么装、怎么和本 skill 配合
-  auth-and-session.md   脚本第二次跑就跳登录页怎么办
-  selectors.md          怎么让选择器活过第二次运行
-  safe-writes.md        安全地验证会改数据的操作
-  troubleshooting.md    浏览器起不来、证书、5xx、请求没被记录
+  scenario.py         云端+端侧交替编排：cloud / endpoint / until 三种步骤
+  endpoint.py         edr-wd 薄封装（驱动终端 GUI）
+  example_scenario.py 可照抄的模板
+references/           遇到具体问题时再读，见 SKILL.md 的「深入」一节
 ```
 
 ## 设计上的几个取舍
 
+**注入层保持 JavaScript。** `recorder-inject.mjs` 是注入到被测页面里执行的浏览器脚本，
+无论驱动侧用什么语言，这部分都只能是 JS。它没有被改写成别的形式，也不该被改写 ——
+那 600 多行全是实测出来的 DOM 细节。驱动侧用 `add_init_script` 把它原样注入。
+
 **密码不进产物。** `type=password` 的输入只记录「填了密码」这个动作，值在生成的脚本里
-替换成 `process.env.REC_PASSWORD`。所以 spec 可以安全提交。
+替换成 `os.environ.get("REC_PASSWORD", "")`。所以草稿可以安全提交。
 
 **运行时生成的 id 会被跳过。** 像 `tip_box_10059` 这种自增 id 每次加载都变，用它定位
 必然在第二次运行时失败。含 3 位以上数字的 id 和 class 一律不用。
 
-**文本撞车会被标出来。** 录制器统计页面上有多少元素文本完全相同。撞车的选择器录制时
-能跑通、回放时可能点错 —— 这类失败最难查，所以宁可在生成时就警告。
+**文本撞车会被标出来，而且把隐藏元素算进去。** Playwright 的 `get_by_text` /
+`get_by_placeholder` / `get_by_label` / `get_by_test_id` 都会匹配隐藏元素，只有
+`get_by_role` 走无障碍树不匹配。只数可见元素会漏算「收起的浮层里的同名选项」，
+产出回放时必然 strict mode 失败的选择器。
+
+**开关录成「拨到指定状态」而不是盲点一下。** 只录一次 click 的话，回放时初始状态一旦
+与录制时不同就会朝反方向拨 —— 脚本不报错，只是把开关设错了。
 
 **只能用 CSS 兜底的点击会被包成「存在则点」。** 这类元素绝大多数是关闭弹窗，
 弹窗不出现时脚本不该失败。
 
 **失败响应体会被记录，成功的 GET 不会。** 排查 4xx/5xx 时响应体是唯一有用的信息；
-成功的 GET 响应动辄几十 KB，全存没有价值。
+成功的 GET 响应动辄几十 KB，全存没有价值。响应体在事件回调里**当场**取 —— 攒到最后
+再取会撞上 Chromium 把 body 从网络缓存里淘汰。
+
+**登录态边录边快照。** 用法是「操作完直接关浏览器窗口」，而浏览器一关
+`storage_state()` 就取不到了，所以每个轮询周期都拍一次、最后落盘最新的一份。
 
 ## 依赖
 
-**录制器**：Node 18+、`@playwright/test`、一个 Chromium 构建（系统装的或 Playwright 缓存里的都行）。
+**录制器**：Python 3.10+、`playwright`、一个 Chromium 构建（系统装的或 Playwright
+缓存里的都行）。
 
-**编排（可选）**：Python 3.10+，以及 [edr-wd](references/endpoint-orchestration.md)
-——只有需要到终端上验证效果时才用得上，录制器本身不依赖它。
+**回放**：另加 `pytest`、`pytest-playwright`、`pytest-rerunfailures`、`pytest-timeout`，
+见 `assets/requirements.txt`。
+
+**编排（可选）**：[edr-wd](references/endpoint-orchestration.md) —— 只有需要到终端上
+验证效果时才用得上，录制器本身不依赖它。
+
+## 历史
+
+`js-format-v1.0` 分支保留了迁移到 Python 之前的纯 JavaScript 实现
+（`js-format-v1.0-codex` 是当时并行的一条分叉）。两者的注入层与本版本同源。
 
 ## 许可
 
