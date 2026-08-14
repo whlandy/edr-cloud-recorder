@@ -552,14 +552,22 @@ export const RECORDER = () => {
     const inside = switchInside(el);
     if (inside.length) {
       const before = inside.map((x) => String(x.className));
-      setTimeout(() => {
+      // 轮询到变化为止，而不是等一个固定的 60ms。
+      //
+      // 实测栽过：某控制台的开关拨动后 class 变得比 60ms 慢（要等一次往返或动画），
+      // 于是"没检测到变化"→ 退回普通点击 → 回放时盲拨，方向取决于当时的初始状态。
+      // 这类错**不报错**，只是把策略设反。固定延时改长也不对：换个页面又不够。
+      const t0 = Date.now();
+      const poll = () => {
         const moved = inside.filter((x, i) => String(x.className) !== before[i]);
+        if (!moved.length && Date.now() - t0 < 1200) return void setTimeout(poll, 50);
         const info = moved.length === 1 ? switchInfo(moved[0]) : null;
         const within = info ? stateWithin(moved[0]) : undefined;
         if (info && info.on !== null && within !== undefined) {
           push('switch', moved[0], { to: info.on, via: { ...info.via, within } });
         } else push('click', el);
-      }, 60);
+      };
+      setTimeout(poll, 50);
       return;
     }
 
