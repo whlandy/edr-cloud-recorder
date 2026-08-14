@@ -31,6 +31,13 @@ const HTML = `<!doctype html><meta charset="utf-8"><body>
     <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
   </div>
 
+  <!-- 慢开关：拨动后 500ms 才更新 class。固定等 60ms 的话检测不到变化，
+       会退回盲点击 —— 回放时方向取决于当时的初始状态，而且不报错 -->
+  <div id="row_slow" class="labelAndItem" style="padding:24px">
+    <span>延迟自保护</span>
+    <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
+  </div>
+
   <!-- 组件框架批量吐出的同名 testid：不唯一，用它回放必然 strict mode 失败 -->
   <div data-testid="text-comp-span">重复标记甲</div>
   <div data-testid="text-comp-span">重复标记乙</div>
@@ -63,6 +70,8 @@ const HTML = `<!doctype html><meta charset="utf-8"><body>
     trigger.addEventListener('click', () => { pop.style.display = 'block'; });
     row_sp.addEventListener('click', () =>
       row_sp.querySelector('.eui_toggle_container').classList.toggle('toggled'));
+    row_slow.addEventListener('click', () => setTimeout(() =>
+      row_slow.querySelector('.eui_toggle_container').classList.toggle('toggled'), 500));
   </script>
 </body>`;
 
@@ -154,6 +163,10 @@ await page.locator('[data-testid=text-comp-span]').first().click();
 await page.waitForTimeout(300);
 await page.click('[data-cy=cy-only]');
 await page.waitForTimeout(300);
+
+// 慢开关：class 要 500ms 后才变
+await page.click('#row_slow', { position: { x: 5, y: 5 } });
+await page.waitForTimeout(1500);
 
 // 同 placeholder 的两个输入框，填真的那个。
 // 必须失焦：fill 的值是在 change 事件里记的，不失焦就不会产生步骤。

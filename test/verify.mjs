@@ -116,6 +116,12 @@ chk('点外层、读内层',
   /const isOn = \(\) => state\.evaluate/.test(spec) && /await sw\.click\(\)/.test(spec),
   spec.match(/const state = sw[^\n]*/)?.[0]);
 
+// 开关拨动后 class 更新可能比固定延时慢。检测不到变化就退回盲点击，
+// 回放时方向取决于初始状态，而且不报错 —— 这类错最难查。
+const slowSw = steps.find((s) => s.type === 'switch' && s.label === '延迟自保护');
+chk('慢开关（500ms 后才变）也能被识别', !!slowSw, slowSw?.sel || '退回成了普通 click');
+chk('慢开关读到了正确的目标状态', slowSw?.to === true, `to=${slowSw?.to}`);
+
 // testid 本该最稳，但组件框架常批量吐出同一个值。不验唯一性就会生成
 // 命中几百个元素的 getByTestId，回放必然 strict mode 失败。
 const dupTid = steps.find((s) => s.label?.includes('重复标记甲'));
