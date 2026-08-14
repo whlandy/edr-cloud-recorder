@@ -57,6 +57,45 @@ export async function clickIfPresent(target: Locator): Promise<boolean> {
 }
 
 /**
+ * 关掉首启弹窗，并等到没有遮罩挡路为止
+ *
+ * 这一步是回放稳定性的分水岭，原因不直观：
+ *
+ * 1. **弹窗常常不止一个。** 实测某控制台首启会叠两个（校验码 + 校验码历史），
+ *    各带一层遮罩。只关一个，剩下那层照样吞掉后面所有点击。
+ * 2. **遮罩关掉后还会残留一会儿**，而且它拦截点击时，Playwright 认为
+ *    click «成功了» —— 失败会报在后面某个 waitForResponse 上，
+ *    看着像「接口没发」，实际是「点了没进去」。今天为此绕了三圈。
+ * 3. **遮罩常驻 DOM，只靠 CSS 隐藏**，所以判「可见数为 0」，
+ *    判 toHaveCount(0) 会永远等不到。
+ *
+ * 关闭按钮的 class 因组件库而异，用 selectors 参数覆盖。
+ */
+export async function dismissOverlays(
+  page: Page,
+  selectors: string[] = ['span.eui_Dialog_closeIcon', '.eui_tipBox_close', '[class*="closeIcon"]'],
+  masks = '.eui-dialog-masking, .eui_Dialog_Over, [class*="masking"], [class*="Dialog_Over"]',
+): Promise<void> {
+  const closers = page.locator(selectors.join(', '));
+  // 等第一个弹窗出现再动手：紧跟 goto 就问「在不在」，那一刻页面还是空的，
+  // 「存在才点」会静默返回 false —— 弹窗没关掉，而失败要到很后面才暴露。
+  await closers.first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
+
+  for (let i = 0; i < 5; i++) {
+    const btn = closers.filter({ visible: true }).first();
+    if (!(await btn.isVisible().catch(() => false))) break;
+    await btn.click().catch(() => {});
+    await page.waitForTimeout(400);
+  }
+
+  await expect
+    .poll(() => page.locator(masks).filter({ visible: true }).count(),
+      { timeout: 15_000, message: '遮罩层一直没消失，后续点击会被它拦住' })
+    .toBe(0)
+    .catch(() => { /* 没有遮罩的站点直接过 */ });
+}
+
+/**
  * 执行一个带二次确认的操作，并返回实际发出的请求。
  *
  * 漏掉确认弹窗是「静默通过」假测试的头号来源：脚本点了「删除」，断言也过了，

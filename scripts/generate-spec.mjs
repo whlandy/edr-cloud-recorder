@@ -106,20 +106,52 @@ export function generateSpec({ steps, net, startUrl, name }) {
     }
   }
 
+  /**
+   * 丢掉开头那段登录
+   *
+   * 登录几乎必然录进来（录制从登录页开始），也几乎必然回放不了：登录表单常在
+   * iframe 里、常有同 placeholder 的诱饵输入框、密码又不该写进脚本。
+   * 而它对用例的意图毫无贡献 —— 每条用例都重登一次，只是让每条用例都多一个
+   * 失败点。正确做法是登录态存一次、之后复用，所以这里直接不生成。
+   *
+   * 只砍**开头连续**的那一段：登录之后再出现的 iframe 操作是正经业务。
+   * 砍掉的步骤原样留在注释里，需要时能捡回来。
+   */
+  const isLoginStep = (s) =>
+    s.secret === true || (s.inFrame && /login|signin|sso/i.test(s.framePath || ''));
+  let cut = 0;
+  while (cut < steps.length && isLoginStep(steps[cut])) cut++;
+  // 登录段后面常紧跟着「按回车提交」，它和登录是一体的
+  if (cut > 0 && steps[cut]?.type === 'press' && steps[cut].inFrame) cut++;
+  const dropped = steps.slice(0, cut);
+  steps = steps.slice(cut);
+
   const lines = [
-  `import { test, expect } from '@playwright/test';`,
+  `import { test, expect, dismissOverlays } from '../tests/fixtures';`,
   ``,
   `// 由 web-record 生成：${name}`,
   `// 写请求已自动生成断言（状态码 + 请求体形态）；GET 保留为注释。`,
-  `// 请求体里的 UUID / 长数字 ID 已换成 expect.any(String)，避免每次运行都失效。`,
+  `// 请求体里的 UUID / 长数字 ID / 时间戳已放宽，避免每次运行都失效。`,
+  `//`,
+  `// 用 authedPage 而不是裸 page：登录态由 tests/auth.setup.ts 存一次、这里复用。`,
+  `// 首启弹窗由 dismissOverlays 统一关掉 —— 它们的遮罩会静默吞掉后续点击，`,
+  `// 而失败会报在后面某个 waitForResponse 上，看着像「接口没发」。`,
   `//`,
   `// 仍需人工处理：`,
   `//   1. 收紧仍标着 AMBIGUOUS 的选择器（多数已自动加了作用域）`,
   `//   2. 删掉与意图无关的误操作步骤`,
-  `//   3. 会产生数据的用例补上清理逻辑`,
+  `//   3. 会产生数据的用例补上清理逻辑（建议放 finally，中途失败也能还原）`,
+  ...(dropped.length
+    ? [
+        `//`,
+        `// 已自动去掉开头 ${dropped.length} 步登录（改用登录态复用）。原步骤：`,
+        ...dropped.map((s) => `//   ${s.type} ${s.sel}${s.secret ? '  <密码，未记录>' : ''}`),
+      ]
+    : []),
   ``,
-  `test(${JSON.stringify(name)}, async ({ page }) => {`,
+  `test(${JSON.stringify(name)}, async ({ authedPage: page }) => {`,
   `  await page.goto(${JSON.stringify(strip(startUrl) || '/')});`,
+  `  await dismissOverlays(page);`,
 ];
 
 steps.forEach((s, i) => {

@@ -125,7 +125,38 @@ Expected：[已完成        ]
 
 ## 生成的脚本已经做了什么
 
-两件最费手工的事是自动完成的。
+先说三件**直接决定回放能不能跑通**的，它们都由生成器自动完成 —— 这三件事以前
+每录一次就要手工补一次，而且漏了任何一件，失败都不会指向真正的原因。
+
+### 登录段直接不生成
+
+录制几乎总是从登录页开始，于是登录必然被录进来；而它几乎总是回放不了：表单常在
+iframe 里、常有同 placeholder 的诱饵输入框、密码又不该写进脚本。更重要的是，
+它对用例的意图毫无贡献 —— 每条用例重登一次，只是让每条用例都多一个失败点。
+
+所以生成器**砍掉开头连续的那一段登录**（iframe 路径含 login/sso，或密码框），
+改用 `authedPage`：登录态由 `tests/auth.setup.ts` 存一次、所有用例复用。
+砍掉的步骤原样留在文件头注释里，需要时能捡回来。只砍开头 —— 登录之后再出现的
+iframe 操作是正经业务。
+
+### 自带关弹窗前奏
+
+草稿开头会有一句 `await dismissOverlays(page);`。别小看它，今天这一条就卡了三轮：
+
+- 首启弹窗**常常不止一个**（实测叠了两个），只关一个，剩下那层照样吞掉所有点击；
+- 遮罩关掉后**还会残留一会儿**，而它拦截点击时 Playwright 认为 click «成功了» ——
+  失败报在后面某个 `waitForResponse` 上，看着像「接口没发」；
+- 遮罩**常驻 DOM 只靠 CSS 隐藏**，所以判「可见数为 0」，判 `toHaveCount(0)` 永远等不到。
+
+### 作用域不会锚在时间上
+
+给撞车文本找作用域时，跳过日期、时刻、长数字、UUID 这类值。实测栽过：一行结果被
+锚在 `hasText: "2026-08-14 10:22:29"` 上，**当场连跑三遍全绿**，几小时后数据重跑就
+再也找不到那一行。这类失败延迟发作，录完当场验证不出来 —— 所以只能在生成时避开。
+
+---
+
+另外两件最费手工的事也是自动完成的。
 
 ### 撞车的文本会自动加作用域
 
@@ -189,14 +220,14 @@ expect(resp1.request().postDataJSON()).toMatchObject({
 这些东西出现与否取决于账号状态和历史操作。录制时人手一关就过去了，脚本会被
 `<div class="mask">` 拦住点击直到超时 —— 报错信息还只说"元素不可点击"。
 
-录制器把这些关闭动作记成了 CSS 兜底的「存在则点」，方向是对的，但选择器往往很脆。
-稳妥做法是在用例开头显式收拾一遍，用 `assets/fixtures.ts` 里的 `clickIfPresent`：
+**草稿开头的 `dismissOverlays(page)` 已经处理了常见情形**（关到没有可见遮罩为止）。
+但它认的是几个常见 class；组件库不同就得给它传选择器：
 
 ```ts
-for (const sel of ['#dialog_panel .closeIcon', '.tipBox_close', '.introduce-skip']) {
-  await clickIfPresent(page.locator(sel).first());
-}
+await dismissOverlays(page, ['.my-dialog-close', '.guide-skip'], '.my-mask');
 ```
+
+关不掉的弹窗仍然要人看一眼 —— 有些引导必须走完流程，点关闭没用。
 
 > **不要用 `el.remove()` 把遮罩从 DOM 里删掉。** 这招看着很爽，代价是：遮罩背后的
 > 应用状态没变（引导流程仍在进行、body 仍是 `overflow:hidden`），后面的操作会以更
@@ -216,12 +247,8 @@ for (const sel of ['#dialog_panel .closeIcon', '.tipBox_close', '.introduce-skip
 
 **剩下的顺序问题仍然要人看** —— 那些是真的人类改主意，录制器无从分辨。
 
-更好的做法是让登录彻底退出用例：登录是低频操作，`.auth/state.json` 存一次，之后
-用 `authedPage` fixture 复用。详见 [references/auth-and-session.md](references/auth-and-session.md)。
-
-顺带一提，登录请求常常不在 `apiFilter` 范围内（走 `/unisso/` 之类的独立路径），
-于是挂在密码那一步下面的往往是同一时间窗口里的**别的**请求。那种断言看着像在验证
-登录成功，其实什么也没验证，删掉即可。
+登录本身已经不进草稿了（见上文「登录段直接不生成」），所以这一条现在只影响
+业务步骤。登录态的存取见 [references/auth-and-session.md](references/auth-and-session.md)。
 
 **③ 深层导航改直达**
 
@@ -244,8 +271,9 @@ for (const sel of ['#dialog_panel .closeIcon', '.tipBox_close', '.introduce-skip
 | 顺序 | 方式 | 稳定性 |
 |---|---|---|
 | 1 | `getByTestId`（`data-testid` / `data-test` / `data-cy` / `data-qa`）**且全页唯一** | 最稳，专为测试而设 |
-| 2 | 输入框专用：`getByLabel` → `getByPlaceholder` | 稳，直接绑定表单语义 |
-| 3 | `getByRole(role, { name })` | 很稳，跟着无障碍语义走 |
+| 2 | 输入框专用：`getByLabel` → `getByPlaceholder`，**都要求全页唯一** | 稳，直接绑定表单语义 |
+| 2.5 | 输入框退路：`locator('#id')`（id 不含 3 位以上数字） | 一般，取决于 id 是否手写 |
+| 3 | `getByRole(role, { name })`，**要求同 role+名的元素唯一** | 很稳，跟着无障碍语义走 |
 | 4 | `getByText` | 一般，需检查是否撞车 |
 | 5 | `locator(cssPath)` | 兜底，随时会失效 |
 
@@ -257,6 +285,12 @@ for (const sel of ['#dialog_panel .closeIcon', '.tipBox_close', '.introduce-skip
 顺带一提，`getByTestId` 只认 Playwright 配置里的 `testIdAttribute`（默认 `data-testid`）。
 元素只有 `data-cy` / `data-qa` 时，录制器生成属性选择器 `locator('[data-cy="..."]')`，
 而不是 `getByTestId` —— 后者语法上没错，回放时却根本找不到元素。
+
+**唯一性检查对 label / placeholder / role+名同样生效。** 登录页尤其容易踩：实测一个
+表单里有两个 placeholder 完全相同的输入框，真的那个带 `id="username"`，另一个是诱饵。
+录制时点哪个都能跑通，回放**第一步**就 strict mode 报错 —— 而报错长得像"页面变了"。
+这时录制器退到 `locator('#username')`，而不是 `getByText(无障碍名)`：后者语法正确，
+但 `input` 没有文本内容，回放永远找不到元素 —— 这种"看着对的死选择器"比报错更难查。
 
 输入框之所以插在 role 前面：只有 placeholder 的输入框，其无障碍名恰好**就是** placeholder，
 于是 role 分支会产出 `getByRole('textbox', { name: '请输入用户名' })`。那样能用，但一旦后来
@@ -423,7 +457,7 @@ node test/verify.mjs
 ```
 
 它会造一个包含全部边界情况的页面（同名元素、自增 id、密码框、会发请求的按钮），
-用真实浏览器录一遍，逐条断言。48 项全过才退出 0。
+用真实浏览器录一遍，逐条断言。60 项全过才退出 0。
 
 **加了新能力就往里加断言。** 这个文件是上面所有承诺的唯一执行者 —— 承诺写进
 SKILL.md 却没有对应断言，下一次重构就会悄悄把它改没。

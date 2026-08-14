@@ -120,6 +120,18 @@ chk('点外层、读内层',
 // 命中几百个元素的 getByTestId，回放必然 strict mode 失败。
 const dupTid = steps.find((s) => s.label?.includes('重复标记甲'));
 chk('不唯一的 testid 不被采用', dupTid && !dupTid.sel.includes('getByTestId'), dupTid?.sel);
+// placeholder 撞车：登录页常有诱饵输入框，两个 placeholder 一模一样。
+// 不验唯一性的话，回放第一步就 strict mode 报错，看起来像"页面变了"。
+const dupPh = steps.find((s) => s.type === 'fill' && s.value === 'zhangsan');
+chk('不唯一的 placeholder 不被采用',
+  dupPh && !dupPh.sel.includes('getByPlaceholder'), dupPh?.sel);
+chk('也不会退回同样撞车的 getByRole',
+  dupPh && !dupPh.sel.includes('getByRole'), dupPh?.sel);
+// 退到「能用的东西」上才算修好。退成 getByText 是最坏的结果：
+// 语法正确、回放却永远找不到元素，因为 input 没有文本内容。
+chk('退到稳定 id 而不是 getByText',
+  dupPh?.sel === 'locator("#real_user")', dupPh?.sel);
+
 const cyStep = steps.find((s) => s.label?.includes('仅有 data-cy'));
 chk('data-cy 生成属性选择器而非 getByTestId',
   cyStep?.sel.includes('[data-cy=') && !cyStep.sel.includes('getByTestId'), cyStep?.sel);
@@ -139,6 +151,38 @@ chk('生成时把顺序纠正为先填值后回车', iFill >= 0 && iPress >= 0 &
 chk('点在空白处不产生步骤',
   !steps.some((s) => s.sel === 'locator("html")' || s.sel === 'locator("body")'),
   steps.filter((s) => /locator\("(html|body)"\)/.test(s.sel)).length + ' 条');
+
+// ── 回放稳定性：生成的草稿必须自带三件事 ──
+chk('草稿走 authedPage 而不是裸 page',
+  /async \(\{ authedPage: page \}\)/.test(spec) && spec.includes("from '../tests/fixtures'"),
+  spec.split('\n')[0]);
+// 登录段只砍**开头连续**的那一段（登录之后的 iframe 操作是正经业务，不能砍）。
+// fixture 里 iframe 步骤在中间，所以这里用一份合成录制直接验生成器。
+{
+  const t0 = Date.now();
+  const loginSteps = [
+    { id: 'L1', t: t0, type: 'fill', sel: 'getByPlaceholder("用户名")', kind: 'placeholder',
+      value: 'alice', inFrame: true, framePath: '/custom_login.html', url: '/' },
+    { id: 'L2', t: t0 + 1, type: 'fill', sel: 'getByPlaceholder("密码")', kind: 'placeholder',
+      secret: true, inFrame: true, framePath: '/custom_login.html', url: '/' },
+    { id: 'L3', t: t0 + 2, type: 'press', sel: 'getByPlaceholder("密码")', kind: 'placeholder',
+      inFrame: true, framePath: '/custom_login.html', url: '/' },
+    { id: 'B1', t: t0 + 3, type: 'click', sel: 'getByText("业务按钮", { exact: true })',
+      kind: 'text', label: '业务按钮', url: '/' },
+  ];
+  const loginSpec = generateSpec({ steps: loginSteps, net: [], startUrl: 'http://127.0.0.1/', name: 'login-check' });
+  const body = loginSpec.split('test(')[1] || '';
+  chk('开头的登录段被自动去掉', !/custom_login/.test(body) && !body.includes('REC_PASSWORD'),
+    /custom_login/.test(body) ? '正文里仍有登录步骤' : '正文无登录步骤');
+  chk('登录之后的业务步骤保留', body.includes('业务按钮'), '业务按钮仍在');
+  chk('去掉的登录步骤留在注释里备查', /已自动去掉开头 \d+ 步登录/.test(loginSpec),
+    loginSpec.match(/已自动去掉开头 \d+ 步登录/)?.[0]);
+}
+chk('草稿自带关弹窗前奏', /await dismissOverlays\(page\);/.test(spec), 'dismissOverlays');
+// 作用域不能锚在时间戳上：当场绿、几小时后必挂，是最难查的一类
+chk('作用域不采用时间/日期类文本',
+  !/hasText: "\d{4}-\d{2}-\d{2}/.test(spec) && !/hasText: "[^"]*\d{1,2}:\d{2}/.test(spec),
+  spec.match(/hasText: "[^"]{0,24}"/g)?.slice(0, 3).join(' ') || '无 hasText');
 
 // 浮层里的选项与触发器同名（两处都叫 Windows系统），必须靠浮层作用域区分。
 // 注意按 css 找选项那一步 —— 只按 label 找会先命中触发器。
