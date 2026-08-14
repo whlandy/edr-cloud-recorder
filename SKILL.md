@@ -22,6 +22,76 @@ description: >
 
 把手工的网页操作变成两样东西：一份**可回放的 Playwright 脚本**，和一份**接口调用记录**。
 
+## 给 agent 的执行流程
+
+人读这份文档可以从头翻；agent 照这一节做就够，细节到对应章节再查。
+
+```
+① 备环境 → ② 人录制 → ③ 回放 → ④ 失败分诊 → ⑤ 绿了之后的复核
+                          ↑__________________|
+```
+
+**① 备环境**（一次）
+
+```bash
+cp -r <skill>/assets/* . && npm install && npx playwright install chromium
+```
+
+**② 录制 —— 这一步只能人做**
+
+```bash
+node <skill>/scripts/record.mjs --name <flow>
+```
+
+agent 不要代替用户点页面。录制的价值就在于「真人真实操作」，代点等于自己出题自己答。
+把命令给用户，等他关掉浏览器窗口。
+
+**③ 回放**
+
+```bash
+REC_DRAFTS=1 npx playwright test recordings/<flow>.spec.ts --project=chromium
+```
+
+**④ 失败分诊 —— 这张表是这份 skill 最值钱的部分**
+
+界面自动化的报错**经常指向错误的地方**。照着报错字面去修，会连着几轮都修错东西。
+
+| 报错长什么样 | 先怀疑什么 | 怎么确认 |
+|---|---|---|
+| `waitForResponse` 超时 | **click 根本没点上**，而不是接口没发 | 把 `Promise.all` 拆开：单独 `await click()`。若 click 自己超时，真凶是它。两者超时不一致时，短的先抛，会盖住真错误 |
+| `strict mode violation` | 选择器撞车 | 看报错里列的 N 个元素，向上找唯一容器限定 |
+| 元素找不到，但选择器看着对 | 作用域锚在了易变值上；或父节点没展开 | `grep` 选择器里有没有日期/时刻/长数字；树类组件先钻进父节点 |
+| **click 成功了却没反应** | 点在容器上（一行里有多个可点区域）；或点的是已选中的东西 | dump 该行子元素：`row.evaluate(e => [...e.children].map(c => c.tagName+'.'+c.className))` |
+| 点击被拦截 | 遮罩没消失（常不止一层，且常驻 DOM 只靠 CSS 隐藏） | `dismissOverlays(page)`；判**可见数**为 0，不是元素数 |
+| 用例当场绿、隔天红 | 断言钉死了时间戳/易变数据 | 按稳定身份定位，再断言格式 |
+
+**永远不要用 `waitForTimeout` 凑时间**，也不要用 `networkidle`。要等就等那件事本身：
+`expect.poll` / `waitForResponse` / 对目标状态的 `expect`。
+
+**⑤ 绿了之后必须复核 —— 绿 ≠ 对**
+
+这一步不能省。界面测试最危险的失败是**不报错**的那种。
+
+```bash
+grep -rn "fixme\|test.skip" tests/ recordings/     # 有没有被静默跳过
+grep -rn "toBe\|toMatchObject" <spec>              # 断言还在不在，有没有被削弱
+npx playwright test <spec> && npx playwright test <spec>   # 连跑两遍
+```
+
+- 写操作用例：还原逻辑必须在 `finally` 里。放在最后一行的话，中途失败就把系统留在改动态
+- 写操作用例：建议加 `POLICY_WRITE=1` 之类的显式闸门，默认只跑到「定位全部通过」为止
+- 换个浏览器 profile（或清掉 sessionStorage）再跑一遍：选中态、展开态这类「上次留下的状态」最容易让脚本在别人机器上挂
+
+**和 Playwright 官方 agent 的分工**
+
+Playwright ≥1.56 自带 `playwright-test-healer`（`npx playwright init-agents --loop claude`）。
+它就是第 ③④ 步的自动化，装了就用，别自己重写。但**它的目标函数是让测试变绿，不是变对** ——
+它的提示词里写着「do the most reasonable thing possible to pass the test」，还允许它用
+`test.fixme()` 跳过。所以它改完之后，**第 ⑤ 步的复核照做不误**。
+
+反过来，healer 帮不上的是「根本不失败」的那类错（开关拨反、断言挂在无关接口上、
+作用域静默退到根节点）。那些只能在录制阶段预防 —— 也就是这份 skill 干的事。
+
 ## 为什么不用 `npx playwright codegen`
 
 codegen 只回答「点了哪里」，不回答「点完之后发生了什么」。当用户的真正目的是搞清楚
@@ -399,6 +469,7 @@ await page.frameLocator('iframe[src*="custom_login.html"]').getByPlaceholder('�
 | [references/troubleshooting.md](references/troubleshooting.md) | 浏览器起不来；证书报错；偶发 5xx；请求没被记录 |
 | [references/ui-assertions.md](references/ui-assertions.md) | 断言读到的和你以为的不一致；界面不刷新；连错窗口/连错机器；怎么选断言点 |
 | [references/endpoint-orchestration.md](references/endpoint-orchestration.md) | 云端改了、要到**终端上**验证是否生效；edr-wd 怎么装、怎么配合 |
+| [agents/web-record.agent.md](agents/web-record.agent.md) | 要把这套流程交给一个 agent 跑；格式对齐 Playwright 官方 agent，可直接放进 `.claude/agents/` |
 
 ## 对旧录制重新生成
 
