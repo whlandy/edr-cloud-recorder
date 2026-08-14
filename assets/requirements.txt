@@ -1,0 +1,7 @@
+# 回放工程的依赖。装完别忘了 `python -m playwright install chromium`
+# （本机 ms-playwright 缓存里已有构建的话，chrome_path.py 会自动复用，可以跳过）
+playwright>=1.58
+pytest>=8.0
+pytest-playwright>=0.7          # page / context / browser fixture，--tracing 等选项
+pytest-rerunfailures>=14.0      # 对应 playwright.config.ts 的 retries
+pytest-timeout>=2.3             # 对应 playwright.config.ts 的 timeout（单用例超时）
