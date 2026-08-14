@@ -96,31 +96,66 @@ if (scope === 'group' && cascade) {
 
 ## 把还原写进用例，而不是靠人记得
 
-写入型用例的标准结构：
+### 还原必须在 `finally` 里
+
+这是最容易写错、代价又最大的一处。下面这种写法看着完整，其实只在**顺利跑完**时才还原：
 
 ```ts
-test('下发配置并还原', async ({ page }) => {
-  const before = await readState(page, TARGET);
-
-  const { status, body } = await applyAndCapture(page);
-  expect(status).toBe(200);
-  expect(body.scope).toMatchObject({ id: TARGET, mode: 'apply' });
-
-  await revert(page);
-
-  const after = await readState(page, TARGET);
-  expect(after, '未能还原').toBe(before);
-});
+// ❌ 中间任何一步挂掉，revert 都不会执行，对象就被留在改动后的状态
+const before = await readState(page, TARGET);
+await applyAndCapture(page);
+expect(status).toBe(200);      // ← 这里一挂，下面就不走了
+await revert(page);
 ```
 
-用例失败时基线还在内存里 —— 把它写到文件，人工回滚时用得上：
+失败恰恰是最需要还原的时刻 —— 而且失败往往是连锁的：第一次跑挂在中途留下脏状态，
+第二次跑的「基线」读到的就是那个脏状态，于是错误被固化下来，越查越乱。
 
 ```ts
-} catch (e) {
-  fs.writeFileSync(`rollback-${TARGET}.json`, before);
-  throw e;
+// ✅ 无论成败都还原
+let touched = false;
+try {
+  await setState(page, TARGET, 'off');
+  touched = true;
+  const { status } = await applyAndCapture(page);
+  expect(status).toBe(200);
+} finally {
+  if (touched) {
+    await setState(page, TARGET, before).catch(() => {});
+    const back = await applyAndCapture(page).catch(() => null);
+    console.log(back ? `已还原（${back.status}）` : '⚠ 还原失败，需人工检查');
+  }
 }
 ```
+
+`touched` 这个标记不能省：还没改动就失败时（比如根本没找到那个开关），
+不该再去"还原"一个没被动过的对象 —— 那是凭空多出来的一次写操作。
+
+还原本身也要容错（`.catch`）并把结果打出来。还原失败是必须让人看见的事，
+不能被 `finally` 里的异常吞掉，更不能悄悄过去。
+
+### 真实写入要有显式闸门
+
+写入型用例默认**不应该**真的写。定位、找元素、读状态这些都跑，到真正下发前停住：
+
+```ts
+const WRITE = !!process.env.POLICY_WRITE;
+
+// ...定位、读基线，全部照跑...
+
+if (!WRITE) {
+  console.log('只读模式：定位全部通过，未下发。加 POLICY_WRITE=1 才真的执行。');
+  test.skip(true, '默认只读');
+  return;
+}
+```
+
+这样一条用例有两种用法，而且**共用同一份定位代码**：
+
+- 平时（CI、冒烟）跑只读，验证「界面结构还在、元素还找得到」，零副作用；
+- 需要验证写链路时显式打开，此时还原逻辑已经在 `finally` 里等着。
+
+比"注释掉那几行"或"另建一个只读副本"都好：注释掉的代码会腐烂，副本会和主体分叉。
 
 ## 记录你做过什么
 
