@@ -127,12 +127,20 @@ export const RECORDER = () => {
     return p.join(' > ');
   };
 
-  // 统计「可见且文本恰好等于 t 的叶子元素」个数 —— 用来判断 getByText 会不会撞车。
+  // 统计「文本恰好等于 t 的叶子元素」个数 —— 用来判断 getByText 会不会撞车。
   // 撞车的选择器在录制时能跑通（点的是当前那个），回放时却可能点到另一个，
   // 这种失败最难查，所以宁可在生成脚本时就标出来。
+  //
+  // 这里**不能**过滤可见性。实测 Playwright 各定位器对隐藏元素的态度并不一致：
+  //   getByText / getByPlaceholder / getByLabel / getByTestId → 匹配隐藏元素
+  //   getByRole                                              → 走无障碍树，不匹配
+  // 只数可见元素的话，「触发器文本」与「收起的浮层里同名选项」会被算成 1 个，
+  // 于是产出不带作用域的 getByText —— 回放时 strict mode 必然报
+  // "resolved to 2 elements"，而录制当时一切正常。
+  // （另外 offsetParent 本身也是坏判据：position:fixed 的可见元素它判为 null。）
   const countText = (t) =>
     [...document.querySelectorAll('*')].filter(
-      (x) => x.offsetParent && txt(x) === t && x.querySelectorAll('*').length === 0,
+      (x) => txt(x) === t && x.querySelectorAll('*').length === 0,
     ).length;
 
   /**
@@ -172,8 +180,10 @@ export const RECORDER = () => {
     // 浮层优先：它天然把选项和页面其他同名文本隔开
     const fl = floatingAncestor(el);
     if (fl) {
+      // 同 countText：作用域内的唯一性也要按「含隐藏元素」来数，
+      // 否则作用域看着够用，回放时被隐藏的同名元素撞掉
       const inside = [...fl.el.querySelectorAll('*')].filter(
-        (x) => x.offsetParent && txt(x) === name && x.querySelectorAll('*').length === 0);
+        (x) => txt(x) === name && x.querySelectorAll('*').length === 0);
       if (inside.length === 1) {
         if (fl.role && document.querySelectorAll(`[role="${fl.role}"]`).length === 1) {
           return `getByRole(${JSON.stringify(fl.role)})`;
@@ -189,7 +199,7 @@ export const RECORDER = () => {
     let n = el.parentElement, depth = 0;
     while (n && n !== document.body && depth < 8) {
       const inside = [...n.querySelectorAll('*')].filter(
-        (x) => x.offsetParent && txt(x) === name && x.querySelectorAll('*').length === 0,
+        (x) => txt(x) === name && x.querySelectorAll('*').length === 0,
       );
       if (inside.length === 1) {
         const role = n.getAttribute('role') || (n.tagName === 'TR' ? 'row' : n.tagName === 'DIALOG' ? 'dialog' : null);
@@ -286,7 +296,19 @@ export const RECORDER = () => {
     // 这里的 name 是无障碍名（多半来自 placeholder 或 label），拿它去 getByText
     // 会生成一个语法正确、回放却永远找不到元素的选择器。
     const isFormControl = ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.tagName);
-    if (name && !isFormControl) {
+
+    // getByText 解析到的是「最深的那个匹配元素」。如果本元素的文本其实来自某个
+    // 后代（整行可点的开关行就是这样：文本在行内的 <span> 里），那么生成的
+    // getByText 选中的是那个后代，不是本元素。
+    //
+    // 对普通点击影响不大 —— 事件会冒泡回来。但开关要在选中的元素**下面**读状态
+    // （sw.locator('.eui_toggle_container')），选中 span 就读不到了：状态层是
+    // span 的兄弟，不是它的后代。回放时报 30 秒超时，而录制当时一切正常。
+    const textIsOwn = name
+      ? ![...e.querySelectorAll('*')].some((x) => txt(x) === name)
+      : false;
+
+    if (name && !isFormControl && textIsOwn) {
       const n = countText(name);
       if (n <= 1) return { kind: 'text', code: `getByText(${JSON.stringify(name)}, { exact: true })` };
 
@@ -303,6 +325,14 @@ export const RECORDER = () => {
         ambiguous: true, matches: n,
       };
     }
+    // 稳定 id 是位置型 CSS 路径之外最好的退路：它不随 DOM 结构变化。
+    // 含 3 位以上数字的 id 多半是运行时生成的（tip_box_10059），第二次跑就变了。
+    const anyId = e.getAttribute?.('id');
+    if (anyId && !/\d{3,}/.test(anyId)
+        && document.querySelectorAll(`#${CSS.escape(anyId)}`).length === 1) {
+      return { kind: 'id', code: `locator(${JSON.stringify('#' + anyId)})` };
+    }
+
     return { kind: 'css', code: `locator(${JSON.stringify(cssPath(e))})` };
   };
 
