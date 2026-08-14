@@ -1,0 +1,328 @@
+"""驱动一遍带全部边界情况的页面，把录制结果交出来（fixture-drive.mjs 的 Python 版）。
+
+页面 HTML 就在本文件里。迁移期间它是从 fixture-drive.mjs 抠出来的，
+两边共用同一份才谈得上「Python 侧和 Node 侧录出来的东西一致」；
+JS 侧退役后已内联，这里是唯一副本。
+"""
+
+import threading
+import weakref
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
+
+from recorder_loader import recorder_source
+
+HTML = """<!doctype html><meta charset="utf-8"><body>
+  <button data-testid="save-btn">保存</button>
+  <button id="submit_9" onclick="sendOrder()">提交订单</button>
+  <button onclick="fetch('/api/bad',{method:'POST',body:'{}'})">触发失败</button>
+  <input placeholder="请输入用户名">
+  <input type="password" placeholder="密码">
+  <label><input type="checkbox" id="agree"> 同意条款</label>
+  <table>
+    <tr><td>张三</td><td><span class="op">删除</span></td></tr>
+    <tr><td>李四</td><td><span class="op">删除</span></td></tr>
+    <tr><td>王五</td><td><span class="op">删除</span></td></tr>
+  </table>
+  <div id="tip_box_10059"><span class="close_x">×</span></div>
+  <a id="go" href="/next">立刻跳转</a>
+  <iframe src="/login_frame.html" width="300" height="120"></iframe>
+
+  <!-- 标准开关：有 role 和 aria-checked -->
+  <div id="sw1" role="switch" aria-checked="false" tabindex="0">自保护</div>
+
+  <!-- 自研开关：只有 class，没有 aria -->
+  <div id="sw2" class="ui-switch off"><span class="knob"></span></div>
+
+  <!-- 整行可点，开关是点击目标的「后代」而不是祖先；状态写在内层 class 上 -->
+  <div id="row_sp" class="labelAndItem" style="padding:24px">
+    <span>行内自保护</span>
+    <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
+  </div>
+
+  <!-- 慢开关：拨动后 500ms 才更新 class。固定等 60ms 的话检测不到变化，
+       会退回盲点击 —— 回放时方向取决于当时的初始状态，而且不报错 -->
+  <div id="row_slow" class="labelAndItem" style="padding:24px">
+    <span>延迟自保护</span>
+    <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
+  </div>
+
+  <!-- 组件框架批量吐出的同名 testid：不唯一，用它回放必然 strict mode 失败 -->
+  <div data-testid="text-comp-span">重复标记甲</div>
+  <div data-testid="text-comp-span">重复标记乙</div>
+
+  <!-- 只有 data-cy：Playwright 默认的 testIdAttribute 是 data-testid，认不到 -->
+  <button data-cy="cy-only">仅有 data-cy</button>
+
+  <!-- 两个 placeholder 完全相同的输入框：真的那个有 id，另一个是诱饵。
+       录制时点哪个都能跑通，回放必然 strict mode 报错。 -->
+  <div id="real_box"><input id="real_user" placeholder="账号/手机号"></div>
+  <div id="decoy_box"><input placeholder="账号/手机号" autocomplete="on"></div>
+
+  <!-- 触发器显示的值，和下面浮层里的选项文本一模一样 -->
+  <div id="trigger">Windows系统</div>
+  <div id="pop" role="listbox" style="position:absolute;z-index:999;display:none">
+    <div class="opt">Windows系统</div><div class="opt">Linux系统</div>
+  </div>
+
+  <script>
+    // 请求体里混着三类值：稳定的、字符串型雪花 ID、数字型毫秒时间戳。
+    // 后两类每次运行都不同，钉进断言就等于让用例必挂。
+    function sendOrder() {
+      fetch('/api/ok', { method: 'POST', body: JSON.stringify({
+        a: 1, pageSize: 100, id: '39049753287328', endTime: Date.now(),
+      }) });
+    }
+    sw1.addEventListener('click', () => sw1.setAttribute('aria-checked',
+      sw1.getAttribute('aria-checked') === 'true' ? 'false' : 'true'));
+    sw2.addEventListener('click', () => sw2.classList.toggle('off') || sw2.classList.toggle('on'));
+    trigger.addEventListener('click', () => { pop.style.display = 'block'; });
+    row_sp.addEventListener('click', () =>
+      row_sp.querySelector('.eui_toggle_container').classList.toggle('toggled'));
+    row_slow.addEventListener('click', () => setTimeout(() =>
+      row_slow.querySelector('.eui_toggle_container').classList.toggle('toggled'), 500));
+  </script>
+</body>"""
+
+FRAME = """<!doctype html><meta charset="utf-8"><body>
+  <input placeholder="iframe内用户名">
+  <button>iframe内登录</button></body>"""
+
+NEXT = """<!doctype html><meta charset="utf-8"><body><h1>第二页</h1>
+  <button data-testid="after-nav">跳转后的按钮</button></body>"""
+
+REPO = Path(__file__).resolve().parent.parent
+RECORDER_MJS = REPO / "scripts/recorder-inject.mjs"
+
+
+def _pages():
+    return {"/": HTML, "/login_frame.html": FRAME, "/next": NEXT}
+
+
+def _serve(pages):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, ctype, body):
+            raw = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def _404(self):
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            if self.path in pages:
+                return self._send(200, "text/html; charset=utf-8", pages[self.path])
+            self._404()
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if self.path == "/api/ok":
+                return self._send(200, "application/json", '{"code":"200"}')
+            if self.path == "/api/bad":
+                return self._send(400, "application/json",
+                                  '{"error":"subnetIdList 不能为空"}')
+            self._404()
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def drive(chrome: str | None = None) -> dict:
+    srv = _serve(_pages())
+    base = f"http://127.0.0.1:{srv.server_port}"
+
+    steps, seen, net = [], set(), []
+
+    def accept(st):
+        if st and st.get("id") and st["id"] not in seen:
+            seen.add(st["id"])
+            steps.append(st)
+
+    try:
+        with sync_playwright() as p:
+            launch = {"headless": True}
+            if chrome:
+                launch["executable_path"] = chrome
+            browser = p.chromium.launch(**launch)
+            ctx = browser.new_context()
+
+            # 主通道必须在 add_init_script 之前建立，这样页面里 __recPush 一定存在
+            ctx.expose_binding("__recPush", lambda source, st: accept(st))
+            ctx.add_init_script(script=recorder_source(RECORDER_MJS))
+
+            page = ctx.new_page()
+
+            # 给请求编号、响应带上它 —— 与 record.py 一致，让生成器走 id 配对路径
+            request_ids = weakref.WeakKeyDictionary()
+            seq = {"n": 0}
+
+            def on_request(r):
+                if r.resource_type in ("xhr", "fetch"):
+                    seq["n"] += 1
+                    request_ids[r] = seq["n"]
+                    net.append({"id": seq["n"], "t": _now(), "phase": "req",
+                                "method": r.method, "url": r.url,
+                                "body": r.post_data})
+
+            def on_response(r):
+                if r.request.resource_type not in ("xhr", "fetch"):
+                    return
+                e = {"requestId": request_ids.get(r.request), "t": _now(),
+                     "phase": "res", "method": r.request.method,
+                     "url": r.url, "status": r.status}
+                # 响应体必须**当场**取。攒到最后再取会拿到
+                # `Network.getResponseBody: No resource with given identifier found`——
+                # 中间的导航和后续流量会让 Chromium 把 body 从网络缓存里淘汰。
+                # sync API 在事件回调里同步调 r.text() 是安全的（已实测无重入问题）。
+                if r.status >= 400 or r.request.method != "GET":
+                    try:
+                        e["body"] = r.text()[:2000]
+                    except Exception:
+                        e["body"] = None
+                net.append(e)
+
+            page.on("request", on_request)
+            page.on("response", on_response)
+
+            page.goto(base)
+            page.click("[data-testid=save-btn]")
+            page.fill('input[placeholder="请输入用户名"]', "alice")
+            page.fill("input[type=password]", "sup3rs3cret")
+            page.check("#agree")
+            page.click("#submit_9")
+            page.wait_for_timeout(300)
+            page.click("text=触发失败")
+            page.wait_for_timeout(400)
+            page.locator("tr", has_text="李四").locator(".op").click()
+            page.click("#tip_box_10059 .close_x")
+            page.wait_for_timeout(300)
+
+            # iframe 内的操作：回放时必须 frameLocator 进去
+            page.frame_locator("iframe").get_by_placeholder("iframe内用户名").fill("frame-user")
+            page.wait_for_timeout(200)
+
+            # 点完立刻跳转：步骤只存在页面内数组的话，会随页面卸载一起消失
+            with page.expect_navigation(url="**/next"):
+                page.click("#go")
+            page.click("[data-testid=after-nav]")
+            page.wait_for_timeout(300)
+
+            # ── 开关与浮层 ──
+            page.goto(base)
+            page.wait_for_timeout(500)
+            page.click("#sw1")                       # aria 开关：false → true
+            page.wait_for_timeout(300)
+            page.click("#trigger")                   # 打开浮层
+            page.wait_for_timeout(300)
+            page.locator("#pop .opt", has_text="Windows系统").click()   # 与触发器同名
+            page.wait_for_timeout(400)
+
+            # 整行可点的开关：点在行的 padding 上，开关是这一下的后代
+            page.click("#row_sp", position={"x": 5, "y": 5})
+            page.wait_for_timeout(400)
+
+            # 打字 + 回车：值在 change 才记，按键当场记 → 录出来是「先回车后填值」
+            page.click('input[placeholder="请输入用户名"]')
+            page.fill('input[placeholder="请输入用户名"]', "bob")
+            page.press('input[placeholder="请输入用户名"]', "Enter")
+            page.wait_for_timeout(300)
+
+            # 点在页面空白处：会一路上溯到 html/body，回放时点了等于没点
+            page.mouse.click(2, 2)
+            page.wait_for_timeout(300)
+
+            page.locator("[data-testid=text-comp-span]").first.click()
+            page.wait_for_timeout(300)
+            page.click("[data-cy=cy-only]")
+            page.wait_for_timeout(300)
+
+            # 慢开关：class 要 500ms 后才变。固定等 60ms 检测不到变化，
+            # 会退回盲点击 —— 回放时方向取决于当时的初始状态，而且不报错
+            page.click("#row_slow", position={"x": 5, "y": 5})
+            page.wait_for_timeout(1500)
+
+            # 同 placeholder 的两个输入框，填真的那个。
+            # 必须失焦：fill 的值是在 change 事件里记的，不失焦就不会产生步骤。
+            page.fill("#real_user", "zhangsan")
+            page.locator("#real_user").blur()
+            page.wait_for_timeout(300)
+
+            # ── 断言菜单：右键 → 改 expected → 提交 ──
+            page.goto(base)
+            page.wait_for_timeout(500)
+
+            def sh(sel):
+                return page.locator("#__rec_assert_menu__").locator(sel)
+
+            # 1) 文本断言，用户把默认值改掉
+            page.locator("[data-testid=save-btn]").click(button="right")
+            page.wait_for_timeout(300)
+            sh("#es").fill("用户确认过的值")
+            sh("#ok").click()
+            page.wait_for_timeout(300)
+
+            # 2) 空 expected 必须被挡住，勾了「允许空值」才能提交
+            page.locator("[data-testid=save-btn]").click(button="right")
+            page.wait_for_timeout(300)
+            sh("#es").fill("")
+            page.wait_for_timeout(200)
+            blocked = sh("#ok").is_disabled()
+            sh("#allowEmpty").check()
+            page.wait_for_timeout(200)
+            unblocked = not sh("#ok").is_disabled()
+            sh("#cancel").click()
+
+            # 3) 勾选状态断言：expected 用布尔
+            page.locator("#agree").click(button="right")
+            page.wait_for_timeout(300)
+            sh("#t").select_option("checked")
+            page.wait_for_timeout(200)
+            sh("#ok").click()
+            page.wait_for_timeout(300)
+
+            # 4) 可见性断言，显式选 false
+            page.locator("[data-testid=save-btn]").click(button="right")
+            page.wait_for_timeout(300)
+            sh("#t").select_option("visible")
+            page.wait_for_timeout(200)
+            sh("#eb").select_option("false")
+            sh("#ok").click()
+            page.wait_for_timeout(300)
+
+            # 副通道收尾
+            for st in page.evaluate("() => (window.__rec ? window.__rec.drain() : [])"):
+                accept(st)
+
+            browser.close()
+    finally:
+        srv.shutdown()
+
+    steps.sort(key=lambda s: s["t"])
+    # startUrl 必须报出来：生成器用它算 origin，把接口 URL 削成不带端口的路径。
+    # origin 对不上时 strip() 不会报错，只会产出 ":56964/api/ok" 这种垃圾匹配器 ——
+    # 生成的代码看着正常，回放时永远等不到响应。
+    return {"startUrl": base, "steps": steps, "net": net,
+            "emptyGuard": {"blocked": blocked, "unblocked": unblocked}}
+
+
+def _now():
+    import time
+    return int(time.time() * 1000)
+
+
+if __name__ == "__main__":
+    import json
+    import sys
+    print(json.dumps(drive(sys.argv[1] if len(sys.argv) > 1 else None),
+                     ensure_ascii=False, indent=1))
