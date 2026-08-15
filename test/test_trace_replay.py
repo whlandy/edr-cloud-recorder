@@ -149,6 +149,8 @@ def test_replay_rejects_mismatched_binary_request_body():
 
 def test_network_score_cannot_be_inflated_by_extra_responses():
     execution = {
+        "schema": "edr.execution-trace/v1",
+        "goldenSchema": "edr.success-trace/v1",
         "status": "success",
         "steps": [{
             "nodeId": "step-0001",
@@ -162,6 +164,169 @@ def test_network_score_cannot_be_inflated_by_extra_responses():
 
     assert report["networkAssertionRate"] == 1
     assert report["score"] == 100
+
+
+def test_visual_only_press_key_reuses_focus_from_same_visual_target(monkeypatch):
+    class Match:
+        score = 0.95
+        verify_score = 0.9
+        scale = 1.0
+
+    class Target:
+        x = 10
+        y = 20
+        kind = "element"
+        match = Match()
+
+    monkeypatch.setattr("replay_trace.locate_visual_target", lambda *args, **kwargs: Target())
+
+    class Keyboard:
+        pressed = []
+
+        def press(self, key):
+            self.pressed.append(key)
+
+    class Page:
+        keyboard = Keyboard()
+
+        class Mouse:
+            def click(self, x, y, **kwargs):
+                pass
+
+        mouse = Mouse()
+
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            raise AssertionError("visual_only 的按键步骤不应重新使用 DOM 定位")
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#query")'},
+        "geometry": {"pageRect": {"width": 20, "height": 10}},
+        "recognition": {"type": "TemplateMatch", "templates": {"element": {}}},
+        "action": {"type": "Click", "param": {}},
+        "next": "step-0002",
+    })
+    trace["steps"]["step-0002"] = {
+        "status": "ready",
+        "selector": {"sel": 'locator("#query")'},
+        "action": {"type": "PressKey", "param": {"key": "Enter"}},
+        "next": None,
+    }
+
+    execution = replay_trace(Page(), trace, targeting="visual_only")
+
+    assert execution["status"] == "success"
+    assert execution["steps"][1]["target"] == {"mode": "keyboard"}
+    assert Page.keyboard.pressed == ["Enter"]
+
+
+def test_visual_only_press_key_rejects_unproven_focus():
+    class Page:
+        def goto(self, url):
+            pass
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#query")'},
+        "action": {"type": "PressKey", "param": {"key": "Enter"}},
+    })
+
+    execution = replay_trace(Page(), trace, targeting="visual_only")
+
+    assert execution["status"] == "failed"
+    assert "焦点" in execution["steps"][0]["error"]
+
+
+def test_set_switch_waits_for_async_target_state():
+    class Switch:
+        clicked = False
+        reads = 0
+
+        def wait_for(self, **kwargs):
+            pass
+
+        def get_attribute(self, name):
+            assert name == "aria-checked"
+            self.reads += 1
+            return "true" if self.clicked and self.reads >= 3 else "false"
+
+        def click(self):
+            self.clicked = True
+
+    switch = Switch()
+
+    class Page:
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            return switch
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#switch")'},
+        "action": {
+            "type": "SetSwitch",
+            "param": {"state": True, "via": {"type": "aria"}},
+        },
+    })
+
+    execution = replay_trace(Page(), trace, timeout_ms=500)
+
+    assert execution["status"] == "success"
+    assert switch.clicked is True
+    assert switch.reads == 3
+
+
+def test_evaluation_rejects_reversed_golden_path():
+    golden = _network_trace()
+    golden["steps"]["step-0001"]["next"] = "step-0002"
+    golden["steps"]["step-0002"] = {
+        "status": "ready",
+        "selector": {"sel": 'locator("#done")'},
+        "action": {
+            "type": "Assert",
+            "param": {"assertion": "visible", "expected": True},
+        },
+        "next": None,
+    }
+    execution = {
+        "schema": "edr.execution-trace/v1",
+        "goldenSchema": "edr.success-trace/v1",
+        "status": "success",
+        "steps": [
+            {"nodeId": "step-0002", "status": "success", "actualAction": "Assert"},
+            {"nodeId": "step-0001", "status": "success", "actualAction": "Click",
+             "responses": [{"ok": True}]},
+        ],
+    }
+
+    report = evaluate_trace(golden, execution)
+
+    assert report["taskSuccess"] is False
+    assert report["trajectoryOrderRate"] == 0
+    assert report["score"] < 100
+
+
+def test_evaluation_penalizes_extra_actions_and_retries():
+    execution = {
+        "schema": "edr.execution-trace/v1",
+        "goldenSchema": "edr.success-trace/v1",
+        "status": "success",
+        "steps": [
+            {"nodeId": "unplanned", "status": "success", "actualAction": "Click"},
+            {"nodeId": "step-0001", "status": "success", "actualAction": "Click",
+             "responses": [{"ok": True}], "retries": 1},
+        ],
+    }
+
+    report = evaluate_trace(_network_trace(), execution)
+
+    assert report["taskSuccess"] is True
+    assert report["extraActionCount"] == 1
+    assert report["retryCount"] == 1
+    assert report["trajectoryEfficiency"] < 1
+    assert report["score"] < 100
 
 
 def _pattern(width=20, height=16):
@@ -292,6 +457,118 @@ def test_manual_assertion_retries_until_ui_reaches_expected_state():
 
     assert execution["status"] == "success"
     assert locator.reads == 2
+
+
+def test_manual_text_assertion_uses_playwright_whitespace_semantics():
+    class Locator:
+        def inner_text(self):
+            return "  Saved\n   successfully  "
+
+    class Page:
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            return Locator()
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#status")'},
+        "action": {
+            "type": "Assert",
+            "param": {"assertion": "text", "expected": "Saved successfully"},
+        },
+    })
+
+    execution = replay_trace(Page(), trace, timeout_ms=100)
+
+    assert execution["status"] == "success"
+
+
+def test_input_text_fails_when_required_secret_is_missing(monkeypatch):
+    monkeypatch.setenv("REC_PASSWORD", "process-secret-must-not-leak")
+
+    class Locator:
+        def wait_for(self, **kwargs):
+            pass
+
+        def fill(self, value):
+            raise AssertionError("凭据缺失时不得输入空字符串")
+
+    class Page:
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            return Locator()
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#password")'},
+        "action": {
+            "type": "InputText",
+            "param": {"valueFromEnv": "REC_PASSWORD"},
+        },
+    })
+
+    execution = replay_trace(Page(), trace, env={})
+
+    assert execution["status"] == "failed"
+    assert "REC_PASSWORD" in execution["steps"][0]["error"]
+
+
+def test_evaluation_rejects_wrong_execution_schema():
+    execution = {
+        "schema": "unknown/v1",
+        "goldenSchema": "edr.success-trace/v1",
+        "status": "success",
+        "steps": [],
+    }
+
+    with pytest.raises(TraceReplayError, match="execution schema"):
+        evaluate_trace(_network_trace(), execution)
+
+
+def test_evaluation_rejects_negative_retry_count():
+    execution = {
+        "schema": "edr.execution-trace/v1",
+        "goldenSchema": "edr.success-trace/v1",
+        "status": "success",
+        "steps": [{
+            "nodeId": "step-0001",
+            "status": "success",
+            "actualAction": "Click",
+            "responses": [{"ok": True}],
+            "retries": -1,
+        }],
+    }
+
+    with pytest.raises(TraceReplayError, match="retries"):
+        evaluate_trace(_network_trace(), execution)
+
+
+def test_empty_golden_trace_rejects_extra_execution_actions():
+    golden = {
+        "schema": "edr.success-trace/v1",
+        "name": "empty",
+        "status": "ready",
+        "entry": None,
+        "steps": {},
+    }
+    execution = {
+        "schema": "edr.execution-trace/v1",
+        "goldenSchema": "edr.success-trace/v1",
+        "status": "success",
+        "steps": [{
+            "nodeId": "unplanned",
+            "status": "success",
+            "actualAction": "Click",
+        }],
+    }
+
+    report = evaluate_trace(golden, execution)
+
+    assert report["taskSuccess"] is False
+    assert report["trajectoryEfficiency"] == 0
+    assert report["score"] < 100
 
 
 def test_validate_trace_rejects_cycle():

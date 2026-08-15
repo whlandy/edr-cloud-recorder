@@ -1,0 +1,7 @@
+interface:
+  display_name: "Web Recorder"
+  short_description: "Record and replay reliable browser success traces"
+  default_prompt: "Use $web-record to record this browser workflow and produce a replayable test and evaluated success trace."
+
+policy:
+  allow_implicit_invocation: true

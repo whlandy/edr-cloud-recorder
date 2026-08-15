@@ -52,6 +52,7 @@ def main() -> int:
             "test/test_visual.py",
             "test/test_support.py",
             "test/test_trace_replay.py",
+            "test/test_skill_structure.py",
         )
         run("git", "diff", "HEAD", "--check")
         check_untracked_whitespace()

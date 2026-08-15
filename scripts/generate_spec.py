@@ -430,7 +430,7 @@ def generate_spec(steps, net, start_url, name):
         elif t == "dblclick":
             action = f"{loc}.dblclick()"
         elif t == "fill" and s.get("secret"):
-            action = f'{loc}.fill(os.environ.get("REC_PASSWORD", ""))'
+            action = f'{loc}.fill(os.environ["REC_PASSWORD"])'
         elif t == "fill":
             action = f"{loc}.fill({_lit(s.get('value') or '')})"
         elif t == "check":

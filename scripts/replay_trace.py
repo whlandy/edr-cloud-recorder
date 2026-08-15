@@ -88,13 +88,19 @@ def _visual_ui(node: dict) -> dict:
     }
 
 
-def _target(page, node: dict, template_root: Path, targeting: str, timeout_ms: int):
+def _target(page, node: dict, template_root: Path, targeting: str, timeout_ms: int,
+            focused_selector: str | None):
     action_type = (node.get("action") or {}).get("type")
     if action_type == "Assert":
         locator = _locator(page, node.get("selector") or {})
         if locator is None:
             raise TraceReplayError("断言步骤缺少 DOM 选择器")
         return "verifier", locator, None
+    if action_type == "PressKey" and targeting == "visual_only":
+        selector = (node.get("selector") or {}).get("sel")
+        if not selector or selector != focused_selector:
+            raise TraceReplayError("视觉按键步骤没有同目标动作建立的可信焦点")
+        return "keyboard", None, None
 
     locator = None
     if targeting != "visual_only":
@@ -192,7 +198,10 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
     while True:
         try:
             actual = readers[assertion]()
-            if actual == expected:
+            matches = actual == expected
+            if assertion == "text" and isinstance(actual, str) and isinstance(expected, str):
+                matches = " ".join(actual.split()) == " ".join(expected.split())
+            if matches:
                 return
         except Exception as error:
             actual = f"{type(error).__name__}: {error}"
@@ -203,26 +212,42 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
         time.sleep(0.1)
 
 
-def _set_switch(locator, param: dict) -> None:
-    desired, via = bool(param.get("state")), param.get("via") or {}
+def _switch_reader(locator, via: dict):
     state_target = locator.locator(via["within"]).first if via.get("within") else locator
     if via.get("type") == "checked":
-        current = state_target.is_checked()
-    elif via.get("type") == "class":
+        return state_target.is_checked
+    if via.get("type") == "class":
         token = via.get("token")
-        present = state_target.evaluate("(e, token) => e.classList.contains(token)", token)
-        current = not present if via.get("polarity") == "off" else present
-    else:
-        current = state_target.get_attribute("aria-checked") == "true"
-    if current != desired:
-        locator.click()
+        def read_class():
+            present = state_target.evaluate(
+                "(e, token) => e.classList.contains(token)", token
+            )
+            return not present if via.get("polarity") == "off" else present
+        return read_class
+    return lambda: state_target.get_attribute("aria-checked") == "true"
+
+
+def _set_switch(locator, param: dict, timeout_ms: int) -> None:
+    desired = bool(param.get("state"))
+    read_state = _switch_reader(locator, param.get("via") or {})
+    if read_state() == desired:
+        return
+    locator.click()
+    deadline = time.monotonic() + timeout_ms / 1000
+    while read_state() != desired:
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"开关未到达目标状态: expected={desired}")
+        time.sleep(0.1)
 
 
 def _execute_action(page, node: dict, template_root: Path, targeting: str,
-                    timeout_ms: int, env: dict) -> dict:
+                    timeout_ms: int, env: dict,
+                    focused_selector: str | None) -> dict:
     action = node["action"]
     action_type, param = action["type"], action.get("param") or {}
-    mode, locator, visual = _target(page, node, template_root, targeting, timeout_ms)
+    mode, locator, visual = _target(
+        page, node, template_root, targeting, timeout_ms, focused_selector
+    )
     target_info = {"mode": mode}
     if visual is not None:
         target_info.update(
@@ -238,7 +263,13 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
     elif action_type == "PressKey":
         (locator or page.keyboard).press(param.get("key", "Enter"))
     elif action_type == "InputText":
-        text = env.get(param["valueFromEnv"], "") if param.get("valueFromEnv") else param.get("text", "")
+        source = param.get("valueFromEnv")
+        if source:
+            text = env.get(source)
+            if not text:
+                raise TraceReplayError(f"缺少输入所需的环境变量 {source}")
+        else:
+            text = param.get("text", "")
         if locator is not None:
             locator.fill(text)
         else:
@@ -246,7 +277,7 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
             page.keyboard.press("ControlOrMeta+A")
             page.keyboard.insert_text(text)
     elif action_type == "SetSwitch" and locator is not None:
-        _set_switch(locator, param)
+        _set_switch(locator, param, timeout_ms)
     elif action_type in {"Click", "DoubleClick", "Check", "Uncheck", "SetSwitch"}:
         if locator is not None:
             method = {
@@ -284,12 +315,14 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
         "status": "running",
         "steps": [],
     }
+    runtime_env = os.environ if env is None else env
     if navigate and golden.get("startUrl"):
         try:
             page.goto(golden["startUrl"])
         except Exception as error:
             raise TraceReplayError(f"无法进入 trace 起始页面: {error}") from error
     first_error = None
+    focused_selector = None
     for node_id in order:
         node = golden["steps"][node_id]
         started = time.perf_counter()
@@ -313,11 +346,14 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                         _response_predicate(expected, occurrences[key]), timeout=timeout_ms
                     )))
                 result["target"] = _execute_action(
-                    page, node, root, targeting, timeout_ms, env or os.environ
+                    page, node, root, targeting, timeout_ms, runtime_env,
+                    focused_selector,
                 )
             for info, expected in zip(response_infos, expected_responses):
                 result["responses"].append(_validate_response(info.value, expected))
             result["status"] = "success"
+            if targeting == "visual_only" and result["target"]["mode"] == "visual":
+                focused_selector = (node.get("selector") or {}).get("sel")
         except Exception as error:
             result["status"] = "failed"
             result["error"] = f"{type(error).__name__}: {error}"
@@ -340,7 +376,24 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
 
 def evaluate_trace(golden: dict, execution: dict) -> dict:
     order = validate_trace(golden)
-    actual = {step["nodeId"]: step for step in execution.get("steps", [])}
+    if execution.get("schema") != EXECUTION_SCHEMA:
+        raise TraceReplayError(
+            f"不支持的 execution schema: {execution.get('schema')!r}"
+        )
+    if execution.get("goldenSchema") != golden["schema"]:
+        raise TraceReplayError("execution trace 与黄金 trace schema 不一致")
+    execution_steps = execution.get("steps")
+    if not isinstance(execution_steps, list):
+        raise TraceReplayError("execution.steps 必须是数组")
+
+    actual = {}
+    for step in execution_steps:
+        if not isinstance(step, dict) or not step.get("nodeId"):
+            raise TraceReplayError("execution step 缺少 nodeId")
+        retries = step.get("retries", 0)
+        if type(retries) is not int or retries < 0:
+            raise TraceReplayError("execution step 的 retries 必须是非负整数")
+        actual.setdefault(step["nodeId"], step)
     completed = sum(actual.get(node, {}).get("status") == "success" for node in order)
     action_hits = sum(
         actual.get(node, {}).get("actualAction") == golden["steps"][node]["action"]["type"]
@@ -359,19 +412,44 @@ def evaluate_trace(golden: dict, execution: dict) -> dict:
         network_hits += min(expected_count, sum(bool(item.get("ok")) for item in responses))
     visual_scores = [
         step["target"]["matchScore"]
-        for step in execution.get("steps", [])
+        for step in execution_steps
         if step.get("target", {}).get("mode") == "visual"
     ]
     total = len(order)
+    observed_path = [
+        step["nodeId"]
+        for step in execution_steps
+        if step["nodeId"] in golden["steps"]
+    ]
+    order_hits = sum(
+        expected == observed for expected, observed in zip(order, observed_path)
+    )
+    order_rate = (
+        order_hits / max(total, len(observed_path))
+        if total or observed_path else 1.0
+    )
+    extra_actions = max(0, len(execution_steps) - total)
+    retries = sum(step.get("retries", 0) for step in execution_steps)
+    efficiency = (
+        total / (total + extra_actions + retries)
+        if total else float(not execution_steps)
+    )
     completion_rate = completed / total if total else 1.0
     action_accuracy = action_hits / total if total else 1.0
     network_rate = network_hits / expected_network if expected_network else 1.0
-    task_success = execution.get("status") == "success" and completed == total
+    task_success = (
+        execution.get("status") == "success"
+        and completed == total
+        and observed_path == order
+        and (bool(total) or not execution_steps)
+    )
     score = 100 * (
-        0.50 * float(task_success)
-        + 0.25 * completion_rate
-        + 0.15 * action_accuracy
+        0.45 * float(task_success)
+        + 0.20 * completion_rate
+        + 0.10 * action_accuracy
         + 0.10 * network_rate
+        + 0.10 * order_rate
+        + 0.05 * efficiency
     )
     return {
         "taskSuccess": task_success,
@@ -379,8 +457,10 @@ def evaluate_trace(golden: dict, execution: dict) -> dict:
         "stepCompletionRate": round(completion_rate, 4),
         "actionAccuracy": round(action_accuracy, 4),
         "networkAssertionRate": round(network_rate, 4),
-        "extraActionCount": max(0, len(execution.get("steps", [])) - total),
-        "retryCount": sum(step.get("retries", 0) for step in execution.get("steps", [])),
+        "trajectoryOrderRate": round(order_rate, 4),
+        "trajectoryEfficiency": round(efficiency, 4),
+        "extraActionCount": extra_actions,
+        "retryCount": retries,
         "averageVisualMatchScore": (
             round(sum(visual_scores) / len(visual_scores), 4) if visual_scores else None
         ),
