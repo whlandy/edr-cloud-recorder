@@ -89,6 +89,13 @@ def _visual_ui(node: dict) -> dict:
 
 
 def _target(page, node: dict, template_root: Path, targeting: str, timeout_ms: int):
+    action_type = (node.get("action") or {}).get("type")
+    if action_type == "Assert":
+        locator = _locator(page, node.get("selector") or {})
+        if locator is None:
+            raise TraceReplayError("断言步骤缺少 DOM 选择器")
+        return "verifier", locator, None
+
     locator = None
     if targeting != "visual_only":
         locator = _locator(page, node.get("selector") or {})
@@ -168,22 +175,32 @@ def _validate_response(response, expected: dict) -> dict:
     return actual
 
 
-def _assert_locator(locator, param: dict) -> None:
+def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
     assertion, expected = param.get("assertion"), param.get("expected")
-    if assertion == "visible":
-        actual = locator.is_visible()
-    elif assertion == "text":
-        actual = locator.inner_text()
-    elif assertion == "value":
-        actual = locator.input_value()
-    elif assertion == "checked":
-        actual = locator.is_checked()
-    elif assertion == "attribute":
-        actual = locator.get_attribute(param.get("attribute"))
-    else:
+    readers = {
+        "visible": lambda: locator.is_visible(),
+        "text": lambda: locator.inner_text(),
+        "value": lambda: locator.input_value(),
+        "checked": lambda: locator.is_checked(),
+        "attribute": lambda: locator.get_attribute(param.get("attribute")),
+    }
+    if assertion not in readers:
         raise TraceReplayError(f"不支持的断言: {assertion!r}")
-    if actual != expected:
-        raise AssertionError(f"断言失败: {assertion} actual={actual!r} expected={expected!r}")
+
+    deadline = time.monotonic() + timeout_ms / 1000
+    actual = None
+    while True:
+        try:
+            actual = readers[assertion]()
+            if actual == expected:
+                return
+        except Exception as error:
+            actual = f"{type(error).__name__}: {error}"
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"断言失败: {assertion} actual={actual!r} expected={expected!r}"
+            )
+        time.sleep(0.1)
 
 
 def _set_switch(locator, param: dict) -> None:
@@ -217,9 +234,7 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
         )
 
     if action_type == "Assert":
-        if locator is None:
-            raise TraceReplayError("视觉断言尚不支持无 DOM 回放")
-        _assert_locator(locator, param)
+        _assert_locator(locator, param, timeout_ms)
     elif action_type == "PressKey":
         (locator or page.keyboard).press(param.get("key", "Enter"))
     elif action_type == "InputText":

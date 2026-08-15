@@ -232,6 +232,68 @@ def test_visual_only_replay_matches_then_clicks(tmp_path):
     assert evaluate_trace(trace, execution)["averageVisualMatchScore"] > 0.9
 
 
+def test_visual_only_uses_dom_verifier_for_manual_hidden_assertion():
+    class HiddenLocator:
+        def wait_for(self, **kwargs):
+            raise AssertionError("断言不能预先等待元素可见")
+
+        def is_visible(self):
+            return False
+
+    class Page:
+        def goto(self, url):
+            assert url == "https://app.example/form"
+
+        def locator(self, selector):
+            assert selector == "#dialog"
+            return HiddenLocator()
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#dialog")'},
+        "action": {
+            "type": "Assert",
+            "param": {"assertion": "visible", "expected": False},
+        },
+    })
+
+    execution = replay_trace(Page(), trace, targeting="visual_only")
+
+    assert execution["status"] == "success"
+    assert execution["steps"][0]["target"] == {"mode": "verifier"}
+    assert evaluate_trace(trace, execution)["taskSuccess"] is True
+
+
+def test_manual_assertion_retries_until_ui_reaches_expected_state():
+    class EventuallyVisible:
+        reads = 0
+
+        def is_visible(self):
+            self.reads += 1
+            return self.reads >= 2
+
+    locator = EventuallyVisible()
+
+    class Page:
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            return locator
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#saved")'},
+        "action": {
+            "type": "Assert",
+            "param": {"assertion": "visible", "expected": True},
+        },
+    })
+
+    execution = replay_trace(Page(), trace, targeting="visual_only", timeout_ms=500)
+
+    assert execution["status"] == "success"
+    assert locator.reads == 2
+
+
 def test_validate_trace_rejects_cycle():
     trace = _network_trace()
     trace["steps"]["step-0001"]["next"] = "step-0001"
