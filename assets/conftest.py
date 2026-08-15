@@ -137,11 +137,21 @@ def browser_context_args(browser_context_args, base_url, auth_state, playwright)
     return args
 
 
-@pytest.fixture(autouse=True)
-def _apply_timeouts(page: Page):
-    """对应 config 里的 actionTimeout / navigationTimeout。"""
-    page.set_default_timeout(20_000)
-    page.set_default_navigation_timeout(60_000)
+@pytest.fixture
+def context(context):
+    """对应 config 里的 actionTimeout / navigationTimeout。
+
+    **不要改成 autouse 的 page fixture。** 那样写会让每一个用例都拉起
+    page → browser_context_args → auth_state，于是项目里任何一个不碰浏览器的
+    纯单元测试都被迫走一次完整登录，没配凭据时还会以「没有可用的登录态」这种
+    完全无关的理由失败。
+
+    挂在 context 上就只在用例真的用到浏览器时才生效；page 由 context 创建，
+    自动继承这两个默认超时。
+    """
+    context.set_default_timeout(20_000)
+    context.set_default_navigation_timeout(60_000)
+    return context
 
 
 @pytest.fixture

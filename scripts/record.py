@@ -23,8 +23,11 @@ codegen 给不了答案。
 """
 
 import argparse
+import base64
+import hashlib
 import json
 import re
+import struct
 import sys
 import time
 import weakref
@@ -55,15 +58,170 @@ from rec_config import ConfigError, load_config, with_defaults  # noqa: E402
 from recorder_loader import recorder_source                 # noqa: E402
 
 DRAIN = "() => (window.__rec ? window.__rec.drain() : [])"
-PUMP_MS = 800
-# 登录态快照。JS 版是在浏览器关闭之后才存，而用法写的是「操作完成后直接
-# 关闭浏览器窗口」—— 那时 context 已经没了，storage_state() 必然抛
-# "Target page, context or browser has been closed"，登录态其实从来没存下来
-# （JS 代码自己的 catch 注释也承认了「页面已关就取不到了」）。
-#
-# 只能趁页面还活着的时候拍。每个轮询周期都拍一次，这样「用户关窗口」最多
-# 丢掉最后 800ms 内的变化 —— 而登录态在最后 800ms 内变化的可能性可以忽略。
-# 成本是每 800ms 一次本地 CDP 往返，可以忽略。
+PUMP_MS = 200
+VISUAL_STEP_TYPES = {"click"}
+PRE_FRAME_MAX_AGE_MS = 1_000
+CONTEXT_PADDING_CSS = 12
+# 登录态只能趁页面还活着时拍。不能在轮询里调用 context.storage_state()：
+# 当上下文访问过当前页面未覆盖的第三方 origin 时，Playwright 会创建可见临时页、
+# 逐个导航后再关闭，表现就是浏览器窗口不断闪烁。这里直接读取 cookies 和现有
+# frame 的 localStorage，不创建任何页面。
+
+
+def _request_body_fields(request) -> dict:
+    """读取请求体；Playwright 的 post_data 会在二进制内容上强制解码 UTF-8。"""
+    try:
+        return {"body": request.post_data}
+    except UnicodeDecodeError:
+        raw = request.post_data_buffer
+        if raw is None:
+            return {"body": None}
+        return {
+            "body": None,
+            "bodyBase64": base64.b64encode(raw).decode("ascii"),
+            "bodyEncoding": "base64",
+        }
+
+
+def _capture_storage(context, page, origins: dict) -> dict:
+    """生成 Playwright storage_state 结构，但只检查已经存在的 frame。"""
+    cookies = context.cookies()
+    for frame in page.frames:
+        try:
+            parts = urlsplit(frame.url)
+            if not parts.scheme or not parts.netloc:
+                continue
+            origin = f"{parts.scheme}://{parts.netloc}"
+            local_storage = frame.evaluate(
+                "() => Object.entries(localStorage)"
+                ".map(([name, value]) => ({name, value}))"
+            )
+            if local_storage:
+                origins[origin] = {"origin": origin, "localStorage": local_storage}
+            else:
+                origins.pop(origin, None)
+        except Exception:
+            continue
+    return {"cookies": cookies, "origins": list(origins.values())}
+
+
+def _png_size(data: bytes) -> tuple[int, int] | None:
+    """不引入 Pillow，直接读取 PNG 的 IHDR 宽高。"""
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return struct.unpack(">II", data[16:24])
+
+
+def _visible_clip(ui: dict) -> dict | None:
+    """把元素矩形裁进当前 viewport，避免 Playwright 拒绝越界 clip。"""
+    rect = ui.get("rect") or {}
+    viewport = ui.get("viewport") or {}
+    try:
+        left = max(0.0, float(rect["x"]))
+        top = max(0.0, float(rect["y"]))
+        right = min(float(viewport["width"]), float(rect["x"]) + float(rect["width"]))
+        bottom = min(float(viewport["height"]), float(rect["y"]) + float(rect["height"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if right - left < 1 or bottom - top < 1:
+        return None
+    return {"x": left, "y": top, "width": right - left, "height": bottom - top}
+
+
+def _template_meta(path: Path, data: bytes, asset_dir: Path) -> dict:
+    meta = {
+        "path": f"{asset_dir.name}/{path.name}",
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+    size = _png_size(data)
+    if size:
+        meta.update(width=size[0], height=size[1])
+    return meta
+
+
+def _crop_pre_frame(pre_frame: dict, step: dict, asset_dir: Path,
+                    index: int) -> bool:
+    """从点击前 viewport 帧裁出元素和上下文模板。"""
+    if not pre_frame or abs(step.get("t", 0) - pre_frame.get("t", 0)) > PRE_FRAME_MAX_AGE_MS:
+        return False
+    ui = step["ui"]
+    rect = ui.get("pageRect")
+    viewport = ui.get("pageViewport")
+    if not rect or not viewport:
+        return False
+    try:
+        import cv2
+        import numpy as np
+
+        image = cv2.imdecode(np.frombuffer(pre_frame["data"], np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            return False
+        sx = image.shape[1] / float(viewport["width"])
+        sy = image.shape[0] / float(viewport["height"])
+        x1 = max(0, round(float(rect["x"]) * sx))
+        y1 = max(0, round(float(rect["y"]) * sy))
+        x2 = min(image.shape[1], round((float(rect["x"]) + float(rect["width"])) * sx))
+        y2 = min(image.shape[0], round((float(rect["y"]) + float(rect["height"])) * sy))
+    except (ImportError, KeyError, TypeError, ValueError, ZeroDivisionError):
+        return False
+    if x2 <= x1 or y2 <= y1:
+        return False
+
+    pad_x, pad_y = round(CONTEXT_PADDING_CSS * sx), round(CONTEXT_PADDING_CSS * sy)
+    cx1, cy1 = max(0, x1 - pad_x), max(0, y1 - pad_y)
+    cx2, cy2 = min(image.shape[1], x2 + pad_x), min(image.shape[0], y2 + pad_y)
+    element = image[y1:y2, x1:x2]
+    context = image[cy1:cy2, cx1:cx2]
+    element_path = asset_dir / f"step-{index:04d}.element.png"
+    context_path = asset_dir / f"step-{index:04d}.context.png"
+    ok_element, element_data = cv2.imencode(".png", element)
+    ok_context, context_data = cv2.imencode(".png", context)
+    if not ok_element or not ok_context:
+        return False
+
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    element_bytes, context_bytes = element_data.tobytes(), context_data.tobytes()
+    element_path.write_bytes(element_bytes)
+    context_path.write_bytes(context_bytes)
+    ui["templates"] = {
+        "element": _template_meta(element_path, element_bytes, asset_dir),
+        "context": {
+            **_template_meta(context_path, context_bytes, asset_dir),
+            "elementOffset": {"x": x1 - cx1, "y": y1 - cy1},
+        },
+    }
+    return True
+
+
+def _capture_ui_template(source: dict, step: dict, asset_dir: Path,
+                         index: int, pre_frame: dict | None = None) -> None:
+    """保存点击元素的渲染模板；任何失败都降级为仅保留 ui 元数据。"""
+    if step.get("type") not in VISUAL_STEP_TYPES or not step.get("ui"):
+        return
+    if _crop_pre_frame(pre_frame, step, asset_dir, index):
+        return
+
+    frame = source.get("frame") if source else None
+    page = source.get("page") if source else None
+    if frame is None:
+        return
+
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    path = asset_dir / f"step-{index:04d}.element.png"
+    try:
+        data = frame.locator(step["css"]).first.screenshot(path=str(path))
+    except Exception:
+        clip = _visible_clip(step["ui"])
+        if step.get("inFrame") or page is None or clip is None:
+            path.unlink(missing_ok=True)
+            return
+        try:
+            data = page.screenshot(path=str(path), clip=clip)
+        except Exception:
+            path.unlink(missing_ok=True)
+            return
+
+    step["ui"]["templates"] = {"element": _template_meta(path, data, asset_dir)}
 
 
 def parse_args(argv=None):
@@ -125,16 +283,21 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     name = name or "session-" + datetime.now().isoformat(
         timespec="seconds").replace(":", "-")
     out_dir = Path(out_dir).resolve()
+    asset_dir = out_dir / f"{name}.assets"
     state_dir = Path(state_dir).resolve()
     origin = "{0.scheme}://{0.netloc}".format(urlsplit(start_url))
 
-    steps, seen, net = [], set(), []
+    steps, seen, net, pending_visual = [], set(), [], []
+    latest_frame = {"data": None, "t": 0}
 
-    def accept(step):
+    def accept(step, source=None):
         if not step or not step.get("id") or step["id"] in seen:
             return                                  # 双通道上报，按 id 去重
         seen.add(step["id"])
         steps.append(step)
+        if source and step.get("type") in VISUAL_STEP_TYPES:
+            pre_frame = dict(latest_frame) if latest_frame["data"] else None
+            pending_visual.append((source, step, len(steps), pre_frame))
         if step.get("secret"):
             val = " = <密码，未记录>"
         elif step.get("value") is not None:
@@ -142,6 +305,12 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         else:
             val = ""
         print(f"  [录制] {step['type']:<6} {step['sel']}{val}")
+
+    def capture_pending():
+        # binding 回调内不能调用同步 Playwright API，否则会重入死锁。
+        while pending_visual:
+            source, step, index, pre_frame = pending_visual.pop(0)
+            _capture_ui_template(source, step, asset_dir, index, pre_frame)
 
     chrome_bin = chrome_bin or resolve_chrome()
     if chrome_bin:
@@ -151,6 +320,13 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     ss_file = state_dir / "session-storage.json"
 
     snapshot = {"state": None, "session": None}
+    saved_origins = {}
+    if state_file.exists():
+        try:
+            old_state = json.loads(state_file.read_text(encoding="utf-8"))
+            saved_origins = {item["origin"]: item for item in old_state.get("origins", [])}
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -173,7 +349,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         # 步骤上报通道。必须在 add_init_script 之前建立，这样页面里 __recPush 一定存在。
         # 页面产生一步就立刻推过来，不等轮询 —— 否则「点完就跳转」的步骤
         # （登录按钮是最典型的）会随页面卸载一起消失。
-        context.expose_binding("__recPush", lambda source, step: accept(step))
+        context.expose_binding("__recPush", lambda source, step: accept(step, source))
 
         context.add_init_script(script=recorder_source())
 
@@ -211,8 +387,10 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
             if wanted(r):
                 seq["n"] += 1
                 request_ids[r] = seq["n"]
-                net.append({"id": seq["n"], "t": _now(), "phase": "req",
-                            "method": r.method, "url": r.url, "body": r.post_data})
+                event = {"id": seq["n"], "t": _now(), "phase": "req",
+                         "method": r.method, "url": r.url}
+                event.update(_request_body_fields(r))
+                net.append(event)
 
         def on_response(r):
             if not wanted(r.request):
@@ -250,7 +428,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         def take_snapshot():
             """趁页面还活着，把登录态抓进内存。"""
             try:
-                snapshot["state"] = context.storage_state()
+                snapshot["state"] = _capture_storage(context, page, saved_origins)
             except Exception:
                 return
             try:
@@ -259,6 +437,15 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
                     snapshot["session"] = ss
             except Exception:
                 pass
+
+        def refresh_pre_frame():
+            """只在内存保留最近一张 viewport 图，供下一次点击裁模板。"""
+            try:
+                latest_frame.update(data=page.screenshot(), t=_now())
+            except Exception:
+                latest_frame.update(data=None, t=0)
+
+        refresh_pre_frame()
 
         # 兜底轮询：捞走 binding 未能送达的步骤（去重由 accept 负责）。
         # JS 版用 setInterval 与 waitForEvent 并发；Python sync API 是单线程的，
@@ -272,6 +459,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
                 on_ready(page)
             except Exception as e:
                 print(f"on_ready 抛出: {e}")
+            capture_pending()
             take_snapshot()
             if not page.is_closed():
                 page.close()
@@ -283,7 +471,9 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
             except Exception:
                 pass                                # 导航中，下次再取
 
+            capture_pending()
             take_snapshot()
+            refresh_pre_frame()
 
             try:
                 page.wait_for_timeout(PUMP_MS)
@@ -296,6 +486,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         except Exception:
             pass                                    # 页面已关
 
+        capture_pending()
         take_snapshot()                             # 还开着就抓最新的一份
         try:
             browser.close()

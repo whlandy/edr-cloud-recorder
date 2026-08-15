@@ -142,7 +142,8 @@ python <skill>/scripts/record.py --url https://app.example.com --name login-flow
 
 | 文件 | 内容 |
 |---|---|
-| `<name>.json` | 原始记录：步骤 + 网络事件，都带毫秒时间戳 |
+| `<name>.json` | 原始记录：步骤 + 点击 UI 特征 + 网络事件，都带毫秒时间戳 |
+| `<name>.assets/step-*.png` | 点击元素的渲染模板，可供模板 / SSIM / 特征匹配使用 |
 | `test_<name>.py` | 可跑的脚本草稿，接口调用作为注释挂在对应步骤下 |
 
 文件名带 `test_` 前缀是因为 pytest 只收集 `test_*.py`；名字里的非法字符会被换成下划线。
@@ -592,7 +593,7 @@ sc.endpoint("采集端侧基线",  lambda: snapshot(ep.table_rows(refresh_text="
 sc.cloud("下发变更",        apply_change)
 sc.until("等待端侧出现新记录", probe, timeout=90, interval=5)   # ← 时间差在这里
 sc.endpoint("断言新记录符合预期", assert_new)
-sc.cloud("还原",            restore)
+sc.cleanup("还原",          restore)  # ← 成功、失败和中断都会执行
 sc.run()
 ```
 
@@ -608,6 +609,8 @@ JSON 边界、stderr 约定这类跨语言胶水。
 短了偶发失败，长了每个场景白等几分钟。`until` 就是为此存在的。
 
 `orchestrate/example_scenario.py` 是可照抄的模板，云端部分留了接口给你实现。
+录制 JSON 里的请求可用 `orchestrate/recording_contract.py` 选择和重放；写请求默认拒绝，
+必须在已准备基线与 cleanup 后显式传 `allow_write=True`。
 
 ## 自检
 
@@ -619,7 +622,7 @@ pytest
 
 它会造一个包含全部边界情况的页面（同名元素、自增 id、密码框、会发请求的按钮、
 慢开关、同 placeholder 的诱饵输入框、与触发器同名的浮层选项），用真实浏览器录一遍，
-逐条断言。**65 项全过**才退出 0，每项独立报告，名字就是它守的那条承诺。
+逐条断言。**全部通过**才退出 0，每项独立报告，名字就是它守的那条承诺。
 
 `REC_CHROME_BIN` 可以指定浏览器可执行文件，不设就自动探测。
 

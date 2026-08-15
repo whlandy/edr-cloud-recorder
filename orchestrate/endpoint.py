@@ -15,13 +15,13 @@ edr-wd（https://github.com/multica-ai/…，见 references/endpoint-orchestrati
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 # edr-wd 的位置。装在别处就设 EDR_WD_HOME。
 EDR_WD = Path(os.environ.get("EDR_WD_HOME", Path.home() / "ai-projects" / "edr-wd"))
@@ -43,7 +43,7 @@ class Endpoint:
         """
         self.target = target
         self.process_name = process_name
-        self.home_window = home_window
+        self.window_re = home_window
         self.session_id: str | None = None
         self.mcp_url: str | None = None
 
@@ -63,12 +63,25 @@ class Endpoint:
 
         self.session_id = r["data"]["session_id"]
         self.mcp_url = r["data"]["mcp_url"]
-        self.attach(self.process_name)
+        self.attach(self.process_name, self.window_re)
         return self
 
-    def attach(self, process_name: str) -> dict:
+    def attach(self, process_name: str, window_re: str | None = None) -> dict:
         """把后续操作切到另一个进程的窗口。同一产品常有多个进程各带界面。"""
-        return self.call("connect", {"process_name": process_name})
+        args = {"process_name": process_name}
+        if window_re:
+            args["title_re"] = window_re
+        result = self.call("connect", args)
+
+        lock_args = {"process_name": process_name, "strict": True}
+        if window_re:
+            lock_args["title_re"] = window_re
+        self.call("lock_window", lock_args)
+        self.call("verify_window_lock", {"activate": True})
+
+        self.process_name = process_name
+        self.window_re = window_re
+        return result
 
     # ---------- 调用 ----------
 
@@ -88,14 +101,15 @@ class Endpoint:
     def tree(self, window_re: str | None = None, depth: int = 10) -> dict:
         # 可选参数要省略，不能传 None —— 工具的 schema 会拒绝 null
         args: dict = {"max_depth": depth}
-        if window_re:
-            args["window_title_re"] = window_re
+        target_window = window_re or self.window_re
+        if target_window:
+            args["window_title_re"] = target_window
         return self.call("dump_tree", args, timeout=300)
 
     def texts(self, window_re: str | None = None) -> list[str]:
         """界面上所有文本节点，去重排序。写探针前先看一眼这个，别凭空猜。"""
-        s = json.dumps(self.tree(window_re), ensure_ascii=False)
-        return sorted({x for x in re.findall(r'"(?:title|name|text)":\s*"([^"]{1,80})"', s) if x.strip()})
+        values = (self._control_text(c) for c in self._controls(self.tree(window_re)))
+        return sorted({value for value in values if value})
 
     def click(self, text: str, process_name: str | None = None, **extra) -> dict:
         """
@@ -104,9 +118,36 @@ class Endpoint:
         某些产品要求同时给出 expected_process_name 来消歧（同名窗口分属不同进程），
         漏了会直接被拒绝。默认带上当前连接的进程名。
         """
-        args = {"text": text, "expected_process_name": process_name or self.process_name}
-        args.update(extra)
-        return self.call("click", args, timeout=120)
+        expected_process = process_name or self.process_name
+        self.call("verify_window_lock", {"activate": True})
+        before = self.tree(depth=20)
+        controls = self._controls(before)
+        candidates = self._matching_controls(controls, text=text, **extra)
+        if len(candidates) != 1:
+            sample = [self._evidence(c) for c in candidates[:5]]
+            raise EndpointError(
+                f"点击目标不唯一：text={text!r}，匹配 {len(candidates)} 个；候选={sample}"
+            )
+
+        selected = candidates[0]
+        args = dict(extra)
+        automation_id = selected.get("automation_id") or selected.get("identifier")
+        if automation_id:
+            args["automation_id"] = automation_id
+            args.pop("control_id", None)
+        elif selected.get("control_id") is not None:
+            # control_id 只在这次观察后立即使用，不跨观察复用。
+            args["control_id"] = selected["control_id"]
+        else:
+            args["text"] = text
+        args["expected_process_name"] = expected_process
+
+        result = self.call("click", args, timeout=120)
+        after = self.tree(depth=20)
+        result = dict(result)
+        result["matched_control"] = self._evidence(selected)
+        result["observation_changed"] = before.get("controls") != after.get("controls")
+        return result
 
     def screenshot(self, path: str | None = None) -> dict:
         return self.call("screenshot", {"path": path} if path else {})
@@ -117,12 +158,13 @@ class Endpoint:
         """
         从主界面读出这台机器的 IP 和主机名 —— 多数管理类客户端会把它们显示在首页。
         """
-        s = json.dumps(self.tree(window_re or self.home_window), ensure_ascii=False)
+        s = json.dumps(self.tree(window_re), ensure_ascii=False)
         ip = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", s)
         host = re.search(r'"((?:DESKTOP|WIN)-[A-Z0-9-]+)"', s)
         return {"ip": ip.group(0) if ip else None, "hostname": host.group(1) if host else None}
 
-    def assert_matches(self, expected_name: str, window_re: str | None = None) -> str:
+    def assert_matches(self, expected_name: str | dict,
+                       window_re: str | None = None) -> str:
         """
         确认端侧连的机器就是云端要操作的那台。
 
@@ -132,14 +174,32 @@ class Endpoint:
         报错必须把两边都打出来，否则人还是得自己去查。
         """
         me = self.identity(window_re)
-        hits = [v for v in (me["ip"], me["hostname"]) if v and v in expected_name]
+        if isinstance(expected_name, dict):
+            expected_text = json.dumps(expected_name, ensure_ascii=False)
+            expected_ips = self._valid_ipv4s(str(expected_name.get("ip") or ""))
+            expected_hosts = {str(expected_name.get("hostname") or "").casefold()} - {""}
+        else:
+            expected_text = expected_name
+            expected_ips = self._valid_ipv4s(expected_name)
+            expected_hosts = set()
+            if me["hostname"]:
+                host = re.escape(me["hostname"])
+                if re.search(rf"(?<![A-Za-z0-9-]){host}(?![A-Za-z0-9-])",
+                             expected_name, re.I):
+                    expected_hosts.add(me["hostname"].casefold())
+
+        hits = []
+        if me["ip"] and me["ip"] in expected_ips:
+            hits.append(me["ip"])
+        if me["hostname"] and me["hostname"].casefold() in expected_hosts:
+            hits.append(me["hostname"])
         if not hits:
             raise EndpointError(
                 f"端侧机器与云端对象不是同一台：\n"
                 f"  端侧 {self.target} → ip={me['ip']} hostname={me['hostname']}\n"
-                f"  云端 → {expected_name}"
+                f"  云端 → {expected_text}"
             )
-        return f"{self.target} ↔ {expected_name}（匹配 {', '.join(hits)}）"
+        return f"{self.target} ↔ {expected_text}（匹配 {', '.join(hits)}）"
 
     # ---------- 表格 / 日志 ----------
 
@@ -156,8 +216,8 @@ class Endpoint:
         if refresh_text:
             self.click(refresh_text)
             time.sleep(2)
-        s = json.dumps(self.tree(window_re), ensure_ascii=False)
-        vals = re.findall(r'"(?:title|name|text)":\s*"([^"]{1,80})"', s)
+        vals = [self._control_text(c) for c in self._controls(self.tree(window_re))]
+        vals = [value for value in vals if value]
         rows, cur = [], None
         for v in vals:
             if re.fullmatch(row_start, v):
@@ -169,3 +229,55 @@ class Endpoint:
         if cur:
             rows.append(cur)
         return [" | ".join(r[:cols]) for r in rows]
+
+    @staticmethod
+    def _controls(tree: dict) -> list[dict]:
+        controls = tree.get("controls") if isinstance(tree, dict) else None
+        return [c for c in controls or [] if isinstance(c, dict)]
+
+    @staticmethod
+    def _control_text(control: dict) -> str:
+        for key in ("text", "title", "name", "value", "description"):
+            value = control.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return ""
+
+    @classmethod
+    def _matching_controls(cls, controls: list[dict], *, text: str, **selectors) -> list[dict]:
+        def matches(control: dict) -> bool:
+            fields = {
+                "control_id": control.get("control_id"),
+                "automation_id": control.get("automation_id") or control.get("identifier"),
+                "class_name": control.get("class_name"),
+                "control_type": control.get("control_type") or control.get("role"),
+            }
+            for key, actual in fields.items():
+                if selectors.get(key) is not None and str(actual) != str(selectors[key]):
+                    return False
+            aid = str(fields["automation_id"] or "")
+            if selectors.get("auto_id_contains") and selectors["auto_id_contains"] not in aid:
+                return False
+            if selectors.get("auto_id_suffix") and not aid.endswith(selectors["auto_id_suffix"]):
+                return False
+            labels = {str(control.get(k) or "").strip()
+                      for k in ("text", "title", "name", "value")}
+            return text in labels or text in cls._control_text(control)
+
+        return [control for control in controls if matches(control)]
+
+    @staticmethod
+    def _evidence(control: dict) -> dict:
+        keys = ("text", "title", "class_name", "control_type", "automation_id",
+                "identifier", "control_id", "depth", "rectangle")
+        return {key: control.get(key) for key in keys if control.get(key) not in (None, "")}
+
+    @staticmethod
+    def _valid_ipv4s(text: str) -> set[str]:
+        found = set()
+        for candidate in re.findall(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)", text):
+            try:
+                found.add(str(ipaddress.IPv4Address(candidate)))
+            except ipaddress.AddressValueError:
+                continue
+        return found

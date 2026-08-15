@@ -28,6 +28,8 @@ METHODS = {
     "getByText": "get_by_text",
     "getByLabel": "get_by_label",
     "getByPlaceholder": "get_by_placeholder",
+    "getByAltText": "get_by_alt_text",
+    "getByTitle": "get_by_title",
     "locator": "locator",
 }
 

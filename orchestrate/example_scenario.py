@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-示例：云端改一个开关 → 到终端的操作日志里验证它真的落地了 → 还原
+示例：云端改一个开关 → 到终端的操作日志里验证它真的落地了 → 始终还原
 
 这是「云操作 + 端操作交替」最有说服力的一类用例：
 只验云端，你只知道服务端记下了；只验端侧，你不知道是谁改的。两边串起来才证明链路通。
 
 **这是模板，不是能直接跑的脚本。** 云端那部分（CloudClient）需要你按自己的
 接口实现；端侧那部分是通用的。标了 ← 改这里 的地方是产品相关的。
+还原注册为 cleanup，不是普通末尾步骤，因此中途失败或 Ctrl-C 也会执行。
 
 配套阅读：
   references/endpoint-orchestration.md   edr-wd 怎么装、怎么配合
@@ -28,6 +29,7 @@ from endpoint import Endpoint          # noqa: E402
 CLIENT_PROCESS = "YourClient.exe"       # 带界面的那个进程
 HOME_WINDOW = "主窗口标题"               # 首页窗口标题的匹配式
 LOG_ENTRY = "打开日志页面的按钮文本"        # 例如 "Log Center"
+LOG_WINDOW = "日志窗口标题"               # 日志通常是同进程下的另一个顶层窗口
 REFRESH = "刷新按钮文本"                  # 例如 "Refresh"
 LOG_MARK = "预期日志里的关键字"            # 例如 "Self-protection update status"
 
@@ -79,30 +81,32 @@ def main() -> int:
 
     def baseline_log():
         ep.click(LOG_ENTRY)                    # 日志通常开在独立窗口里
+        ep.attach(CLIENT_PROCESS, LOG_WINDOW)  # 重新绑定并锁定日志窗口
         st["log0"] = set(ep.table_rows(refresh_text=REFRESH))
         return f"基线 {len(st['log0'])} 行"
 
     def apply_change():
         st["want"] = cloud.flip(st["origin"])
+        st["write_attempted"] = True
         cloud.write_config(obj, st["want"])
         cloud.confirm_written(obj, st["want"])
         return "已下发，云端回读一致"
 
     def new_log_arrived() -> bool:
-        try:
-            # refresh_text 不能省：表格不会自己重画，不刷新就永远是旧内容
-            st["new"] = [x for x in ep.table_rows(refresh_text=REFRESH) if x not in st["log0"]]
-            return bool(st["new"])
-        except Exception:
-            return False                       # 界面可能正在刷新，下一轮再试
+        # refresh_text 不能省：表格不会自己重画，不刷新就永远是旧内容。
+        # 只在目标日志出现时结束；无关后台日志不能提前终止轮询。
+        st["new"] = [x for x in ep.table_rows(refresh_text=REFRESH) if x not in st["log0"]]
+        st["marked"] = [x for x in st["new"] if LOG_MARK in x]
+        return bool(st["marked"])
 
     def assert_log():
-        marked = [x for x in st["new"] if LOG_MARK in x]
-        if not marked:
+        if not st.get("marked"):
             raise AssertionError(f"端侧有新日志但不含预期内容。新增：{st['new'][:3]}")
-        return marked[0]
+        return st["marked"][0]
 
     def restore():
+        if not st.get("write_attempted"):
+            return "未尝试写入，无需还原"
         cloud.write_config(obj, st["origin"])
         cloud.confirm_written(obj, st["origin"])
         return "已还原"
@@ -117,7 +121,7 @@ def main() -> int:
         # 间隔按被观测对象的更新节奏定：立即生效的用 5s，心跳驱动的用 10s 起步
         sc.until("等待端侧出现新记录", new_log_arrived, timeout=90, interval=5)
         sc.endpoint("断言新记录符合预期", assert_log)
-    sc.cloud("还原原始配置", restore)
+    sc.cleanup("还原原始配置", restore, side="cloud")
 
     return 0 if sc.run() else 1
 

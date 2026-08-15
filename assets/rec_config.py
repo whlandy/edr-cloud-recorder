@@ -2,8 +2,9 @@
 
 查找顺序：
   1. --config 指定的路径
-  2. ./config.json（项目内覆盖，便于一个工作区一套参数）
-  3. ~/.config/edr-cloud-recorder/config.json（用户级默认，遵循 XDG）
+  2. 与本文件同目录的 config.json（项目内覆盖，便于一个工作区一套参数）
+  3. ./config.json（当前工作目录覆盖）
+  4. ~/.config/edr-cloud-recorder/config.json（用户级默认，遵循 XDG）
 
 凭据默认放在用户级目录而不是项目目录，因为项目目录常常就是仓库目录 ——
 .gitignore 挡不住 git add -A，而放在 ~/.config 下根本不会被任何仓库看见。
@@ -18,6 +19,7 @@ import os
 import stat
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
 USER_CONFIG = Path(
     os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
 ) / "edr-cloud-recorder" / "config.json"
@@ -34,7 +36,7 @@ def load_config(explicit: str | None = None) -> dict:
         if not path.exists():
             raise ConfigError(f"--config 指定的文件不存在：{path}")
     else:
-        for cand in (Path("config.json").resolve(), USER_CONFIG):
+        for cand in (HERE / "config.json", Path("config.json").resolve(), USER_CONFIG):
             if cand.exists():
                 path = cand
                 break

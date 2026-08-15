@@ -51,6 +51,11 @@ def _(rec):
     assert s and s.get("value") == "alice", s and s.get("value")
 
 
+@check("普通元素的自定义 change 不会被录成 fill")
+def _(rec):
+    assert not find(rec["steps"], lambda s: s.get("label") == "轮播内容")
+
+
 @check("密码框标记为 secret")
 def _(rec):
     assert find(rec["steps"], lambda s: s.get("secret"))
@@ -85,6 +90,14 @@ def _(rec):
 def _(rec):
     s = find(rec["steps"], lambda s: "提交订单" in (s.get("label") or ""))
     assert s and s["kind"] == "role", s and s["sel"]
+
+
+@check("点击记录了黑盒 UI 边界和落点")
+def _(rec):
+    s = find(rec["steps"], lambda s: "提交订单" in (s.get("label") or ""))
+    ui = (s or {}).get("ui") or {}
+    assert ui.get("rect", {}).get("width", 0) > 0, ui
+    assert ui.get("click", {}).get("rx") is not None, ui
 
 
 @check("接口被关联到触发它的那一步")
@@ -275,7 +288,7 @@ def _(rec):
 
 def spec_of(rec):
     return generate_spec(rec["steps"], rec["net"],
-                         start_url="http://127.0.0.1/", name="gen-check")
+                         start_url=rec["startUrl"], name="gen-check")
 
 
 @check("写请求生成状态码断言")

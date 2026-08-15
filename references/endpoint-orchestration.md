@@ -12,6 +12,7 @@
 | 本 skill 的录制器 | 摸清云端接口契约 | 浏览器录制 → Playwright + 接口记录 |
 | `orchestrate/scenario.py` | 编排云端与端侧交替的步骤 | 纯 Python，无外部依赖 |
 | `orchestrate/endpoint.py` | 驱动终端 GUI | 调用 **edr-wd** 的 MCP 工具 |
+| `orchestrate/recording_contract.py` | 把录制请求交给云端客户端 | 唯一选择 + 显式写入闸门 |
 | **edr-wd** | 在 Windows/macOS 上操作 GUI | pywinauto / AX + MCP over HTTP |
 
 **edr-wd 是独立项目，不属于本仓库。** 这里只提供一层薄封装 —— 建会话、调工具、
@@ -134,7 +135,7 @@ sc.endpoint("采集端侧基线",  lambda: snapshot(ep.table_rows(refresh_text="
 sc.cloud("下发变更",        apply_change)
 sc.until("等待端侧出现新记录", probe, timeout=90, interval=5)
 sc.endpoint("断言新记录符合预期", assert_new)
-sc.cloud("还原",            restore)
+sc.cleanup("还原",          restore)
 sc.run()
 ```
 
@@ -143,6 +144,36 @@ sc.run()
 - **`cloud`** —— 调云端接口
 - **`endpoint`** —— 操作或读取终端界面
 - **`until`** —— 轮询等待，**云端到端侧那段时间差的唯一正确等法**
+- **`cleanup`** —— 无论主流程成功、失败或中断都执行；用于还原真实写入
+
+还原不能写成最后一个普通 `cloud` 步骤；主流程在前面失败时，普通步骤会被跳过。
+`cleanup` 失败也会让场景失败，必须人工确认目标当前状态。
+
+## 使用录制请求实现 CloudClient
+
+录制器的 `<name>.json` 已保存 method、URL、请求体和响应状态。不要再手工抄请求体：
+
+```python
+from orchestrate.recording_contract import RecordingContract
+
+contract = RecordingContract.load("recordings/policy-flow.json")
+write = contract.one(method="POST", url_contains="/api/v1/policy")
+assert write.response_status == 200
+print(write.json_body)
+
+# sender 由业务项目提供，负责认证、环境和超时；建议传测试环境 URL。
+contract.replay(
+    sender,
+    method="POST",
+    url_contains="/api/v1/policy",
+    url="https://staging.example/api/v1/policy",
+    allow_write=True,  # 已采基线并注册 Scenario.cleanup 后才能打开
+)
+```
+
+选择器必须只匹配一条请求，否则直接报错。写请求默认拒绝，而且必须显式给出目标 URL，
+避免加载录制时误触生产环境。
+录制器不保存认证头；`sender` 应使用业务项目已有的认证客户端。
 
 ## 为什么"等生效"只能朝端侧轮询
 

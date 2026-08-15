@@ -16,7 +16,7 @@ import json
 import re
 from urllib.parse import urlsplit
 
-from selector_py import to_python
+from selector_py import SelectorError, to_python
 
 # 易变值：UUID 和 10 位以上纯数字（雪花 ID、毫秒时间戳）
 VOLATILE = re.compile(
@@ -25,11 +25,13 @@ VOLATILE = re.compile(
 )
 
 HEADER = '''import os
+from pathlib import Path
 
 from playwright.sync_api import Page, expect
 
 from rec_assert import ANY_NUM, ANY_STR, assert_subset, poll_until
 from rec_helpers import dismiss_overlays, is_present, nth_request
+from rec_visual import visual_click
 
 # 由 web-record 生成：{name}
 # 写请求已自动生成断言（状态码 + 请求体形态）；GET 保留为注释。
@@ -102,7 +104,27 @@ def generate_spec(steps, net, start_url, name):
     parts = urlsplit(start_url)
     origin = f"{parts.scheme}://{parts.netloc}"
 
+    absolute_urls = [urlsplit(n["url"]) for n in net if n.get("url")]
+    absolute_urls = [u for u in absolute_urls if u.scheme or u.netloc]
+    if absolute_urls and not any(
+        (u.scheme, u.netloc) == (parts.scheme, parts.netloc) for u in absolute_urls
+    ):
+        raise ValueError(
+            f"录制中没有任何 URL 属于 start_url 的 origin {origin!r}；"
+            "请检查 start_url 是否指向了正确环境。"
+        )
+
     def strip(u):
+        parsed = urlsplit(u)
+        if parsed.scheme or parsed.netloc:
+            if (parsed.scheme, parsed.netloc) != (parts.scheme, parts.netloc):
+                return u
+            path = parsed.path or "/"
+            if parsed.query:
+                path += f"?{parsed.query}"
+            if parsed.fragment:
+                path += f"#{parsed.fragment}"
+            return path
         return u.replace(origin, "")
 
     def between(a, b):
@@ -279,7 +301,13 @@ def generate_spec(steps, net, start_url, name):
         else:
             root = "page"
 
-        sel = to_python(s["sel"])
+        try:
+            sel = to_python(s["sel"])
+        except SelectorError as e:
+            lines.append(f"    # ⚠ 无法转译选择器 {s['sel']!r}：{e}")
+            for c in calls:
+                lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
+            continue
 
         # ── 断言步骤 ──
         # expected 一律从录制数据里取，不在生成时重新推导。
@@ -359,7 +387,17 @@ def generate_spec(steps, net, start_url, name):
 
         loc = f"{root}.{sel}"
         t = s["type"]
-        if t == "click":
+        visual_ui = {
+            key: s.get("ui", {}).get(key)
+            for key in ("pageRect", "click", "templates")
+            if s.get("ui", {}).get(key) is not None
+        }
+        if t == "click" and visual_ui.get("templates"):
+            action = (
+                f"visual_click(page, {loc}, template_root=Path(__file__).parent, "
+                f"ui={visual_ui!r})"
+            )
+        elif t == "click":
             action = f"{loc}.click()"
         elif t == "fill" and s.get("secret"):
             action = f'{loc}.fill(os.environ.get("REC_PASSWORD", ""))'

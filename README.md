@@ -35,7 +35,8 @@ python <此仓库>/scripts/record.py --url https://app.example.com --name login-
 
 | 文件 | 内容 |
 |---|---|
-| `<name>.json` | 原始记录：步骤 + 网络事件，都带毫秒时间戳 |
+| `<name>.json` | 原始记录：步骤、点击元素的渲染特征、网络事件，都带毫秒时间戳 |
+| `<name>.assets/step-*.png` | 点击元素的黑盒 UI 模板，可供模板、SSIM 或特征匹配使用 |
 | `test_<name>.py` | 可跑的脚本草稿，接口调用作为注释挂在对应步骤下 |
 
 回放：
@@ -60,15 +61,17 @@ assets/               可直接复制到目标项目的模板
   rec_helpers.py      dismiss_overlays / confirm_and_capture / is_present / nth_request …
   rec_assert.py       assert_subset / ANY_STR / ANY_NUM / poll_until
   rec_config.py       配置加载与凭据解析（env > config.json）
+  rec_visual.py       DOM 点击失败后的多尺度视觉模板回退
   chrome_path.py      跨平台探测本机 Chromium（避免为版本号重下 170MB）
   manual_login.py     站点要求验证码时的兜底
   pytest.ini          trace/录像/截图、重试、超时、默认收集范围
 test/
-  test_verify.py      自检：65 项，每项守一条 SKILL.md 里的承诺
+  test_verify.py      自检：每项守一条 SKILL.md 里的承诺
   fixture_drive.py    造一个含全部边界情况的页面并驱动一遍
 orchestrate/
   scenario.py         云端+端侧交替编排：cloud / endpoint / until 三种步骤
   endpoint.py         edr-wd 薄封装（驱动终端 GUI）
+  recording_contract.py  从录制 JSON 唯一选择并安全重放云端请求
   example_scenario.py 可照抄的模板
 references/           遇到具体问题时再读，见 SKILL.md 的「深入」一节
 ```
@@ -93,6 +96,10 @@ references/           遇到具体问题时再读，见 SKILL.md 的「深入」
 **开关录成「拨到指定状态」而不是盲点一下。** 只录一次 click 的话，回放时初始状态一旦
 与录制时不同就会朝反方向拨 —— 脚本不报错，只是把开关设错了。
 
+**点击同时保存黑盒 UI 特征。** 每个点击类步骤会记录元素边界、相对落点、viewport、DPR
+和少量计算后样式，并尽量把元素实际渲染结果裁成独立 PNG。截图失败只缺少 `template`，
+不会阻断点击或录制；模板路径和 SHA-256 写在步骤的 `ui.template` 中。
+
 **只能用 CSS 兜底的点击会被包成「存在则点」。** 这类元素绝大多数是关闭弹窗，
 弹窗不出现时脚本不该失败。
 
@@ -100,8 +107,9 @@ references/           遇到具体问题时再读，见 SKILL.md 的「深入」
 成功的 GET 响应动辄几十 KB，全存没有价值。响应体在事件回调里**当场**取 —— 攒到最后
 再取会撞上 Chromium 把 body 从网络缓存里淘汰。
 
-**登录态边录边快照。** 用法是「操作完直接关浏览器窗口」，而浏览器一关
-`storage_state()` 就取不到了，所以每个轮询周期都拍一次、最后落盘最新的一份。
+**登录态边录边快照。** 用法是「操作完直接关浏览器窗口」，所以每个轮询周期都直接读取
+cookies 和现有 frame 的 localStorage。这里不能反复调用 `storage_state()`：它会为第三方
+origin 创建临时页面再关闭，导致有界面录制时窗口持续闪烁。
 
 ## 依赖
 

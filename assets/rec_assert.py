@@ -22,13 +22,16 @@ class _AnyOf:
     仍然被守住。
     """
 
-    __slots__ = ("_type", "_label")
+    __slots__ = ("_type", "_label", "_exclude_bool")
 
-    def __init__(self, type_: type, label: str):
+    def __init__(self, type_: type, label: str, *, exclude_bool: bool = False):
         self._type = type_
         self._label = label
+        self._exclude_bool = exclude_bool
 
     def __eq__(self, other: Any) -> bool:
+        if self._exclude_bool and isinstance(other, bool):
+            return False
         return isinstance(other, self._type)
 
     def __hash__(self):
@@ -39,7 +42,7 @@ class _AnyOf:
 
 
 ANY_STR = _AnyOf(str, "ANY_STR")
-ANY_NUM = _AnyOf((int, float), "ANY_NUM")
+ANY_NUM = _AnyOf((int, float), "ANY_NUM", exclude_bool=True)
 
 
 def _match(actual: Any, expected: Any, path: str, problems: list[str]) -> None:
