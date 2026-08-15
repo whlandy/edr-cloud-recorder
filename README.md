@@ -36,6 +36,7 @@ python <此仓库>/scripts/record.py --url https://app.example.com --name login-
 | 文件 | 内容 |
 |---|---|
 | `<name>.json` | 原始记录：步骤、点击元素的渲染特征、网络事件，都带毫秒时间戳 |
+| `<name>.trace.json` | 与脚本一一对应的完整成功轨迹；包含模板匹配和网络成功条件 |
 | `<name>.assets/step-*.png` | 点击元素的黑盒 UI 模板，可供模板、SSIM 或特征匹配使用 |
 | `test_<name>.py` | 可跑的脚本草稿，接口调用作为注释挂在对应步骤下 |
 
@@ -45,6 +46,27 @@ python <此仓库>/scripts/record.py --url https://app.example.com --name login-
 pytest recordings/test_login-flow.py
 ```
 
+成功 trace 也可以作为 Agent 的黄金路径回放，并生成独立的执行轨迹和评分：
+
+```python
+from replay_trace import evaluate_trace, load_trace, replay_trace
+
+golden = load_trace("recordings/login-flow.trace.json")
+execution = replay_trace(
+    authed_page,
+    golden,
+    template_root="recordings",
+    targeting="visual_only",  # 或 dom_first
+    execution_path="recordings/login-flow.execution.json",
+)
+report = evaluate_trace(golden, execution)
+assert report["taskSuccess"]
+```
+
+`replay_trace.py` 运行时需要 `assets/` 和 `scripts/` 都在 Python import path 中。runner 会先
+进入 `startUrl`，并在动作之前建立网络监听；任何模板定位、动作或响应断言失败都会终止路径，
+不会把只执行了一部分的轨迹记成成功。
+
 ## 结构
 
 ```
@@ -53,6 +75,8 @@ scripts/
   record.py           录制驱动
   recorder-inject.mjs 页面内录制器（唯一的 JS —— 它在浏览器里跑）
   generate_spec.py    从录制数据生成 pytest 草稿
+  generate_trace.py   把一次完整录制编译成一条黄金成功轨迹
+  replay_trace.py     回放黄金轨迹，产出执行轨迹并计算 Agent 指标
   selector_py.py      把 JS 语法的选择器转成 Python 语法
   recorder_loader.py  把注入层原样喂给 add_init_script
 assets/               可直接复制到目标项目的模板
@@ -96,9 +120,15 @@ references/           遇到具体问题时再读，见 SKILL.md 的「深入」
 **开关录成「拨到指定状态」而不是盲点一下。** 只录一次 click 的话，回放时初始状态一旦
 与录制时不同就会朝反方向拨 —— 脚本不报错，只是把开关设错了。
 
-**点击同时保存黑盒 UI 特征。** 每个点击类步骤会记录元素边界、相对落点、viewport、DPR
-和少量计算后样式，并尽量把元素实际渲染结果裁成独立 PNG。截图失败只缺少 `template`，
-不会阻断点击或录制；模板路径和 SHA-256 写在步骤的 `ui.template` 中。
+**定位型动作同时保存黑盒 UI 特征。** 点击、双击、勾选和开关会记录元素边界、相对落点、
+viewport、DPR 和少量计算后样式，并将动作前画面裁成 `element` 与 `context` 两张 PNG。
+截图失败只缺少 `ui.templates`，不会阻断操作或录制；模板路径和 SHA-256 也写在该字段中。
+
+视觉定位相关代码可单独快速检测：
+
+```bash
+python scripts/check_visual.py
+```
 
 **只能用 CSS 兜底的点击会被包成「存在则点」。** 这类元素绝大多数是关闭弹窗，
 弹窗不出现时脚本不该失败。

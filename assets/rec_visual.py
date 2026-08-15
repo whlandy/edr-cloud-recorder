@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import log
 from pathlib import Path
 from typing import Any
+
+
+SCALE_FACTORS = (0.80, 0.90, 1.0, 1.10, 1.25)
+MATCH_THRESHOLD = 0.80
+AMBIGUITY_MARGIN = 0.04
+VERIFY_THRESHOLD = 0.65
 
 
 class VisualMatchError(RuntimeError):
@@ -21,6 +28,14 @@ class VisualMatch:
     second_score: float
     verify_score: float
     scale: float
+
+
+@dataclass(frozen=True)
+class VisualTarget:
+    x: float
+    y: float
+    kind: str
+    match: VisualMatch
 
 
 def _deps():
@@ -66,7 +81,8 @@ def _iou(a: dict, b: dict) -> float:
     return intersection / union if union else 0.0
 
 
-def _top_candidates(screen, template, scales: tuple[float, ...]) -> list[dict]:
+def _top_candidates(screen, template, scales: tuple[float, ...],
+                    expected_scale: float) -> list[dict]:
     cv2, np = _deps()
     screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
     template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
@@ -98,7 +114,14 @@ def _top_candidates(screen, template, scales: tuple[float, ...]) -> list[dict]:
             response[y1:y2, x1:x2] = -1
 
     unique = []
-    for candidate in sorted(candidates, key=lambda c: c["score"], reverse=True):
+    ranked = sorted(
+        candidates,
+        # Break near-ties toward the recorded scale; flat patches can score 1.0
+        # at every smaller size that fits inside the same solid-color region.
+        key=lambda c: c["score"] - 0.001 * abs(log(c["scale"] / expected_scale)),
+        reverse=True,
+    )
+    for candidate in ranked:
         if all(_iou(candidate, kept) < 0.35 for kept in unique):
             unique.append(candidate)
     return unique
@@ -109,9 +132,9 @@ def locate_template(
     template_path: str | Path,
     *,
     expected_scale: float = 1.0,
-    threshold: float = 0.80,
-    ambiguity_margin: float = 0.04,
-    verify_threshold: float = 0.65,
+    threshold: float = MATCH_THRESHOLD,
+    ambiguity_margin: float = AMBIGUITY_MARGIN,
+    verify_threshold: float = VERIFY_THRESHOLD,
 ) -> VisualMatch:
     """在 viewport 截图中定位模板；低分或不唯一时拒绝返回坐标。"""
     cv2, np = _deps()
@@ -120,9 +143,10 @@ def locate_template(
     if template is None:
         raise VisualMatchError(f"无法读取视觉模板 {template_path}")
 
-    factors = (0.80, 0.90, 1.0, 1.10, 1.25)
-    scales = tuple(sorted({round(expected_scale * factor, 4) for factor in factors}))
-    candidates = _top_candidates(screen, template, scales)
+    scales = tuple(sorted({
+        round(expected_scale * factor, 4) for factor in SCALE_FACTORS
+    }))
+    candidates = _top_candidates(screen, template, scales, expected_scale)
     if not candidates:
         raise VisualMatchError(f"模板大于 viewport 或没有候选：{template_path}")
 
@@ -167,23 +191,43 @@ def visual_click(
     template_root: str | Path,
     ui: dict,
     dom_timeout: float = 1_500,
+    click_count: int = 1,
 ) -> str:
     """优先 DOM 点击；DOM 无法唯一定位时使用视觉候选。"""
     try:
         locator.wait_for(state="visible", timeout=dom_timeout)
     except Exception as dom_error:
-        return _visual_fallback(page, template_root, ui, dom_error)
+        return _visual_fallback(page, template_root, ui, dom_error, click_count)
 
     # wait_for 成功后 click 可能已经发出请求才因导航等原因报错，不能再视觉补点。
-    locator.click()
+    locator.dblclick() if click_count == 2 else locator.click()
     return "dom"
 
 
 def _visual_fallback(page: Any, template_root: str | Path,
-                     ui: dict, dom_error: Exception) -> str:
+                     ui: dict, dom_error: Exception, click_count: int) -> str:
+    try:
+        target = locate_visual_target(page, template_root=template_root, ui=ui)
+    except VisualMatchError as error:
+        raise error from dom_error
+    if click_count == 2:
+        page.mouse.click(target.x, target.y, click_count=2)
+    else:
+        page.mouse.click(target.x, target.y)
+    print(
+        f"[visual] {target.kind} score={target.match.score:.3f} "
+        f"verify={target.match.verify_score:.3f} "
+        f"click=({target.x:.1f},{target.y:.1f})"
+    )
+    return "visual"
+
+
+def locate_visual_target(page: Any, *, template_root: str | Path,
+                         ui: dict) -> VisualTarget:
+    """Locate a recorded target without performing its action."""
     templates = ui.get("templates") or {}
     if not templates or not ui.get("pageRect"):
-        raise VisualMatchError("DOM 定位失败，且录制步骤没有可用视觉模板") from dom_error
+        raise VisualMatchError("录制步骤没有可用视觉模板")
 
     screenshot = page.screenshot()
     viewport = page.evaluate("() => ({width: innerWidth, height: innerHeight})")
@@ -193,7 +237,7 @@ def _visual_fallback(page: Any, template_root: str | Path,
     recorded_width = float(recorded_element.get("width") or 0)
     recorded_css_width = float(ui["pageRect"].get("width") or 0)
     if not recorded_width or not recorded_css_width:
-        raise VisualMatchError("视觉模板缺少录制尺寸，无法计算尺度") from dom_error
+        raise VisualMatchError("视觉模板缺少录制尺寸，无法计算尺度")
     expected_scale = current_px_per_css / (recorded_width / recorded_css_width)
 
     errors = []
@@ -219,14 +263,9 @@ def _visual_fallback(page: Any, template_root: str | Path,
         x, y = px / current_px_per_css, py / current_px_per_css
         if not (0 <= x < viewport["width"] and 0 <= y < viewport["height"]):
             raise VisualMatchError(f"视觉点击点越界：({x:.1f}, {y:.1f})")
-        page.mouse.click(x, y)
-        print(
-            f"[visual] {kind} score={match.score:.3f} "
-            f"verify={match.verify_score:.3f} click=({x:.1f},{y:.1f})"
-        )
-        return "visual"
+        return VisualTarget(x=x, y=y, kind=kind, match=match)
 
-    raise VisualMatchError("DOM 定位失败；视觉回退也失败：" + "；".join(errors)) from dom_error
+    raise VisualMatchError("视觉定位失败：" + "；".join(errors))
 
 
 def _png_dimensions(data: bytes) -> tuple[int, int]:

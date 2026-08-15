@@ -418,14 +418,16 @@ export const RECORDER = () => {
 
   const push = (type, el, extra, event) => {
     try {
+      const now = Date.now();
       const t = meaningful(el);
       // 点在页面空白处会一路上溯到 html/body。这种步骤回放时点了等于没点，
       // 却会以 locator("html") 的形式留在草稿里，读的人还得判断它是不是有意义。
-      if (type === 'click' && (t === document.body || t === document.documentElement)) return;
+      if (['click', 'dblclick'].includes(type) &&
+          (t === document.body || t === document.documentElement)) return;
       const sel = selectorFor(t, { requireOwnText: type === 'switch' });
       const step = {
         id: `${tag}-${++seq}`,
-        t: Date.now(), type, sel: sel.code, kind: sel.kind,
+        t: now, actionT: extra?.actionT ?? now, type, sel: sel.code, kind: sel.kind,
         ambiguous: !!sel.ambiguous, matches: sel.matches,
         label: txt(t).slice(0, 60), css: cssPath(t),
         url: location.pathname + location.hash,
@@ -435,7 +437,7 @@ export const RECORDER = () => {
         framePath: window !== window.top ? location.pathname : undefined,
         ...extra,
       };
-      if (['click', 'switch', 'check', 'uncheck'].includes(type)) {
+      if (['click', 'dblclick', 'switch', 'check', 'uncheck'].includes(type)) {
         step.ui = renderedUi(t, event);
       }
 
@@ -591,10 +593,12 @@ export const RECORDER = () => {
 
   document.addEventListener('click', (e) => {
     if (fromMenu(e)) return;
+    if (e.detail > 1) return; // 第二次 click 由 dblclick 步骤表示
     // 复选框和单选框的 click 会紧跟一个 change，两个都记就会生成
     // 「先 click 再 check」这种连续操作同一元素的冗余步骤。
     // change 携带了勾选状态，信息更完整，所以 click 这边跳过它们。
     const el = e.target;
+    const actionT = Date.now();
     if (el?.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) return;
     // 点 <label> 也会连带触发内部 input 的 change，同样跳过
     if (el?.closest?.('label')?.querySelector('input[type=checkbox],input[type=radio]')) return;
@@ -609,8 +613,9 @@ export const RECORDER = () => {
         const now = switchInfo(sw.el);
         const via = (now && now.via) || sw.info.via;
         const within = stateWithin(sw.el);
-        if (within === undefined) return push('click', el, undefined, e);
+        if (within === undefined) return push('click', el, { t: actionT, actionT }, e);
         push('switch', sw.el, {
+          t: actionT, actionT,
           to: now && now.on !== null ? now.on : !before,
           via: { ...via, within },
         }, e);
@@ -637,14 +642,19 @@ export const RECORDER = () => {
         const info = moved.length === 1 ? switchInfo(moved[0]) : null;
         const within = info ? stateWithin(moved[0]) : undefined;
         if (info && info.on !== null && within !== undefined) {
-          push('switch', moved[0], { to: info.on, via: { ...info.via, within } }, e);
-        } else push('click', el, undefined, e);
+          push('switch', moved[0], {
+            t: actionT, actionT, to: info.on, via: { ...info.via, within },
+          }, e);
+        } else push('click', el, { t: actionT, actionT }, e);
       };
       setTimeout(poll, 50);
       return;
     }
 
     push('click', el, undefined, e);
+  }, true);
+  document.addEventListener('dblclick', (e) => {
+    if (!fromMenu(e)) push('dblclick', e.target, undefined, e);
   }, true);
   document.addEventListener('change', (e) => {
     if (fromMenu(e)) return;

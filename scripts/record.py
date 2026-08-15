@@ -5,7 +5,7 @@
   - 记录每一次点击 / 输入 / 勾选 / 回车，为元素算出最稳的选择器
   - 从驱动侧抓所有 XHR/fetch（含请求体、状态码、失败响应体）
   - 按时间把接口调用挂到触发它的那一步下面
-  - 结束时输出原始 JSON + 一份可直接跑的 pytest 用例草稿
+  - 结束时输出原始 JSON、完整成功 trace 和可直接跑的 pytest 用例草稿
 
 与 `playwright codegen` 的区别：codegen 只产选择器，不记录接口。
 当你的目标是「搞清楚这个操作到底打了哪些接口、请求体长什么样」时，
@@ -54,13 +54,15 @@ except ImportError:
 
 from chrome_path import resolve_chrome                      # noqa: E402
 from generate_spec import _ident, generate_spec             # noqa: E402
+from generate_trace import POSITIONAL_STEP_TYPES, generate_trace  # noqa: E402
 from rec_config import ConfigError, load_config, with_defaults  # noqa: E402
 from recorder_loader import recorder_source                 # noqa: E402
 
 DRAIN = "() => (window.__rec ? window.__rec.drain() : [])"
 PUMP_MS = 200
-VISUAL_STEP_TYPES = {"click"}
-PRE_FRAME_MAX_AGE_MS = 1_000
+VISUAL_STEP_TYPES = POSITIONAL_STEP_TYPES
+PRE_ACTION_ONLY_TYPES = {"check", "uncheck", "switch"}
+PRE_FRAME_MAX_AGE_MS = 1_500
 CONTEXT_PADDING_CSS = 12
 # 登录态只能趁页面还活着时拍。不能在轮询里调用 context.storage_state()：
 # 当上下文访问过当前页面未覆盖的第三方 origin 时，Playwright 会创建可见临时页、
@@ -142,7 +144,9 @@ def _template_meta(path: Path, data: bytes, asset_dir: Path) -> dict:
 def _crop_pre_frame(pre_frame: dict, step: dict, asset_dir: Path,
                     index: int) -> bool:
     """从点击前 viewport 帧裁出元素和上下文模板。"""
-    if not pre_frame or abs(step.get("t", 0) - pre_frame.get("t", 0)) > PRE_FRAME_MAX_AGE_MS:
+    action_t = step.get("actionT", step.get("t", 0))
+    age = action_t - pre_frame.get("t", 0) if pre_frame else -1
+    if not pre_frame or not 0 <= age <= PRE_FRAME_MAX_AGE_MS:
         return False
     ui = step["ui"]
     rect = ui.get("pageRect")
@@ -193,12 +197,22 @@ def _crop_pre_frame(pre_frame: dict, step: dict, asset_dir: Path,
     return True
 
 
+def _select_pre_frame(history: list[dict], action_t: int) -> dict | None:
+    candidates = [
+        frame for frame in history
+        if 0 <= action_t - frame["t"] <= PRE_FRAME_MAX_AGE_MS
+    ]
+    return dict(max(candidates, key=lambda frame: frame["t"])) if candidates else None
+
+
 def _capture_ui_template(source: dict, step: dict, asset_dir: Path,
                          index: int, pre_frame: dict | None = None) -> None:
-    """保存点击元素的渲染模板；任何失败都降级为仅保留 ui 元数据。"""
+    """保存定位型动作的渲染模板；任何失败都降级为仅保留 ui 元数据。"""
     if step.get("type") not in VISUAL_STEP_TYPES or not step.get("ui"):
         return
     if _crop_pre_frame(pre_frame, step, asset_dir, index):
+        return
+    if step.get("type") in PRE_ACTION_ONLY_TYPES:
         return
 
     frame = source.get("frame") if source else None
@@ -288,7 +302,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     origin = "{0.scheme}://{0.netloc}".format(urlsplit(start_url))
 
     steps, seen, net, pending_visual = [], set(), [], []
-    latest_frame = {"data": None, "t": 0}
+    frame_history: list[dict] = []
 
     def accept(step, source=None):
         if not step or not step.get("id") or step["id"] in seen:
@@ -296,7 +310,8 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         seen.add(step["id"])
         steps.append(step)
         if source and step.get("type") in VISUAL_STEP_TYPES:
-            pre_frame = dict(latest_frame) if latest_frame["data"] else None
+            action_t = step.get("actionT", step.get("t", 0))
+            pre_frame = _select_pre_frame(frame_history, action_t)
             pending_visual.append((source, step, len(steps), pre_frame))
         if step.get("secret"):
             val = " = <密码，未记录>"
@@ -439,11 +454,14 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
                 pass
 
         def refresh_pre_frame():
-            """只在内存保留最近一张 viewport 图，供下一次点击裁模板。"""
+            """保留短时 viewport 历史，供延迟上报动作选择真正的前帧。"""
             try:
-                latest_frame.update(data=page.screenshot(), t=_now())
+                frame = {"data": page.screenshot(), "t": _now()}
+                frame_history.append(frame)
+                cutoff = frame["t"] - PRE_FRAME_MAX_AGE_MS
+                frame_history[:] = [item for item in frame_history if item["t"] >= cutoff]
             except Exception:
-                latest_frame.update(data=None, t=0)
+                pass
 
         refresh_pre_frame()
 
@@ -512,6 +530,11 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
          "steps": steps, "net": net},
         ensure_ascii=False, indent=1), encoding="utf-8")
 
+    trace_file = out_dir / f"{name}.trace.json"
+    trace_file.write_text(json.dumps(
+        generate_trace(steps, net, name=name, start_url=start_url),
+        ensure_ascii=False, indent=1), encoding="utf-8")
+
     spec_text = generate_spec(steps, net, start_url=start_url, name=name)
     # pytest 只收集 test_*.py，文件名必须带前缀，而且得是合法模块名
     spec_file = out_dir / f"test_{_ident(name)}.py"
@@ -530,6 +553,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     print("\n录制完成")
     print(f"  操作 {len(steps)} 步 · 接口 {len(responses)} 次 · 写请求 {len(writes)} 次")
     print(f"  原始记录  {raw_file}")
+    print(f"  成功轨迹  {trace_file}")
     print(f"  脚本草稿  {spec_file}")
     if snapshot["state"]:
         print(f"  登录态    {state_file}")
@@ -542,7 +566,8 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     if css:
         print(f"  ⚠ {len(css)} 个只能用 CSS 兜底，已包成「存在则点」")
 
-    return {"steps": steps, "net": net, "raw_file": raw_file, "spec_file": spec_file,
+    return {"steps": steps, "net": net, "raw_file": raw_file,
+            "trace_file": trace_file, "spec_file": spec_file,
             "state_file": state_file if snapshot["state"] else None}
 
 
