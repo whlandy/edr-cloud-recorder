@@ -42,6 +42,7 @@ class Scenario:
 
     name: str
     steps: list[tuple[str, str, Callable]] = field(default_factory=list)
+    cleanup_steps: list[tuple[str, str, Callable]] = field(default_factory=list)
     results: list[StepResult] = field(default_factory=list)
 
     # ---------- 声明 ----------
@@ -52,6 +53,13 @@ class Scenario:
 
     def endpoint(self, name: str, fn: Callable) -> "Scenario":
         self.steps.append((name, "endpoint", fn))
+        return self
+
+    def cleanup(self, name: str, fn: Callable, *, side: str = "cloud") -> "Scenario":
+        """注册始终执行的清理步骤；清理失败会让场景失败。"""
+        if side not in {"cloud", "endpoint"}:
+            raise ValueError("cleanup side 必须是 cloud 或 endpoint")
+        self.cleanup_steps.append((name, side, fn))
         return self
 
     def until(self, name: str, probe: Callable[[], bool],
@@ -79,28 +87,37 @@ class Scenario:
 
     def run(self, stop_on_fail: bool = True) -> bool:
         print(f"\n=== {self.name} ===")
-        all_ok = True
-        for label, side, fn in self.steps:
-            tag = {"cloud": "云", "endpoint": "端", "sync": "等"}[side]
-            t0 = time.time()
-            try:
-                detail = fn()
-                r = StepResult(label, side, True, time.time() - t0, str(detail or ""))
-                print(f"  [{tag}] {label:<34} ✅ {r.seconds:5.1f}s  {r.detail[:60]}")
-            except Exception as e:
-                r = StepResult(label, side, False, time.time() - t0, f"{type(e).__name__}: {e}")
-                print(f"  [{tag}] {label:<34} ❌ {r.seconds:5.1f}s  {r.detail[:100]}")
-                # 把"哪一边坏了"直接说出来，省掉一轮猜测
-                if isinstance(e, EndpointError):
-                    print("       ↑ 端侧失败：先确认目标机器上的 MCP 服务和被测程序都在")
-                all_ok = False
-            self.results.append(r)
-            if not r.ok and stop_on_fail:
-                print(f"  —— 在第 {len(self.results)} 步中断，后面 "
-                      f"{len(self.steps) - len(self.results)} 步未执行")
-                break
-        self._summary()
-        return all_ok
+        self.results.clear()
+        try:
+            for index, (label, side, fn) in enumerate(self.steps):
+                r = self._execute(label, side, fn)
+                self.results.append(r)
+                if not r.ok and stop_on_fail:
+                    print(f"  —— 在第 {index + 1} 步中断，后面 "
+                          f"{len(self.steps) - index - 1} 步未执行")
+                    break
+        finally:
+            for label, side, fn in self.cleanup_steps:
+                self.results.append(self._execute(f"清理：{label}", side, fn))
+            self._summary()
+        return all(result.ok for result in self.results)
+
+    @staticmethod
+    def _execute(label: str, side: str, fn: Callable) -> StepResult:
+        tag = {"cloud": "云", "endpoint": "端", "sync": "等"}[side]
+        t0 = time.time()
+        try:
+            detail = fn()
+            result = StepResult(label, side, True, time.time() - t0, str(detail or ""))
+            print(f"  [{tag}] {label:<34} ✅ {result.seconds:5.1f}s  {result.detail[:60]}")
+        except Exception as e:
+            result = StepResult(
+                label, side, False, time.time() - t0, f"{type(e).__name__}: {e}"
+            )
+            print(f"  [{tag}] {label:<34} ❌ {result.seconds:5.1f}s  {result.detail[:100]}")
+            if isinstance(e, EndpointError):
+                print("       ↑ 端侧失败：先确认目标机器上的 MCP 服务和被测程序都在")
+        return result
 
     def _summary(self) -> None:
         ok = sum(1 for r in self.results if r.ok)

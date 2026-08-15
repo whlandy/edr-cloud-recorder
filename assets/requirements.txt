@@ -5,3 +5,4 @@ pytest>=8.0
 pytest-playwright>=0.7          # page / context / browser fixture，--tracing 等选项
 pytest-rerunfailures>=14.0      # 对应 playwright.config.ts 的 retries
 pytest-timeout>=2.3             # 对应 playwright.config.ts 的 timeout（单用例超时）
+opencv-python-headless>=4.10    # DOM 点击失败时的多尺度视觉模板回退

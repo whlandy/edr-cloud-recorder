@@ -18,6 +18,7 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
   <button data-testid="save-btn">保存</button>
   <button id="submit_9" onclick="sendOrder()">提交订单</button>
   <button onclick="fetch('/api/bad',{method:'POST',body:'{}'})">触发失败</button>
+  <div id="synthetic_change">轮播内容</div>
   <input placeholder="请输入用户名">
   <input type="password" placeholder="密码">
   <label><input type="checkbox" id="agree"> 同意条款</label>
@@ -196,6 +197,7 @@ def drive(chrome: str | None = None) -> dict:
             page.on("response", on_response)
 
             page.goto(base)
+            page.locator("#synthetic_change").dispatch_event("change")
             page.click("[data-testid=save-btn]")
             page.fill('input[placeholder="请输入用户名"]', "alice")
             page.fill("input[type=password]", "sup3rs3cret")

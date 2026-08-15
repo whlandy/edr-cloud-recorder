@@ -236,7 +236,8 @@ export const RECORDER = () => {
     return null;
   };
 
-  const selectorFor = (e) => {
+  const selectorFor = (e, opts = {}) => {
+    const requireOwnText = !!opts.requireOwnText;
     // testid 排第一是因为它「本该」为测试唯一标识而设。但组件框架常常批量吐出
     // 同一个 data-testid（实测有 245 个元素共用 text-comp-span），那时它不但不是
     // 最稳的，反而是最不可靠的 —— 回放时必然 strict mode 报错。
@@ -308,7 +309,7 @@ export const RECORDER = () => {
       ? ![...e.querySelectorAll('*')].some((x) => txt(x) === name)
       : false;
 
-    if (name && !isFormControl && textIsOwn) {
+    if (name && !isFormControl && (!requireOwnText || textIsOwn)) {
       const n = countText(name);
       if (n <= 1) return { kind: 'text', code: `getByText(${JSON.stringify(name)}, { exact: true })` };
 
@@ -376,13 +377,52 @@ export const RECORDER = () => {
     return undefined;
   };
 
-  const push = (type, el, extra) => {
+  // 只记录浏览器实际渲染后的可见特征，不把完整 DOM/属性树塞进录制文件。
+  // rect 也供驱动层在 selector 截图失败时做 clip 兜底。
+  const renderedUi = (el, event) => {
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    const x = Number(event?.clientX);
+    const y = Number(event?.clientY);
+    let pageRect, pageViewport;
+    try {
+      let px = r.x, py = r.y, w = window;
+      while (w !== w.top) {
+        const frame = w.frameElement;
+        if (!frame) throw new Error('cross-origin frame');
+        const fr = frame.getBoundingClientRect();
+        px += fr.x; py += fr.y; w = w.parent;
+      }
+      pageRect = { x: px, y: py, width: r.width, height: r.height };
+      pageViewport = { width: w.innerWidth, height: w.innerHeight };
+    } catch { /* 跨域 iframe 无法换算到顶层坐标 */ }
+    return {
+      rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+      pageRect,
+      pageViewport,
+      click: Number.isFinite(x) && Number.isFinite(y) ? {
+        x, y,
+        rx: r.width ? (x - r.x) / r.width : null,
+        ry: r.height ? (y - r.y) / r.height : null,
+      } : undefined,
+      viewport: { width: innerWidth, height: innerHeight },
+      deviceScaleFactor: devicePixelRatio,
+      style: {
+        color: s.color,
+        backgroundColor: s.backgroundColor,
+        borderRadius: s.borderRadius,
+        opacity: s.opacity,
+      },
+    };
+  };
+
+  const push = (type, el, extra, event) => {
     try {
       const t = meaningful(el);
       // 点在页面空白处会一路上溯到 html/body。这种步骤回放时点了等于没点，
       // 却会以 locator("html") 的形式留在草稿里，读的人还得判断它是不是有意义。
       if (type === 'click' && (t === document.body || t === document.documentElement)) return;
-      const sel = selectorFor(t);
+      const sel = selectorFor(t, { requireOwnText: type === 'switch' });
       const step = {
         id: `${tag}-${++seq}`,
         t: Date.now(), type, sel: sel.code, kind: sel.kind,
@@ -395,6 +435,9 @@ export const RECORDER = () => {
         framePath: window !== window.top ? location.pathname : undefined,
         ...extra,
       };
+      if (['click', 'switch', 'check', 'uncheck'].includes(type)) {
+        step.ui = renderedUi(t, event);
+      }
 
       // 双通道上报。
       //
@@ -566,11 +609,11 @@ export const RECORDER = () => {
         const now = switchInfo(sw.el);
         const via = (now && now.via) || sw.info.via;
         const within = stateWithin(sw.el);
-        if (within === undefined) return push('click', el);
+        if (within === undefined) return push('click', el, undefined, e);
         push('switch', sw.el, {
           to: now && now.on !== null ? now.on : !before,
           via: { ...via, within },
-        });
+        }, e);
       }, 60);
       return;
     }
@@ -594,18 +637,21 @@ export const RECORDER = () => {
         const info = moved.length === 1 ? switchInfo(moved[0]) : null;
         const within = info ? stateWithin(moved[0]) : undefined;
         if (info && info.on !== null && within !== undefined) {
-          push('switch', moved[0], { to: info.on, via: { ...info.via, within } });
-        } else push('click', el);
+          push('switch', moved[0], { to: info.on, via: { ...info.via, within } }, e);
+        } else push('click', el, undefined, e);
       };
       setTimeout(poll, 50);
       return;
     }
 
-    push('click', el);
+    push('click', el, undefined, e);
   }, true);
   document.addEventListener('change', (e) => {
     if (fromMenu(e)) return;
     const el = e.target;
+    // 一些站点会在普通 div 上派发自定义 change（Bing 首页轮播就是如此）。
+    // 这不是用户输入；若继续读取不存在的 value，会每次都录成空 fill。
+    if (!el?.matches?.('input, textarea, select')) return;
     if (el.type === 'checkbox' || el.type === 'radio') {
       push(el.checked ? 'check' : 'uncheck', el);
     } else if (el.type === 'password') {
