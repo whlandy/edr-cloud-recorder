@@ -111,6 +111,77 @@ Airtest、SikuliX/Oculix 和 Appium Images 的成熟路径都以 OpenCV 模板�
 `pageRect` 是换算到顶层 viewport 的矩形。同源 iframe 可以累加 frame 边界；跨域 iframe
 无法安全读取父页面坐标时省略，第一阶段不做视觉回退。
 
+## 成功 trace
+
+录制结束为每个 `test_<name>.py` 额外生成一个 `<name>.trace.json`，二者一一对应。trace 的
+`entry` 和 `steps[*].next` 将该脚本的点击、双击、输入、勾选、开关、按键和断言串成完整
+成功路径。需要确定位置的步骤包含 `TemplateMatch`；默认先匹配 `context`，失败后再匹配
+`element`。输入紧跟同一输入框的点击时复用点击前模板，语义是先匹配并聚焦光标，再执行
+`InputText`，避免用已经填入文字的截图匹配空输入框。模板缺失的定位步骤保留为
+`missing_template`，并将整条 trace 标记为 `incomplete`，避免轨迹静默缺步。
+
+每个模板都从 `actionT` 之前最近的 viewport 历史帧裁取。延迟上报的 switch 不能使用
+当前最新帧，因为该帧可能已经是切换后的状态；动作后的 locator screenshot 也不能作为
+check/uncheck/switch 的模板。
+
+脚本关联到动作的网络响应会编译到动作的 `expect.responses`，包含 method、URL、录制时状态码
+和请求体。runner 必须先建立监听再执行动作，不能在后继节点才开始等待；否则快速响应会在
+监听建立前结束。这样 trace 的“成功”同时覆盖 UI 路径和接口条件，而不只是动作列表。
+
+匹配阈值和尺度来自 `rec_visual.py` 的运行时常量，trace 与 pytest 视觉回退不会各自维护
+一套参数。
+
+`replay_trace` 支持两种定位策略：`dom_first` 优先使用语义选择器，定位失败后才匹配模板；
+`visual_only` 不构造 DOM locator，只依赖页面截图和模板。两种策略都会先进入 `startUrl`，
+再逐步回放；某一步声明了 `expect.responses` 时，必须先建立全部响应监听，然后才执行该步
+动作。网络响应按请求发出时刻归属到动作，即使慢响应在下一步录制动作之后才结束，也不会
+被错误挂到下一步。
+
+回放结果另存为 `edr.execution-trace/v1`，保留每步状态、实际动作、DOM/视觉定位方式、模板
+匹配分数、响应校验、耗时和错误。`evaluate_trace` 对照黄金 trace 输出任务成功、步骤完成率、
+动作准确率、网络断言率、额外动作数、重试数和平均视觉匹配分数。网络命中按每个黄金节点
+分别计算并以期望数量封顶，额外伪造的成功响应不能抬高得分；任一步失败时 `taskSuccess`
+必为 false。
+
+```json
+{
+  "schema": "edr.success-trace/v1",
+  "name": "flow",
+  "status": "ready",
+  "entry": "step-0001",
+  "steps": {
+    "step-0001": {
+      "status": "ready",
+      "sourceStepIds": ["focus-input", "fill-input"],
+      "recognition": {
+        "type": "TemplateMatch",
+        "templateOrder": ["context", "element"],
+        "templates": {
+          "context": {"path": "flow.assets/step-0001.context.png"},
+          "element": {"path": "flow.assets/step-0001.element.png"}
+        },
+        "threshold": 0.8,
+        "ambiguityMargin": 0.04,
+        "verifyThreshold": 0.65,
+        "scaleFactors": [0.8, 0.9, 1.0, 1.1, 1.25]
+      },
+      "action": {
+        "type": "InputText",
+        "param": {"text": "alice", "focusBeforeInput": true}
+      },
+      "expect": {
+        "responses": [{
+          "method": "POST",
+          "url": "https://app.example/api/save",
+          "expectedStatus": 200
+        }]
+      },
+      "next": null
+    }
+  }
+}
+```
+
 ## 匹配算法
 
 ### 搜索范围

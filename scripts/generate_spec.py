@@ -53,6 +53,47 @@ from rec_visual import visual_click
 LOGIN_FRAME = re.compile(r"login|signin|sso", re.I)
 
 
+def prepare_steps(steps):
+    """Normalize recorded events into the action sequence used by generated scripts."""
+    prepared = []
+    for step in steps:
+        if (
+            step.get("type") == "dblclick"
+            and prepared
+            and prepared[-1].get("type") == "click"
+            and prepared[-1].get("sel") == step.get("sel")
+            and prepared[-1].get("inFrame") == step.get("inFrame")
+        ):
+            first_click = prepared[-1]
+            prepared[-1] = {
+                **step,
+                "t": first_click["t"],
+                "actionT": first_click.get("actionT", first_click["t"]),
+                "ui": first_click.get("ui") or step.get("ui"),
+            }
+        else:
+            prepared.append(step)
+
+    for i in range(len(prepared) - 1):
+        a, b = prepared[i], prepared[i + 1]
+        if (a["type"] == "press" and b["type"] == "fill"
+                and a["sel"] == b["sel"] and a.get("inFrame") == b.get("inFrame")):
+            prepared[i] = {**b, "t": a["t"]}
+            prepared[i + 1] = {**a, "t": b["t"]}
+
+    def is_login_step(step) -> bool:
+        return bool(step.get("secret") is True or (
+            step.get("inFrame") and LOGIN_FRAME.search(step.get("framePath") or "")))
+
+    cut = 0
+    while cut < len(prepared) and is_login_step(prepared[cut]):
+        cut += 1
+    if (0 < cut < len(prepared) and prepared[cut]["type"] == "press"
+            and prepared[cut].get("inFrame")):
+        cut += 1
+    return prepared[:cut], prepared[cut:]
+
+
 def _ident(name: str) -> str:
     """把录制名变成合法的 pytest 函数名。"""
     s = re.sub(r"\W+", "_", name, flags=re.UNICODE).strip("_")
@@ -100,6 +141,28 @@ def _to_matcher(v, indent: int = 4) -> str:
     return json.dumps(v, ensure_ascii=False)
 
 
+def pair_network_events(net):
+    """Pair persisted responses with requests using IDs, then method/URL FIFO."""
+    pairs = []
+    by_id = {
+        n["id"]: n
+        for n in net
+        if n["phase"] == "req" and n.get("id") is not None
+    }
+    pending: dict[str, list] = {}
+    for event in sorted(net, key=lambda n: (n["t"], 0 if n["phase"] == "req" else 1)):
+        key = f"{event['method']}\n{event['url']}"
+        if event["phase"] == "req":
+            pending.setdefault(key, []).append(event)
+            continue
+        request = by_id.get(event.get("requestId"))
+        if request is None:
+            queue = pending.get(key) or []
+            request = queue.pop(0) if queue else None
+        pairs.append((request, event))
+    return pairs
+
+
 def generate_spec(steps, net, start_url, name):
     parts = urlsplit(start_url)
     origin = f"{parts.scheme}://{parts.netloc}"
@@ -134,21 +197,11 @@ def generate_spec(steps, net, start_url, name):
     # 按 method + URL 为每条请求维护 FIFO 队列，恢复响应与请求的一一对应关系。
     # 不能简单找「响应之前最后一条同 URL 请求」：同一操作并发发两次相同请求时，
     # 那会让两个响应都错误地关联到第二条请求。
-    request_of: dict[int, dict] = {}
-    by_id = {n["id"]: n for n in net if n["phase"] == "req" and n.get("id") is not None}
-    pending: dict[str, list] = {}
-    # 同一时刻的 req 排在 res 之前，否则同 ms 的请求响应会配错
-    for ev in sorted(net, key=lambda n: (n["t"], 0 if n["phase"] == "req" else 1)):
-        key = f"{ev['method']}\n{ev['url']}"
-        if ev["phase"] == "req":
-            pending.setdefault(key, []).append(ev)
-        elif ev["phase"] == "res":
-            req = by_id.get(ev.get("requestId"))
-            if req is None:
-                queue = pending.get(key) or []
-                req = queue.pop(0) if queue else None
-            if req is not None:
-                request_of[id(ev)] = req
+    request_of = {
+        id(response): request
+        for request, response in pair_network_events(net)
+        if request is not None
+    }
 
     def req_of(res):
         return request_of.get(id(res))
@@ -162,34 +215,8 @@ def generate_spec(steps, net, start_url, name):
         except (ValueError, TypeError):
             return None
 
-    # ── 修正「先回车、后填值」──
-    # 值是在 change 里记的（要等失焦或回车之后），按键是按下就记。
-    # 同一字段上「先回车、再填值」不可能成立，直接交换，不设时间阈值。
-    steps = list(steps)
-    for i in range(len(steps) - 1):
-        a, b = steps[i], steps[i + 1]
-        if (a["type"] == "press" and b["type"] == "fill"
-                and a["sel"] == b["sel"] and a.get("inFrame") == b.get("inFrame")):
-            # 时间戳跟着换，否则接口挂载的时间窗口会倒过来
-            steps[i] = {**b, "t": a["t"]}
-            steps[i + 1] = {**a, "t": b["t"]}
-
-    # ── 丢掉开头那段登录 ──
-    #
-    # 只砍**开头连续**的那一段：登录之后再出现的 iframe 操作是正经业务。
-    # 砍掉的步骤原样留在注释里，需要时能捡回来。
-    def is_login_step(s) -> bool:
-        return bool(s.get("secret") is True or (
-            s.get("inFrame") and LOGIN_FRAME.search(s.get("framePath") or "")))
-
-    cut = 0
-    while cut < len(steps) and is_login_step(steps[cut]):
-        cut += 1
-    # 登录段后面常紧跟着「按回车提交」，它和登录是一体的
-    if (0 < cut < len(steps) and steps[cut]["type"] == "press"
-            and steps[cut].get("inFrame")):
-        cut += 1
-    dropped, steps = steps[:cut], steps[cut:]
+    # 修正 change/keydown 的事件顺序、折叠双击，并丢掉开头登录段。
+    dropped, steps = prepare_steps(steps)
 
     head = [HEADER.format(name=name).rstrip("\n")]
     if dropped:
@@ -392,13 +419,16 @@ def generate_spec(steps, net, start_url, name):
             for key in ("pageRect", "click", "templates")
             if s.get("ui", {}).get(key) is not None
         }
-        if t == "click" and visual_ui.get("templates"):
+        if t in ("click", "dblclick") and visual_ui.get("templates"):
             action = (
                 f"visual_click(page, {loc}, template_root=Path(__file__).parent, "
-                f"ui={visual_ui!r})"
+                f"ui={visual_ui!r}"
+                f"{', click_count=2' if t == 'dblclick' else ''})"
             )
         elif t == "click":
             action = f"{loc}.click()"
+        elif t == "dblclick":
+            action = f"{loc}.dblclick()"
         elif t == "fill" and s.get("secret"):
             action = f'{loc}.fill(os.environ.get("REC_PASSWORD", ""))'
         elif t == "fill":
