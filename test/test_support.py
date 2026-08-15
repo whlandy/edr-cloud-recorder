@@ -98,6 +98,22 @@ def test_generate_spec_adds_visual_fallback_without_style_noise():
     assert "'style'" not in spec
 
 
+def test_generated_secret_input_requires_environment_variable():
+    steps = [
+        {"t": 100, "type": "click", "kind": "text",
+         "sel": 'getByText("Settings", { exact: true })'},
+        {"t": 110, "type": "fill", "kind": "placeholder",
+         "sel": 'getByPlaceholder("New password")', "secret": True},
+    ]
+
+    spec = generate_spec(
+        steps, [], start_url="https://app.example/settings", name="secret"
+    )
+
+    assert 'os.environ["REC_PASSWORD"]' in spec
+    assert 'os.environ.get("REC_PASSWORD", "")' not in spec
+
+
 def test_generate_trace_creates_one_trace_with_template_click_steps():
     input_templates = {
         "element": {"path": "flow.assets/step-0001.element.png"},

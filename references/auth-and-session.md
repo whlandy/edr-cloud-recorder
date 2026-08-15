@@ -208,7 +208,7 @@ expect(user_box, "用户名框内容异常，疑似把密码也填了进去").to
 - 优先用环境变量（`REC_USER` / `REC_PASSWORD`），什么都不落盘
 - `.auth/` 加进 `.gitignore` —— 里面是有效会话，等同于密码
 - 录制器对 `type=password` 的输入只记录「填了密码」这个动作，值替换成
-  `os.environ.get("REC_PASSWORD", "")`。生成的草稿因此可以安全提交
+  `os.environ["REC_PASSWORD"]`。生成的草稿因此可以安全提交，缺失变量时也会明确失败
 - 真要落盘存密码，放 `~/.config/edr-cloud-recorder/config.json` 的 `auth` 段并
   `chmod 600`，别放项目目录（那通常就是仓库目录）。加载器会在权限过宽时提醒
 - 会话会过期。脚本要能识别「跳到登录页」并给出清晰报错，而不是在某个选择器上超时

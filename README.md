@@ -3,7 +3,7 @@
 把网页上的手工操作录制成可重复执行的 Playwright (Python) 脚本，同时抓取每一步触发的
 HTTP 接口（含请求体、状态码、失败响应）。
 
-这是一个 [Agent Skill](https://docs.claude.com/en/docs/agents-and-tools/agent-skills)，
+这是一个可安装的 Agent Skill，
 但脚本本身**不依赖任何特定 agent 或浏览器扩展** —— 只要 Python + Playwright，
 在终端里直接跑也可以。
 
@@ -71,6 +71,7 @@ assert report["taskSuccess"]
 
 ```
 SKILL.md              技能定义：触发条件、工作流、录制后必做的三件事
+agents/openai.yaml     Codex 技能列表与默认调用提示
 scripts/
   record.py           录制驱动
   recorder-inject.mjs 页面内录制器（唯一的 JS —— 它在浏览器里跑）
@@ -97,7 +98,7 @@ orchestrate/
   endpoint.py         edr-wd 薄封装（驱动终端 GUI）
   recording_contract.py  从录制 JSON 唯一选择并安全重放云端请求
   example_scenario.py 可照抄的模板
-references/           遇到具体问题时再读，见 SKILL.md 的「深入」一节
+references/           按录制、trace、视觉、选择器、登录等专题渐进加载
 ```
 
 ## 设计上的几个取舍
@@ -107,7 +108,8 @@ references/           遇到具体问题时再读，见 SKILL.md 的「深入」
 那 600 多行全是实测出来的 DOM 细节。驱动侧用 `add_init_script` 把它原样注入。
 
 **密码不进产物。** `type=password` 的输入只记录「填了密码」这个动作，值在生成的脚本里
-替换成 `os.environ.get("REC_PASSWORD", "")`。所以草稿可以安全提交。
+替换成 `os.environ["REC_PASSWORD"]`。所以草稿可以安全提交，运行时没提供密码也会明确失败，
+不会静默输入空字符串。
 
 **运行时生成的 id 会被跳过。** 像 `tip_box_10059` 这种自增 id 每次加载都变，用它定位
 必然在第二次运行时失败。含 3 位以上数字的 id 和 class 一律不用。
