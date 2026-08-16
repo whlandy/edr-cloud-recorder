@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Callable
 
 try:
@@ -101,6 +101,17 @@ class Scenario:
                 self.results.append(self._execute(f"清理：{label}", side, fn))
             self._summary()
         return all(result.ok for result in self.results)
+
+    def execution(self, evidence: dict | None = None) -> dict:
+        """Serialize one cloud/endpoint run without losing side attribution."""
+        passed = bool(self.results) and all(result.ok for result in self.results)
+        return {
+            "schema": "edr.end-cloud-execution/v1",
+            "name": self.name,
+            "status": "success" if passed else "failed",
+            "steps": [asdict(result) for result in self.results],
+            "evidence": evidence or {},
+        }
 
     @staticmethod
     def _execute(label: str, side: str, fn: Callable) -> StepResult:

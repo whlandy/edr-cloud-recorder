@@ -109,15 +109,16 @@ Both `assets/` and `scripts/` must be importable:
 ```python
 from replay_trace import evaluate_trace, load_trace, replay_trace
 
-golden = load_trace("recordings/flow.trace.json")
+case_dir = "recordings/flow"
+golden = load_trace(f"{case_dir}/trace.json")
 execution = replay_trace(
     page,
     golden,
-    template_root="recordings",
+    template_root=case_dir,
     targeting="visual_only",
     timeout_ms=5000,
     env={"REC_PASSWORD": "..."},
-    execution_path="recordings/flow.execution.json",
+    execution_path=f"{case_dir}/execution.json",
 )
 report = evaluate_trace(golden, execution)
 ```

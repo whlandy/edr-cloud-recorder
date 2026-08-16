@@ -11,8 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from rec_assert import assert_subset
-from rec_visual import locate_visual_target
+from rec_assert import ANY_STR, assert_subset
+from rec_secrets import REDACTED
+from rec_visual import VisualMatchError, locate_visual_target
 from selector_py import to_python
 
 
@@ -114,7 +115,17 @@ def _target(page, node: dict, template_root: Path, targeting: str, timeout_ms: i
                 raise
     if not node.get("recognition"):
         raise TraceReplayError("DOM 定位失败且步骤没有视觉模板")
-    visual = locate_visual_target(page, template_root=template_root, ui=_visual_ui(node))
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        try:
+            visual = locate_visual_target(
+                page, template_root=template_root, ui=_visual_ui(node)
+            )
+            break
+        except VisualMatchError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
     return "visual", None, visual
 
 
@@ -157,6 +168,16 @@ def _request_body_base64(request) -> str:
     return base64.b64encode(data or b"").decode("ascii")
 
 
+def _redacted_matchers(value):
+    if value == REDACTED:
+        return ANY_STR
+    if isinstance(value, dict):
+        return {key: _redacted_matchers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redacted_matchers(item) for item in value]
+    return value
+
+
 def _validate_response(response, expected: dict) -> dict:
     actual = {
         "method": response.request.method,
@@ -170,13 +191,24 @@ def _validate_response(response, expected: dict) -> dict:
         )
     expected_request = expected.get("request") or {}
     if "body" in expected_request:
-        assert_subset(_request_body(response.request), expected_request["body"])
+        assert_subset(
+            _request_body(response.request),
+            _redacted_matchers(expected_request["body"]),
+        )
     if "bodyBase64" in expected_request:
         actual_body = _request_body_base64(response.request)
         if actual_body != expected_request["bodyBase64"]:
             raise AssertionError("二进制请求体与成功 trace 不一致")
-    if "expectedBody" in expected and _response_body(response) != expected["expectedBody"]:
-        raise AssertionError("响应体与成功 trace 不一致")
+    if "expectedBody" in expected:
+        actual_body, expected_body = _response_body(response), expected["expectedBody"]
+        try:
+            assert_subset(
+                json.loads(actual_body),
+                _redacted_matchers(json.loads(expected_body)),
+            )
+        except (TypeError, ValueError):
+            if REDACTED not in expected_body and actual_body != expected_body:
+                raise AssertionError("响应体与成功 trace 不一致")
     actual["ok"] = True
     return actual
 

@@ -31,19 +31,19 @@ python -m pip install -r requirements.txt
 python <此仓库>/scripts/record.py --url https://app.example.com --name login-flow
 ```
 
-浏览器窗口弹出 → 正常操作 → 关闭窗口 → 输出到 `recordings/`：
+浏览器窗口弹出 → 正常操作 → 关闭窗口 → 输出到 `recordings/<name>/`：
 
 | 文件 | 内容 |
 |---|---|
-| `<name>.json` | 原始记录：步骤、点击元素的渲染特征、网络事件，都带毫秒时间戳 |
-| `<name>.trace.json` | 与脚本一一对应的完整成功轨迹；包含模板匹配和网络成功条件 |
-| `<name>.assets/step-*.png` | 点击元素的黑盒 UI 模板，可供模板、SSIM 或特征匹配使用 |
+| `recording.json` | 原始记录：步骤、点击元素的渲染特征、网络事件，都带毫秒时间戳 |
+| `trace.json` | 与脚本一一对应的完整成功轨迹；包含模板匹配和网络成功条件 |
+| `assets/step-*.png` | 点击元素的黑盒 UI 模板，可供模板、SSIM 或特征匹配使用 |
 | `test_<name>.py` | 可跑的脚本草稿，接口调用作为注释挂在对应步骤下 |
 
 回放：
 
 ```bash
-pytest recordings/test_login-flow.py
+pytest recordings/login-flow/test_login_flow.py
 ```
 
 成功 trace 也可以作为 Agent 的黄金路径回放，并生成独立的执行轨迹和评分：
@@ -51,13 +51,14 @@ pytest recordings/test_login-flow.py
 ```python
 from replay_trace import evaluate_trace, load_trace, replay_trace
 
-golden = load_trace("recordings/login-flow.trace.json")
+case_dir = "recordings/login-flow"
+golden = load_trace(f"{case_dir}/trace.json")
 execution = replay_trace(
     authed_page,
     golden,
-    template_root="recordings",
+    template_root=case_dir,
     targeting="visual_only",  # 或 dom_first
-    execution_path="recordings/login-flow.execution.json",
+    execution_path=f"{case_dir}/execution.json",
 )
 report = evaluate_trace(golden, execution)
 assert report["taskSuccess"]
@@ -107,8 +108,9 @@ references/           按录制、trace、视觉、选择器、登录等专题�
 无论驱动侧用什么语言，这部分都只能是 JS。它没有被改写成别的形式，也不该被改写 ——
 那 600 多行全是实测出来的 DOM 细节。驱动侧用 `add_init_script` 把它原样注入。
 
-**密码不进产物。** `type=password` 的输入只记录「填了密码」这个动作，值在生成的脚本里
-替换成 `os.environ["REC_PASSWORD"]`。所以草稿可以安全提交，运行时没提供密码也会明确失败，
+**凭据不进产物。** `type=password` 的输入只记录「填了密码」这个动作，值在生成的脚本里
+替换成 `os.environ["REC_PASSWORD"]`。网络请求和响应里的密码、token、authorization、API key
+也会在落盘前替换成 `<redacted>`，生成断言时转成类型匹配。运行时没提供密码会明确失败，
 不会静默输入空字符串。
 
 **运行时生成的 id 会被跳过。** 像 `tip_box_10059` 这种自增 id 每次加载都变，用它定位

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from generate_trace import TRACE_SCHEMA, generate_trace
 from rec_assert import ANY_NUM
 from rec_config import load_config
 from record import (
+    _artifact_paths,
     _capture_storage,
     _capture_ui_template,
     _crop_pre_frame,
@@ -16,6 +18,7 @@ from record import (
     _visible_clip,
 )
 from selector_py import to_python
+from rec_secrets import REDACTED, redact_text
 
 
 def _solid_png(width: int, height: int) -> bytes:
@@ -27,6 +30,26 @@ def _solid_png(width: int, height: int) -> bytes:
     )
     assert ok
     return encoded.tobytes()
+
+
+def test_artifact_paths_keep_one_case_in_one_directory(tmp_path):
+    paths = _artifact_paths(tmp_path / "recordings", "login-flow")
+
+    assert paths == {
+        "case_dir": (tmp_path / "recordings/login-flow").resolve(),
+        "asset_dir": (tmp_path / "recordings/login-flow/assets").resolve(),
+        "raw_file": (tmp_path / "recordings/login-flow/recording.json").resolve(),
+        "trace_file": (tmp_path / "recordings/login-flow/trace.json").resolve(),
+        "spec_file": (tmp_path / "recordings/login-flow/test_login_flow.py").resolve(),
+    }
+
+
+@pytest.mark.parametrize(
+    "name", ["", "../escape", "nested/case", r"nested\case", ".", ".."]
+)
+def test_artifact_paths_reject_path_traversal(tmp_path, name):
+    with pytest.raises(ValueError, match="单个目录名"):
+        _artifact_paths(tmp_path, name)
 
 
 def test_any_num_rejects_bool():
@@ -112,6 +135,25 @@ def test_generated_secret_input_requires_environment_variable():
 
     assert 'os.environ["REC_PASSWORD"]' in spec
     assert 'os.environ.get("REC_PASSWORD", "")' not in spec
+
+
+def test_top_level_login_form_is_removed_through_submit_button():
+    steps = [
+        {"t": 100, "type": "click", "sel": 'getByPlaceholder("用户名")'},
+        {"t": 110, "type": "fill", "sel": 'getByPlaceholder("用户名")',
+         "value": "alice"},
+        {"t": 120, "type": "fill", "sel": 'getByPlaceholder("密码")',
+         "secret": True},
+        {"t": 130, "type": "click", "label": "登录",
+         "sel": 'getByRole("button", { name: "登录", exact: true })'},
+        {"t": 140, "type": "click", "label": "7天",
+         "sel": 'getByRole("button", { name: "7天", exact: true })'},
+    ]
+
+    dropped, prepared = prepare_steps(steps)
+
+    assert len(dropped) == 4
+    assert [step.get("label") for step in prepared] == ["7天"]
 
 
 def test_generate_trace_creates_one_trace_with_template_click_steps():
@@ -279,6 +321,91 @@ def test_binary_request_body_is_stored_as_base64():
         "bodyBase64": "H4sIAA==",
         "bodyEncoding": "base64",
     }
+
+
+def test_binary_request_trace_does_not_add_null_text_body():
+    steps = [{
+        "id": 1, "t": 100, "type": "click", "kind": "role",
+        "sel": 'getByRole("button", { name: "Upload", exact: true })',
+    }]
+    net = [
+        {"id": 1, "t": 110, "phase": "req", "method": "POST",
+         "url": "https://app.example/api/upload", "bodyBase64": "H4sIAA==",
+         "bodyEncoding": "base64"},
+        {"requestId": 1, "t": 120, "phase": "res", "method": "POST",
+         "url": "https://app.example/api/upload", "status": 200},
+    ]
+
+    trace = generate_trace(
+        steps, net, start_url="https://app.example", name="upload"
+    )
+
+    request = trace["steps"]["step-0001"]["expect"]["responses"][0]["request"]
+    assert request == {"bodyBase64": "H4sIAA==", "bodyEncoding": "base64"}
+
+
+def test_request_and_response_text_redact_nested_credentials():
+    body = redact_text(
+        '{"username":"alice","password":"private",'
+        '"session":{"access_token":"token","safe":1}}'
+    )
+
+    assert json.loads(body) == {
+        "username": "alice",
+        "password": REDACTED,
+        "session": {"access_token": REDACTED, "safe": 1},
+    }
+
+
+def test_request_body_fields_redact_before_raw_recording():
+    class Request:
+        post_data = '{"password":"private","safe":1}'
+
+    assert json.loads(_request_body_fields(Request())["body"]) == {
+        "password": REDACTED,
+        "safe": 1,
+    }
+
+
+def test_large_response_is_redacted_before_it_is_truncated():
+    body = json.dumps({"padding": "x" * 2500, "access_token": "private"})
+
+    redacted = redact_text(body)
+
+    assert "private" not in redacted
+    assert json.loads(redacted)["access_token"] == REDACTED
+
+
+def test_form_request_redacts_password_before_persistence():
+    assert redact_text("username=alice&password=private") == (
+        "username=alice&password=%3Credacted%3E"
+    )
+
+
+def test_generated_request_assertion_never_contains_old_recording_password():
+    steps = [{
+        "t": 100, "type": "click", "kind": "role",
+        "sel": 'getByRole("button", { name: "Login", exact: true })',
+    }]
+    net = [
+        {"id": 1, "t": 110, "phase": "req", "method": "POST",
+         "url": "https://app.example/api/login",
+         "body": '{"username":"alice","password":"private"}'},
+        {"requestId": 1, "t": 120, "phase": "res", "method": "POST",
+         "url": "https://app.example/api/login", "status": 200},
+    ]
+
+    spec = generate_spec(
+        steps, net, start_url="https://app.example", name="login"
+    )
+    trace = generate_trace(
+        steps, net, start_url="https://app.example", name="login"
+    )
+
+    assert "private" not in spec
+    assert '"password": ANY_STR' in spec
+    request = trace["steps"]["step-0001"]["expect"]["responses"][0]["request"]
+    assert request["body"]["password"] == REDACTED
 
 
 def test_capture_storage_uses_existing_frames_without_opening_pages():

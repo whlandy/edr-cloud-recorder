@@ -7,6 +7,8 @@
 recordings/*.json
 recordings/*.spec.ts
 recordings/test_*.py
+recordings/**/*.json
+recordings/**/test_*.py
 
 node_modules/
 test-results/

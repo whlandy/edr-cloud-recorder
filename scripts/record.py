@@ -56,6 +56,7 @@ from chrome_path import resolve_chrome                      # noqa: E402
 from generate_spec import _ident, generate_spec             # noqa: E402
 from generate_trace import POSITIONAL_STEP_TYPES, generate_trace  # noqa: E402
 from rec_config import ConfigError, load_config, with_defaults  # noqa: E402
+from rec_secrets import redact_text                            # noqa: E402
 from recorder_loader import recorder_source                 # noqa: E402
 
 DRAIN = "() => (window.__rec ? window.__rec.drain() : [])"
@@ -73,7 +74,7 @@ CONTEXT_PADDING_CSS = 12
 def _request_body_fields(request) -> dict:
     """读取请求体；Playwright 的 post_data 会在二进制内容上强制解码 UTF-8。"""
     try:
-        return {"body": request.post_data}
+        return {"body": redact_text(request.post_data)}
     except UnicodeDecodeError:
         raw = request.post_data_buffer
         if raw is None:
@@ -258,6 +259,25 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def _artifact_paths(out_dir: str | Path, name: str) -> dict[str, Path]:
+    """Return the self-contained directory layout for one recorded case."""
+    if (
+        not name
+        or name in {".", ".."}
+        or any(separator in name for separator in ("/", "\\"))
+        or Path(name).name != name
+    ):
+        raise ValueError("用例名必须是单个目录名，不能包含路径分隔符")
+    case_dir = Path(out_dir).resolve() / name
+    return {
+        "case_dir": case_dir,
+        "asset_dir": case_dir / "assets",
+        "raw_file": case_dir / "recording.json",
+        "trace_file": case_dir / "trace.json",
+        "spec_file": case_dir / f"test_{_ident(name)}.py",
+    }
+
+
 def main(argv=None) -> int:
     import os
 
@@ -297,7 +317,9 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     name = name or "session-" + datetime.now().isoformat(
         timespec="seconds").replace(":", "-")
     out_dir = Path(out_dir).resolve()
-    asset_dir = out_dir / f"{name}.assets"
+    artifacts = _artifact_paths(out_dir, name)
+    case_dir = artifacts["case_dir"]
+    asset_dir = artifacts["asset_dir"]
     state_dir = Path(state_dir).resolve()
     origin = "{0.scheme}://{0.netloc}".format(urlsplit(start_url))
 
@@ -418,7 +440,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
             # 必须当场取：攒到最后再取，Chromium 早把 body 从网络缓存里淘汰了。
             if r.status >= 400 or r.request.method != "GET":
                 try:
-                    e["body"] = r.text()[:2000]
+                    e["body"] = redact_text(r.text())[:2000]
                 except Exception:
                     e["body"] = None
             net.append(e)
@@ -523,21 +545,21 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
             ss_file.write_text(snapshot["session"], encoding="utf-8")
 
     # ---------- 输出 ----------
-    out_dir.mkdir(parents=True, exist_ok=True)
-    raw_file = out_dir / f"{name}.json"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    raw_file = artifacts["raw_file"]
     raw_file.write_text(json.dumps(
         {"startUrl": start_url, "recordedAt": datetime.now().isoformat(),
          "steps": steps, "net": net},
         ensure_ascii=False, indent=1), encoding="utf-8")
 
-    trace_file = out_dir / f"{name}.trace.json"
+    trace_file = artifacts["trace_file"]
     trace_file.write_text(json.dumps(
         generate_trace(steps, net, name=name, start_url=start_url),
         ensure_ascii=False, indent=1), encoding="utf-8")
 
     spec_text = generate_spec(steps, net, start_url=start_url, name=name)
     # pytest 只收集 test_*.py，文件名必须带前缀，而且得是合法模块名
-    spec_file = out_dir / f"test_{_ident(name)}.py"
+    spec_file = artifacts["spec_file"]
     spec_file.write_text(spec_text, encoding="utf-8")
 
     # ---------- 小结 ----------
@@ -566,7 +588,8 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     if css:
         print(f"  ⚠ {len(css)} 个只能用 CSS 兜底，已包成「存在则点」")
 
-    return {"steps": steps, "net": net, "raw_file": raw_file,
+    return {"steps": steps, "net": net, "case_dir": case_dir,
+            "raw_file": raw_file,
             "trace_file": trace_file, "spec_file": spec_file,
             "state_file": state_file if snapshot["state"] else None}
 

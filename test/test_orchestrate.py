@@ -31,6 +31,20 @@ def test_cleanup_failure_fails_otherwise_successful_scenario():
     assert scenario.results[-1].ok is False
 
 
+def test_scenario_execution_preserves_cloud_and_endpoint_evidence():
+    scenario = Scenario("readonly")
+    scenario.cloud("cloud", lambda: "score=100")
+    scenario.endpoint("endpoint", lambda: "window=HiSec")
+
+    assert scenario.run() is True
+    execution = scenario.execution({"endpoint": {"title": "HiSec"}})
+
+    assert execution["schema"] == "edr.end-cloud-execution/v1"
+    assert execution["status"] == "success"
+    assert [step["side"] for step in execution["steps"]] == ["cloud", "endpoint"]
+    assert execution["evidence"]["endpoint"]["title"] == "HiSec"
+
+
 def test_cleanup_runs_before_keyboard_interrupt_is_reraised():
     calls = []
     scenario = Scenario("interrupt")
