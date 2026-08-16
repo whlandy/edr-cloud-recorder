@@ -41,15 +41,20 @@ One recording creates one raw capture, one pytest draft, one golden trace, and a
 directory. A trace represents the whole test case, not one trace per click.
 
 ```text
-<flow>.json
-test_<flow>.py
-<flow>.trace.json
-<flow>.assets/step-*.element.png
-<flow>.assets/step-*.context.png
+recordings/<flow>/
+  recording.json
+  test_<flow>.py
+  trace.json
+  assets/step-*.element.png
+  assets/step-*.context.png
+  execution.json  # replay output, when requested
+  report.json     # evaluation output, when requested
 ```
 
-The raw JSON is the source of truth. Keep original request and response bodies there; volatility is
-handled during generation, not recording.
+The raw JSON is the source of truth for non-secret request and response fields. Passwords, secrets,
+access/refresh tokens, authorization values, and API keys are replaced with `<redacted>` before the
+artifact is written. Generation renders redacted request fields as type matchers so replay checks
+that the field exists without persisting or comparing its credential value.
 
 ## Generation Guarantees
 
@@ -89,12 +94,14 @@ Use the `startUrl` stored in the raw recording:
 ```python
 import json
 import sys
+from pathlib import Path
 
 sys.path.insert(0, "<skill>/scripts")
 from generate_spec import _ident, generate_spec
 from generate_trace import generate_trace
 
-data = json.load(open("recordings/old.json", encoding="utf-8"))
+case_dir = Path("recordings/old")
+data = json.load(open(case_dir / "recording.json", encoding="utf-8"))
 name = "old"
 spec = generate_spec(
     data["steps"], data["net"], start_url=data["startUrl"], name=name
@@ -102,8 +109,8 @@ spec = generate_spec(
 trace = generate_trace(
     data["steps"], data["net"], start_url=data["startUrl"], name=name
 )
-open(f"recordings/test_{_ident(name)}.py", "w", encoding="utf-8").write(spec)
-open(f"recordings/{name}.trace.json", "w", encoding="utf-8").write(
+open(case_dir / f"test_{_ident(name)}.py", "w", encoding="utf-8").write(spec)
+open(case_dir / "trace.json", "w", encoding="utf-8").write(
     json.dumps(trace, ensure_ascii=False, indent=2)
 )
 ```

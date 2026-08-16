@@ -1,0 +1,233 @@
+{
+  "schema": "edr.success-trace/v1",
+  "name": "tiangonglab-8000-recording",
+  "startUrl": "https://www.tiangonglab.top:8000/",
+  "status": "ready",
+  "entry": "step-0001",
+  "steps": {
+    "step-0001": {
+      "sourceStepId": "fi1y25-7",
+      "timestampMs": 1786892864028,
+      "status": "ready",
+      "selector": {
+        "kind": "role",
+        "sel": "getByRole(\"button\", { name: \"7天\", exact: true })",
+        "css": "div#page-stats > div.topbar:nth-of-type(2) > button:nth-of-type(2)",
+        "label": "7天",
+        "inFrame": false
+      },
+      "action": {
+        "type": "Click",
+        "param": {
+          "relativePoint": {
+            "x": 0.7561931919443949,
+            "y": 0.7272727272727273
+          }
+        }
+      },
+      "recognition": {
+        "type": "TemplateMatch",
+        "templateOrder": [
+          "context",
+          "element"
+        ],
+        "templates": {
+          "element": {
+            "path": "assets/step-0007.element.png",
+            "sha256": "b9ce030ccf29bdad38149cf0095e142a21788f29b9c4b418a5c154a37abb7bcf",
+            "width": 87,
+            "height": 55
+          },
+          "context": {
+            "path": "assets/step-0007.context.png",
+            "sha256": "48a66875ed6ce46f3109772786627a7ecd92d40b04fd4a3626c30bec5014844b",
+            "width": 135,
+            "height": 103,
+            "elementOffset": {
+              "x": 24,
+              "y": 24
+            }
+          }
+        },
+        "threshold": 0.8,
+        "ambiguityMargin": 0.04,
+        "verifyThreshold": 0.65,
+        "scaleFactors": [
+          0.8,
+          0.9,
+          1.0,
+          1.1,
+          1.25
+        ]
+      },
+      "geometry": {
+        "pageRect": {
+          "x": 273.8515625,
+          "y": 64,
+          "width": 43.8359375,
+          "height": 27.5
+        },
+        "pageViewport": {
+          "width": 1920,
+          "height": 1003
+        },
+        "viewport": {
+          "width": 1920,
+          "height": 1003
+        },
+        "deviceScaleFactor": 2
+      },
+      "expect": {
+        "responses": [
+          {
+            "method": "GET",
+            "url": "https://www.tiangonglab.top:8000/api/stats/summary?days=7",
+            "expectedStatus": 200,
+            "request": {
+              "body": null
+            }
+          },
+          {
+            "method": "GET",
+            "url": "https://www.tiangonglab.top:8000/api/stats/timeline?days=7",
+            "expectedStatus": 200,
+            "request": {
+              "body": null
+            }
+          },
+          {
+            "method": "GET",
+            "url": "https://www.tiangonglab.top:8000/api/stats/models?days=7",
+            "expectedStatus": 200,
+            "request": {
+              "body": null
+            }
+          }
+        ]
+      },
+      "next": "step-0002"
+    },
+    "step-0002": {
+      "sourceStepId": "fi1y25-8",
+      "timestampMs": 1786892865201,
+      "status": "ready",
+      "selector": {
+        "kind": "role",
+        "sel": "getByRole(\"button\", { name: \"30天\", exact: true })",
+        "css": "div#page-stats > div.topbar:nth-of-type(2) > button:nth-of-type(3)",
+        "label": "30天",
+        "inFrame": false
+      },
+      "action": {
+        "type": "Click",
+        "param": {
+          "relativePoint": {
+            "x": 0.8699565021748913,
+            "y": 0.2909090909090909
+          }
+        }
+      },
+      "recognition": {
+        "type": "TemplateMatch",
+        "templateOrder": [
+          "context",
+          "element"
+        ],
+        "templates": {
+          "element": {
+            "path": "assets/step-0008.element.png",
+            "sha256": "f6002a300f2b674e50adaec669c291ce56074e14c32c1c30e1a18637c419be1f",
+            "width": 105,
+            "height": 55
+          },
+          "context": {
+            "path": "assets/step-0008.context.png",
+            "sha256": "24ee52d573e2cd4dee3cc06eef397ab672f415826133728db15988abc5319b20",
+            "width": 153,
+            "height": 103,
+            "elementOffset": {
+              "x": 24,
+              "y": 24
+            }
+          }
+        },
+        "threshold": 0.8,
+        "ambiguityMargin": 0.04,
+        "verifyThreshold": 0.65,
+        "scaleFactors": [
+          0.8,
+          0.9,
+          1.0,
+          1.1,
+          1.25
+        ]
+      },
+      "geometry": {
+        "pageRect": {
+          "x": 324.6875,
+          "y": 64,
+          "width": 52.0859375,
+          "height": 27.5
+        },
+        "pageViewport": {
+          "width": 1920,
+          "height": 1003
+        },
+        "viewport": {
+          "width": 1920,
+          "height": 1003
+        },
+        "deviceScaleFactor": 2
+      },
+      "expect": {
+        "responses": [
+          {
+            "method": "GET",
+            "url": "https://www.tiangonglab.top:8000/api/stats/models?days=30",
+            "expectedStatus": 200,
+            "request": {
+              "body": null
+            }
+          },
+          {
+            "method": "GET",
+            "url": "https://www.tiangonglab.top:8000/api/stats/summary?days=30",
+            "expectedStatus": 200,
+            "request": {
+              "body": null
+            }
+          },
+          {
+            "method": "GET",
+            "url": "https://www.tiangonglab.top:8000/api/stats/timeline?days=30",
+            "expectedStatus": 200,
+            "request": {
+              "body": null
+            }
+          }
+        ]
+      },
+      "next": "step-0003"
+    },
+    "step-0003": {
+      "sourceStepId": "fi1y25-9",
+      "timestampMs": 1786892871164,
+      "status": "ready",
+      "selector": {
+        "kind": "scoped",
+        "sel": "locator(\"tr\", { hasText: \"4.4K\" }).getByText(\"MiniMax-M3\", { exact: true })",
+        "css": "tbody#model-tbl > tr:nth-of-type(1) > td.l:nth-of-type(1) > span.badge.blue",
+        "label": "MiniMax-M3",
+        "inFrame": false
+      },
+      "action": {
+        "type": "Assert",
+        "param": {
+          "assertion": "text",
+          "expected": "MiniMax-M3"
+        }
+      },
+      "next": null
+    }
+  }
+}

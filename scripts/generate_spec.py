@@ -17,6 +17,7 @@ import re
 from urllib.parse import urlsplit
 
 from selector_py import SelectorError, to_python
+from rec_secrets import REDACTED, redact_sensitive_values
 
 # 易变值：UUID 和 10 位以上纯数字（雪花 ID、毫秒时间戳）
 VOLATILE = re.compile(
@@ -51,6 +52,7 @@ from rec_visual import visual_click
 # 登录表单常在 iframe 里、常有同 placeholder 的诱饵输入框、密码又不该写进脚本。
 # 而它对用例的意图毫无贡献，只是让每条用例都多一个失败点。
 LOGIN_FRAME = re.compile(r"login|signin|sso", re.I)
+LOGIN_ACTION = re.compile(r"login|sign[ -]?in|登录|登入", re.I)
 
 
 def prepare_steps(steps):
@@ -91,6 +93,27 @@ def prepare_steps(steps):
     if (0 < cut < len(prepared) and prepared[cut]["type"] == "press"
             and prepared[cut].get("inFrame")):
         cut += 1
+    if cut == 0:
+        secret_index = next(
+            (i for i, step in enumerate(prepared[:10]) if step.get("secret") is True),
+            None,
+        )
+        if secret_index is not None:
+            secret_selector = prepared[secret_index].get("sel")
+            for i, step in enumerate(prepared[secret_index + 1:], secret_index + 1):
+                submits_with_enter = (
+                    step.get("type") == "press"
+                    and step.get("sel") == secret_selector
+                )
+                submits_with_button = (
+                    step.get("type") == "click"
+                    and LOGIN_ACTION.search(
+                        f"{step.get('label') or ''} {step.get('sel') or ''}"
+                    )
+                )
+                if submits_with_enter or submits_with_button:
+                    cut = i + 1
+                    break
     return prepared[:cut], prepared[cut:]
 
 
@@ -130,6 +153,8 @@ def _to_matcher(v, indent: int = 4) -> str:
             for k in v
         )
         return "{\n" + items + f",\n{pad}}}"
+    if v == REDACTED:
+        return "ANY_STR"
     if isinstance(v, str) and VOLATILE.match(v):
         return "ANY_STR"
     # 数字型的时间戳和雪花 ID 也要放宽。只处理字符串的话，像「最近 30 天」这种
@@ -211,7 +236,7 @@ def generate_spec(steps, net, start_url, name):
         if not r or not r.get("body"):
             return None
         try:
-            return json.loads(r["body"])
+            return redact_sensitive_values(json.loads(r["body"]))
         except (ValueError, TypeError):
             return None
 

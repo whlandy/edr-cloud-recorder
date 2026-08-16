@@ -156,7 +156,7 @@ sc.run()
 ```python
 from orchestrate.recording_contract import RecordingContract
 
-contract = RecordingContract.load("recordings/policy-flow.json")
+contract = RecordingContract.load("recordings/policy-flow/recording.json")
 write = contract.one(method="POST", url_contains="/api/v1/policy")
 assert write.response_status == 200
 print(write.json_body)

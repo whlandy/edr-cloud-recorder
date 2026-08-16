@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from replay_trace import TraceReplayError, evaluate_trace, replay_trace, validate_trace
+from rec_secrets import REDACTED
 
 
 def _trace(node, *, status="ready"):
@@ -145,6 +146,23 @@ def test_replay_rejects_mismatched_binary_request_body():
     assert execution["status"] == "failed"
     assert "二进制请求体" in execution["steps"][0]["error"]
     assert evaluate_trace(trace, execution)["taskSuccess"] is False
+
+
+def test_replay_accepts_redacted_request_and_response_credentials(monkeypatch):
+    trace = _network_trace()
+    expected = trace["steps"]["step-0001"]["expect"]["responses"][0]
+    expected["request"]["body"]["password"] = REDACTED
+    expected["expectedBody"] = json.dumps({"access_token": REDACTED, "safe": 1})
+    monkeypatch.setattr(
+        _Request, "post_data_json", {"name": "alice", "password": "private"}
+    )
+    monkeypatch.setattr(
+        _Response, "text", lambda self: json.dumps({"access_token": "token", "safe": 1})
+    )
+
+    execution = replay_trace(_NetworkPage(), trace)
+
+    assert execution["status"] == "success"
 
 
 def test_network_score_cannot_be_inflated_by_extra_responses():
@@ -395,6 +413,61 @@ def test_visual_only_replay_matches_then_clicks(tmp_path):
     assert page.mouse.clicked[:2] == pytest.approx((55, 42), abs=0.5)
     assert execution["steps"][0]["target"]["mode"] == "visual"
     assert evaluate_trace(trace, execution)["averageVisualMatchScore"] > 0.9
+
+
+def test_visual_only_retries_until_async_ui_matches(monkeypatch, tmp_path):
+    template = _pattern()
+    asset_dir = tmp_path / "flow.assets"
+    asset_dir.mkdir()
+    cv2.imwrite(str(asset_dir / "step-0001.element.png"), template)
+    loading = np.full((90, 140, 3), 248, dtype=np.uint8)
+    ready = loading.copy()
+    ready[30:46, 50:70] = template
+
+    class Mouse:
+        clicked = []
+
+        def click(self, x, y, **kwargs):
+            self.clicked.append((x, y, kwargs))
+
+    class Page:
+        mouse = Mouse()
+        frames = [loading, ready]
+
+        def goto(self, url):
+            pass
+
+        def screenshot(self):
+            return _png(self.frames.pop(0) if len(self.frames) > 1 else self.frames[0])
+
+        def evaluate(self, expression):
+            return {"width": 140, "height": 90}
+
+        def locator(self, selector):
+            raise AssertionError("visual_only 不应使用 DOM locator")
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#save")'},
+        "geometry": {"pageRect": {"width": 20, "height": 16}},
+        "recognition": {
+            "type": "TemplateMatch",
+            "templates": {"element": {
+                "path": "flow.assets/step-0001.element.png",
+                "width": 20,
+                "height": 16,
+            }},
+        },
+        "action": {"type": "Click", "param": {}},
+    })
+    monkeypatch.setattr("replay_trace.time.sleep", lambda _: None)
+
+    execution = replay_trace(
+        Page(), trace, template_root=tmp_path, targeting="visual_only"
+    )
+
+    assert execution["status"] == "success"
+    assert len(Page.mouse.clicked) == 1
+    assert Page.frames == [ready]
 
 
 def test_visual_only_uses_dom_verifier_for_manual_hidden_assertion():

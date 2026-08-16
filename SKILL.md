@@ -56,10 +56,10 @@ The recording produces:
 
 | Artifact | Purpose |
 |---|---|
-| `recordings/<flow>.json` | Raw steps, network events, and UI metadata |
-| `recordings/<flow>.assets/*.png` | Pre-action element and context templates |
-| `recordings/test_<flow>.py` | Playwright pytest draft |
-| `recordings/<flow>.trace.json` | One complete golden path for the test case |
+| `recordings/<flow>/recording.json` | Raw steps, network events, and UI metadata |
+| `recordings/<flow>/assets/*.png` | Pre-action element and context templates |
+| `recordings/<flow>/test_<flow>.py` | Playwright pytest draft |
+| `recordings/<flow>/trace.json` | One complete golden path for the test case |
 
 Configuration, regeneration, and artifact rules are in
 [recording-and-generation.md](references/recording-and-generation.md).
@@ -79,7 +79,7 @@ an assertion that appears to read the wrong object.
 ### 4. Replay the Pytest Draft
 
 ```bash
-pytest recordings/test_<flow>.py
+pytest recordings/<flow>/test_<flow>.py
 ```
 
 Review the draft before accepting it. Remove accidental actions, resolve any `AMBIGUOUS` marker,
@@ -92,13 +92,14 @@ Use `dom_first` for resilient E2E replay or `visual_only` to evaluate image-base
 ```python
 from replay_trace import evaluate_trace, load_trace, replay_trace
 
-golden = load_trace("recordings/<flow>.trace.json")
+case_dir = "recordings/<flow>"
+golden = load_trace(f"{case_dir}/trace.json")
 execution = replay_trace(
     authed_page,
     golden,
-    template_root="recordings",
+    template_root=case_dir,
     targeting="visual_only",
-    execution_path="recordings/<flow>.execution.json",
+    execution_path=f"{case_dir}/execution.json",
 )
 report = evaluate_trace(golden, execution)
 assert report["taskSuccess"]
@@ -113,8 +114,8 @@ capture or matching.
 
 ```bash
 grep -rn "skip\|xfail" tests/ recordings/
-grep -rn "assert \|assert_subset" recordings/test_<flow>.py
-pytest recordings/test_<flow>.py && pytest recordings/test_<flow>.py
+grep -n "assert \|assert_subset" recordings/<flow>/test_<flow>.py
+pytest recordings/<flow>/test_<flow>.py && pytest recordings/<flow>/test_<flow>.py
 ```
 
 For stateful workflows, also retry with a fresh browser profile or cleared session storage.

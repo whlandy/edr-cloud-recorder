@@ -37,6 +37,33 @@ def test_locate_template_handles_scale_change(tmp_path):
     assert match.score > 0.9
 
 
+def test_locate_template_handles_retina_text_rasterization(tmp_path):
+    template = np.full((50, 90, 3), 245, dtype=np.uint8)
+    cv2.rectangle(template, (1, 1), (88, 48), (40, 100, 180), 1)
+    cv2.putText(
+        template, "7 days", (4, 34), cv2.FONT_HERSHEY_SIMPLEX,
+        0.5, (20, 20, 20), 1, cv2.LINE_AA,
+    )
+    path = tmp_path / "retina-button.png"
+    cv2.imwrite(str(path), template)
+
+    rendered = cv2.resize(template, (45, 25), interpolation=cv2.INTER_NEAREST)
+    raw_template = cv2.resize(template, (45, 25), interpolation=cv2.INTER_AREA)
+    raw_score = cv2.matchTemplate(
+        cv2.cvtColor(rendered, cv2.COLOR_BGR2GRAY),
+        cv2.cvtColor(raw_template, cv2.COLOR_BGR2GRAY),
+        cv2.TM_CCOEFF_NORMED,
+    )[0, 0]
+    assert raw_score < 0.8
+
+    screen = np.full((100, 180, 3), 250, dtype=np.uint8)
+    screen[35:60, 70:115] = rendered
+    match = locate_template(_png(screen), path, expected_scale=0.5)
+
+    assert (match.x, match.y, match.w, match.h) == (70, 35, 45, 25)
+    assert match.score > 0.8
+
+
 def test_locate_low_variance_template(tmp_path):
     template = np.full((14, 18, 3), (24, 132, 218), dtype=np.uint8)
     path = tmp_path / "flat.png"

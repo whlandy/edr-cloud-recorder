@@ -12,6 +12,7 @@ from rec_visual import (
     VERIFY_THRESHOLD,
 )
 from generate_spec import pair_network_events, prepare_steps
+from rec_secrets import redact_sensitive_values
 
 
 TRACE_SCHEMA = "edr.success-trace/v1"
@@ -128,6 +129,8 @@ def _request_payload(request: dict | None) -> dict | None:
             payload["body"] = json.loads(payload["body"])
         except (TypeError, ValueError):
             pass
+    if "body" in payload:
+        payload["body"] = redact_sensitive_values(payload["body"])
     return payload or None
 
 

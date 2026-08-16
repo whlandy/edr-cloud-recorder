@@ -86,6 +86,9 @@ def _top_candidates(screen, template, scales: tuple[float, ...],
     cv2, np = _deps()
     screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
     template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+    # Browser text rasterization changes across DPR. A small low-pass filter removes
+    # subpixel differences; the unfiltered patch is still used for final verification.
+    screen_filtered = cv2.GaussianBlur(screen_gray, (3, 3), 0)
     candidates = []
     for scale in scales:
         w = max(2, round(template.shape[1] * scale))
@@ -100,7 +103,10 @@ def _top_candidates(screen, template, scales: tuple[float, ...],
                 screen_gray, resized, cv2.TM_SQDIFF_NORMED
             )
         else:
-            response = cv2.matchTemplate(screen_gray, resized, cv2.TM_CCOEFF_NORMED)
+            filtered = cv2.GaussianBlur(resized, (3, 3), 0)
+            response = cv2.matchTemplate(
+                screen_filtered, filtered, cv2.TM_CCOEFF_NORMED
+            )
         response = np.nan_to_num(response, nan=-1.0, posinf=-1.0, neginf=-1.0)
         for _ in range(2):
             _, score, _, loc = cv2.minMaxLoc(response)

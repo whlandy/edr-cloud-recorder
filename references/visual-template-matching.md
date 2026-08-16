@@ -76,7 +76,7 @@ Airtest、SikuliX/Oculix 和 Appium Images 的成熟路径都以 OpenCV 模板�
 每个普通点击最多保存两张 PNG：
 
 ```text
-<name>.assets/
+recordings/<name>/assets/
   step-0001.element.png
   step-0001.context.png
 ```
@@ -96,9 +96,9 @@ Airtest、SikuliX/Oculix 和 Appium Images 的成熟路径都以 OpenCV 模板�
     "viewport": {"width": 1440, "height": 900},
     "deviceScaleFactor": 2,
     "templates": {
-      "element": {"path": "flow.assets/step-0001.element.png", "width": 160, "height": 64},
+      "element": {"path": "assets/step-0001.element.png", "width": 160, "height": 64},
       "context": {
-        "path": "flow.assets/step-0001.context.png",
+        "path": "assets/step-0001.context.png",
         "width": 208,
         "height": 112,
         "elementOffset": {"x": 24, "y": 24}
@@ -173,7 +173,7 @@ SSIM 是同尺寸图像的复核指标，不作为全屏滑窗定位器；pHash 
 visual_click(
     page,
     locator,
-    template=Path(__file__).parent / "flow.assets/step-0001.context.png",
+    template=Path(__file__).parent / "assets/step-0001.context.png",
     ui={...},
 )
 ```
