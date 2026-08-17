@@ -59,17 +59,29 @@ export const RECORDER = () => {
    * 这时事件目标是行容器，开关是它的**后代** —— 只向上找会漏掉，退化成盲点击，
    * 回放时朝反方向拨。要求行内开关唯一，多于一个就不猜是哪个。
    */
-  const switchAncestor = (e) => {
+  const switchChain = (e) => {
+    const chain = [];
     let n = e, d = 0;
     while (n && n !== document.body && d < 4) {
-      const info = switchInfo(n);
-      if (info) return { el: n, info };
+      if (switchInfo(n)) chain.push(n);
       n = n.parentElement; d++;
     }
-    // 开关组件常是嵌套的（外壳 / 容器 / 轨道 / 滑块都带 toggle 字样），
-    // 但状态往往只写在其中一层上。挑能读出状态的那一层 —— 挑错层就等于读不到状态。
-    const stated = switchInside(e).filter((x) => switchInfo(x).on !== null);
-    if (stated.length === 1) return { el: stated[0], info: switchInfo(stated[0]) };
+    return chain;
+  };
+
+  const switchAncestor = (e) => {
+    // 开关组件是嵌套的：外壳 / 容器 / 轨道 / 滑块每层都带 toggle 字样，但状态
+    // 只写在其中一层。点在滑块上时，撞到的第一层就是滑块 —— 它永远读不出状态，
+    // 于是整步退化成盲点击，回放时朝哪个方向拨取决于当时的状态，且不报错。
+    // 实测这就是「拨开关的步骤大多是盲点」的原因。所以要在整条链里挑读得出
+    // 状态的那一层，而不是撞到的第一层。
+    const up = switchChain(e).filter((x) => switchInfo(x).on !== null);
+    if (up.length) return { el: up[0], info: switchInfo(up[0]) };
+    // 再往下：很多表单把「标签 + 说明 + 开关」放一整行，整行可点，
+    // 这时开关是事件目标的后代。要求唯一，多于一个就不猜是哪个。
+    const down = switchInside(e).filter((x) => switchInfo(x).on !== null);
+    if (down.length === 1) return { el: down[0], info: switchInfo(down[0]) };
+    // 一层都读不出状态：交给点击后的观察器去看哪一层的 class 变了
     return null;
   };
 
@@ -725,16 +737,19 @@ export const RECORDER = () => {
     const fromIndex = steps.length;
     const tick = () => {
       const moved = candidates.filter((x, i) => String(x.className) !== before[i]);
-      if (!moved.length) {
+      // 变化可能分几帧到达（滑块先动、容器后加 toggled），也可能好几层一起变。
+      // 认的是「变了**并且**现在读得出状态」的那一层，恰好一层才认；
+      // 一时分不清就继续等，等到最后还分不清就老实留着普通点击。
+      const stated = moved.filter((x) => (switchInfo(x) || {}).on !== null);
+      if (stated.length !== 1) {
         if (Date.now() < deadline) setTimeout(tick, 150);
         return;
       }
-      if (moved.length !== 1) return;
-      const info = switchInfo(moved[0]);
-      const within = info ? stateWithin(moved[0]) : undefined;
-      if (!info || info.on === null || within === undefined) return;
+      const info = switchInfo(stated[0]);
+      const within = stateWithin(stated[0]);
+      if (info.on === null || within === undefined) return;
       const between = steps.slice(fromIndex).map((x) => x.id);
-      push('switch', moved[0], {
+      push('switch', stated[0], {
         _id: stepId, _upgrade: true,
         to: info.on,
         via: {
@@ -798,7 +813,8 @@ export const RECORDER = () => {
     // 只有开启才多一个 toggled —— 标记缺席既可能是关，也可能是这一层根本不带状态，
     // 静态看分不出来。那就看拨完之后**哪一层的 class 变了**：变的那层就是状态层。
     // 只有恰好一层变化时才认，多层一起变说明猜不准，老实退回普通点击。
-    const inside = switchInside(el);
+    // 状态层可能在事件目标的上面（点滑块）也可能在下面（点整行），两边都要看
+    const inside = [...switchChain(el), ...switchInside(el)];
     if (inside.length) {
       const before = inside.map((x) => String(x.className));
       // 先如实记下点击，再观察状态是否变化（可能要等二次确认）
