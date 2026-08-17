@@ -551,6 +551,15 @@ def _(rec):
             assert node.get("optional") is True, node["selector"]
 
 
+@check("升级不会弄丢点击那一刻抓的模板")
+def _(rec):
+    for label in ("待开启滑块", "需确认自保护"):
+        s = find(rec["steps"],
+                 lambda s: s["type"] == "switch" and s.get("label") == label)
+        tpl = ((s or {}).get("ui") or {}).get("templates") or {}
+        assert tpl.get("element") == f"{s['id']}.png", (label, tpl)
+
+
 @check("升级是覆盖而不是追加，同一下拨动只留一条")
 def _(rec):
     hits = [s for s in rec["steps"] if s.get("label") == "需确认自保护"]

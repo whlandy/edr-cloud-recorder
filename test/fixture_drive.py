@@ -209,17 +209,29 @@ def drive(chrome: str | None = None) -> dict:
         if not st or not st.get("id"):
             return
         # 和 record.py 一致：升级记录按 id 覆盖，不能当重复上报丢掉
+        # 升级也走双通道，两份内容一样，应用一次就够（第二次只是噪音）
+        if st.get("_upgrade") and f"{st['id']}:upgrade" in seen:
+            return
         if st.get("_upgrade"):
-            for index, old_step in enumerate(steps):
+            for old_step in steps:
                 if old_step["id"] == st["id"]:
-                    merged = {**old_step, **st}
-                    merged.pop("_upgrade", None)
-                    steps[index] = merged
+                    # 和 record.py 一致：原地只改语义字段，视觉字段保留点击那一刻的
+                    old_step.update({
+                        k: v for k, v in st.items()
+                        if k in ("type", "to", "via", "sel", "kind",
+                                 "ambiguous", "matches", "label", "css")
+                    })
+                    seen.add(f"{st['id']}:upgrade")
                     return
             return
         if st["id"] not in seen:
             seen.add(st["id"])
             steps.append(st)
+            # 真实驱动是**事后**把模板写进这个字典对象的（截图不能在 binding
+            # 回调里做）。这里照同样的时序放一个标记：升级如果换掉了字典，
+            # 标记就成了孤儿 —— 那正是模板丢失、轨迹变 incomplete 的原因。
+            if st.get("type") in ("click", "dblclick", "switch", "check", "uncheck"):
+                st.setdefault("ui", {})["templates"] = {"element": f"{st['id']}.png"}
 
     try:
         with sync_playwright() as p:
