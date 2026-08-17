@@ -497,6 +497,15 @@ def _(rec):
     assert s and s.get("dismissesOverlay") is True, s and s.get("kind")
 
 
+@check("加标记的升级不会覆盖点击时算出的好选择器")
+def _(rec):
+    # 浮层在升级发生时已经消失，重算选择器只能退到路径兜底。
+    # 实测正是这样把作用域选择器换成了一串 nth-of-type。
+    s = find(rec["steps"], lambda s: s.get("dismissesOverlay"))
+    assert s and s["kind"] == "scoped", s and (s["kind"], s["sel"])
+    assert "nth-of-type" not in s["sel"], s["sel"]
+
+
 @check("关浮层的步骤在轨迹里是可选的，并带着「可提前做」的标记")
 def _(rec):
     trace = trace_of(rec)

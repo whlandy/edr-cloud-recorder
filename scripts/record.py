@@ -352,11 +352,15 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
                 #     所以原地改，不替换。
                 #   - 模板要的是「拨之前」的样子。升级发生在状态已经变了之后，
                 #     那时再截图描述的是目标状态，回放时反而对不上。
+                # 升级记录可以用 _only 指明自己只想改哪几个字段。默认那份白名单
+                # 适合开关（要换成状态层的选择器）；只加一个标记的升级不能走它，
+                # 否则会用事后重算的选择器覆盖点击时算出的好选择器。
+                allowed = step.get("_only") or (
+                    "type", "to", "via", "sel", "kind",
+                    "ambiguous", "matches", "label", "css", "dismissesOverlay",
+                )
                 old.update({
-                    key: value for key, value in step.items()
-                    if key in ("type", "to", "via", "sel", "kind",
-                               "ambiguous", "matches", "label", "css",
-                               "dismissesOverlay")
+                    key: value for key, value in step.items() if key in allowed
                 })
                 seen.add(f"{step['id']}:upgrade")
                 print(f"  [升级] {was} → {old['type']}  {old['sel']}"

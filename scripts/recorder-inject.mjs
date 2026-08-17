@@ -800,8 +800,12 @@ export const RECORDER = () => {
         getComputedStyle(layer).display === 'none' ||
         getComputedStyle(layer).visibility === 'hidden';
       if (gone) {
+        // 只加这一个标记。浮层此刻已经消失，重算选择器只能退到路径兜底，
+        // 那会把点击时算出的好选择器覆盖掉 —— 实测正是这样把
+        // locator("div.eui_Dialog_Panel", { hasText: ... }) 换成了一串 nth-of-type。
         push('click', sourceEvent.target, {
-          _id: stepId, _upgrade: true, dismissesOverlay: true,
+          _id: stepId, _upgrade: true, _only: ['dismissesOverlay'],
+          dismissesOverlay: true,
         }, sourceEvent);
         return;
       }
