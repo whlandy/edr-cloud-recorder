@@ -445,6 +445,112 @@ def test_late_overlay_reruns_the_skipped_optional_step():
     assert second["retries"] == 1, "补做和重试要算进 retries，效率分该扣"
 
 
+def test_overlay_step_recorded_later_is_pulled_forward():
+    """关浮层那一步排在后面：录制时弹窗是在这一下之后才弹的，回放时提前弹了。"""
+    world = {"overlay": True, "closed": False}
+
+    class Closer:
+        def wait_for(self, **kwargs):
+            if not world["overlay"]:
+                raise TimeoutError("Locator.wait_for: Timeout")
+
+        def count(self):
+            return 1 if world["overlay"] else 0
+
+        def click(self):
+            world["closed"] = True
+            world["overlay"] = False
+
+    class Menu:
+        def wait_for(self, **kwargs):
+            pass
+
+        def click(self):
+            if world["overlay"]:
+                raise TimeoutError(
+                    "Locator.click: Timeout 300ms exceeded.\n"
+                    '  - <div class="mask"></div> intercepts pointer events'
+                )
+
+    class Page:
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            return Closer() if "close" in selector else Menu()
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#menu")'},
+        "action": {"type": "Click", "param": {}},
+    })
+    trace["steps"]["step-0001"]["next"] = "step-0002"
+    trace["steps"]["step-0002"] = {
+        "status": "ready",
+        "selector": {"sel": 'locator("#close")'},
+        "action": {"type": "Click", "param": {}},
+        "optional": True,
+        "dismissesOverlay": True,
+        "next": None,
+    }
+
+    execution = replay_trace(Page(), trace, timeout_ms=300)
+
+    assert execution["status"] == "success", execution["steps"]
+    assert world["closed"] is True
+    first, second = execution["steps"]
+    assert first["status"] == "success"
+    assert first["recoveredOptional"] == ["step-0002"]
+    assert second["status"] == "skipped"
+    assert second["performedEarly"] is True
+
+
+def test_only_overlay_steps_are_pulled_forward():
+    """不是随便挑一步来试：只有录制时观察到「点完浮层就没了」的步骤才有资格。"""
+    world = {"overlay": True, "touched": []}
+
+    class Blocked:
+        def wait_for(self, **kwargs):
+            pass
+
+        def click(self):
+            raise TimeoutError(
+                "Locator.click: Timeout 300ms exceeded.\n"
+                '  - <div class="mask"></div> intercepts pointer events'
+            )
+
+    class Other:
+        def wait_for(self, **kwargs):
+            pass
+
+        def click(self):
+            world["touched"].append("later")
+
+    class Page:
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            return Blocked() if "menu" in selector else Other()
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#menu")'},
+        "action": {"type": "Click", "param": {}},
+    })
+    trace["steps"]["step-0001"]["next"] = "step-0002"
+    trace["steps"]["step-0002"] = {
+        "status": "ready",
+        "selector": {"sel": 'locator("#save")'},
+        "action": {"type": "Click", "param": {}},
+        "optional": True,          # 可选，但不是关浮层的
+        "next": None,
+    }
+
+    execution = replay_trace(Page(), trace, timeout_ms=300)
+
+    assert execution["status"] == "failed"
+    assert world["touched"] == [], "把无关的后续步骤提前做了"
+
+
 def test_intercepted_click_still_fails_when_nothing_to_recover():
     """没有暂缓步骤可补时，「点不动」照样是失败 —— 不能因为放宽而放过它。"""
     class Target:

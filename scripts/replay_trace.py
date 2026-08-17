@@ -539,6 +539,8 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
     focused_selector = None
     # 被跳过的 optional 步骤：目标当时不在，但可能只是还没出现
     pending_optional: list[tuple[str, dict]] = []
+    # 因为挡路而被提前做掉的关浮层步骤：轨迹走到它时会发现已经没得关
+    performed_early: set[str] = set()
     for node_id in order:
         node = golden["steps"][node_id]
         started = time.perf_counter()
@@ -568,7 +570,7 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             # 所以跳过 optional 步骤只是**暂缓**，不是就此作废：真被挡住了，
             # 就把这些暂缓的步骤补做一遍，再重试当前这一步。补做和重试都记在
             # retries 里，效率分照扣 —— 多做的动作就该算多做。
-            if _intercepted(error) and pending_optional:
+            if _intercepted(error):
                 recovered = []
                 while pending_optional:
                     skipped_id, skipped_result = pending_optional.pop(0)
@@ -579,6 +581,23 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                         continue                    # 补做也不成，按原样报错
                     skipped_result["laterPerformed"] = True
                     recovered.append(skipped_id)
+                # 关浮层的那一步也可能排在**后面**：录制时弹窗是在这一下之后
+                # 才出现的，回放时它提前出现了。挡路的东西和关它的那一步就这么
+                # 错开了 —— 那就把它提前做掉。录制时观察到「点完浮层就没了」的
+                # 步骤才有这个资格，不是随便挑一步来试。
+                for later_id in order[order.index(node_id) + 1:]:
+                    if later_id in performed_early:
+                        continue
+                    if not golden["steps"][later_id].get("dismissesOverlay"):
+                        continue
+                    try:
+                        _perform(page, golden["steps"][later_id], root, targeting,
+                                 timeout_ms, runtime_env, focused_selector)
+                    except Exception:
+                        continue
+                    performed_early.add(later_id)
+                    recovered.append(later_id)
+                    break                           # 一次只提前一步，别越做越多
                 if recovered:
                     result["retries"] += 1
                     result["recoveredOptional"] = recovered
@@ -606,9 +625,15 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             elif node.get("optional") and _target_absent(page, node, error, targeting):
                 result["status"] = "skipped"
                 result["error"] = f"{type(error).__name__}: {error}"
-                result["skippedReason"] = "optional 步骤未出现"
-                # 只是暂缓：它可能只是还没出现。后面某一步被挡住时会回来补做。
-                pending_optional.append((node_id, result))
+                result["skippedReason"] = (
+                    "已提前执行（用于解除遮挡）" if node_id in performed_early
+                    else "optional 步骤未出现"
+                )
+                if node_id in performed_early:
+                    result["performedEarly"] = True
+                else:
+                    # 只是暂缓：它可能只是还没出现。后面某一步被挡住时会回来补做。
+                    pending_optional.append((node_id, result))
             else:
                 result["status"] = "failed"
                 result["error"] = f"{type(error).__name__}: {error}"

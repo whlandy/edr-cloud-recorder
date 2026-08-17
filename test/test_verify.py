@@ -491,6 +491,30 @@ def _(rec):
     assert "历史记录" not in s["sel"], s["sel"]
 
 
+@check("关浮层的那一步被标出来（据观察，不靠选择器形态猜）")
+def _(rec):
+    s = find(rec["steps"], lambda s: "dlg_panel" in (s.get("css") or ""))
+    assert s and s.get("dismissesOverlay") is True, s and s.get("kind")
+
+
+@check("关浮层的步骤在轨迹里是可选的，并带着「可提前做」的标记")
+def _(rec):
+    trace = trace_of(rec)
+    node = find(trace["steps"].values(),
+                lambda n: "dlg_panel" in ((n["selector"].get("css")) or ""))
+    assert node and node.get("optional") is True, node
+    assert node.get("dismissesOverlay") is True, node
+
+
+@check("选中下拉选项不算关浮层")
+def _(rec):
+    # 「点在浮层里且浮层消失」这个条件太宽 —— 选中下拉项同样满足。
+    # 标成可选就等于允许悄悄跳过一步真操作。
+    hits = [s for s in rec["steps"]
+            if s.get("label") == "Windows系统" and s.get("dismissesOverlay")]
+    assert not hits, hits
+
+
 # ── 点在滑块上 ──
 # 开关组件层层嵌套，滑块 / 轨道 / 容器都带 toggle 字样，但状态只写在容器上。
 # 往上撞到的第一层是滑块，它永远读不出状态 —— 真实录制里绝大多数拨开关的

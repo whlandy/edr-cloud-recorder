@@ -775,6 +775,41 @@ export const RECORDER = () => {
     setTimeout(tick, 150);
   };
 
+  /**
+   * 这一下是不是「关掉一个浮层」
+   *
+   * 首启弹窗、公告、提示条出现与否取决于账号状态和历史操作，回放时不一定在 ——
+   * 所以关它的那一步天生是条件步骤（存在则点）。
+   *
+   * 原来靠「选择器落到 CSS 兜底」当代理信号，因为这类图标以前只能产出绝对路径。
+   * 选择器变好之后代理就不成立了，弹窗步骤反而变成必经节点。换成有据可查的
+   * 判据：点之前目标在一个浮层里，点之后那个浮层不在了 —— 那这一步的作用
+   * 就是关掉它。回放据此把它当条件步骤，被遮罩挡住时还能把它提前做掉。
+   *
+   * 只认**没有文本的图标**（关闭叉）。「点在浮层里且浮层消失」这个条件太宽：
+   * 选中一个下拉选项同样满足它，而那是实打实的操作，标成可选就等于允许
+   * 悄悄跳过。带文字的确认按钮（「我知道了」「确定」）因此漏判 —— 宁可漏判
+   * 也不误判：漏判只是维持原状，误判会让一步真操作被跳过而且不报错。
+   * 「确定」尤其危险，它在表单弹窗里就是提交。
+   */
+  const watchOverlayDismiss = (layer, stepId, sourceEvent) => {
+    const deadline = Date.now() + 3000;
+    const tick = () => {
+      const gone = !layer.isConnected ||
+        !layer.getClientRects().length ||
+        getComputedStyle(layer).display === 'none' ||
+        getComputedStyle(layer).visibility === 'hidden';
+      if (gone) {
+        push('click', sourceEvent.target, {
+          _id: stepId, _upgrade: true, dismissesOverlay: true,
+        }, sourceEvent);
+        return;
+      }
+      if (Date.now() < deadline) setTimeout(tick, 150);
+    };
+    setTimeout(tick, 150);
+  };
+
   // 右键打开断言菜单。菜单自身的交互不能被当成被录的操作，
   // 所以下面所有监听都先检查事件是否来自菜单内部（composedPath 才能穿透 Shadow DOM）。
   const fromMenu = (e) => e.composedPath?.().some((n) => n?.id === MENU_ID);
@@ -835,7 +870,10 @@ export const RECORDER = () => {
       return;
     }
 
-    push('click', el, undefined, e);
+    const step = push('click', el, undefined, e);
+    // 点在浮层里的无文本图标：看这一下是不是把浮层关掉了
+    const layer = txt(el) ? null : floatingAncestor(el);
+    if (step && layer) watchOverlayDismiss(layer.el, step.id, e);
   }, true);
   document.addEventListener('dblclick', (e) => {
     if (!fromMenu(e)) push('dblclick', e.target, undefined, e);
