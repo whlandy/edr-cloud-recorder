@@ -237,12 +237,12 @@ def drive(chrome: str | None = None) -> dict:
             for old_step in steps:
                 if old_step["id"] == st["id"]:
                     # 和 record.py 一致：原地只改语义字段，视觉字段保留点击那一刻的
-                    old_step.update({
-                        k: v for k, v in st.items()
-                        if k in ("type", "to", "via", "sel", "kind",
-                                 "ambiguous", "matches", "label", "css",
-                                 "dismissesOverlay")
-                    })
+                    # 和 record.py 一致：_only 指明只改哪几个字段
+                    allowed = st.get("_only") or (
+                        "type", "to", "via", "sel", "kind",
+                        "ambiguous", "matches", "label", "css", "dismissesOverlay",
+                    )
+                    old_step.update({k: v for k, v in st.items() if k in allowed})
                     seen.add(f"{st['id']}:upgrade")
                     return
             return
