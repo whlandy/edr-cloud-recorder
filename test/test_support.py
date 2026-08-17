@@ -275,6 +275,9 @@ def test_double_click_is_one_visual_step_in_script_and_trace():
             "method": "POST",
             "url": "https://app.example/api/open",
             "expectedStatus": 200,
+            # 写请求必发：它是这一步真正的副作用，没发出去就是没做成。
+            # 读请求会标 required=False —— 页面已处于目标状态时本来就不会重发。
+            "required": True,
             "request": {"body": {}},
         }],
     }
