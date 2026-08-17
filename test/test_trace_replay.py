@@ -878,3 +878,96 @@ def test_visual_ambiguity_is_not_absence():
     node = {"selector": {}}          # 没有 DOM 依据，只能看视觉证据
     assert _target_absent(None, node, VisualAbsent("分数不足")) is True
     assert _target_absent(None, node, VisualAmbiguous("不唯一")) is False
+
+
+# ── 读请求不必发 ──────────────────────────────────────────────────────
+# 读请求只在状态真的变化时才重发。回放时页面若已处于目标状态，同样的点击
+# 一个包都不发 —— 那一步其实是成功的（作用域已经对了），不该判失败。
+# 实测栽过：点 default-group 时它已是选中态，list-group-asset 没重发，
+# 整条轨迹卡在第 3 步。
+
+def _read_only_trace(required):
+    trace = _trace({
+        "selector": {"kind": "text", "sel": 'getByText("组A", { exact: true })'},
+        "action": {"type": "Click", "param": {}},
+        "expect": {"responses": [{
+            "method": "GET",
+            "url": "https://app.example/api/list",
+            "expectedStatus": 200,
+            "required": required,
+        }]},
+    })
+    return trace
+
+
+class _SilentPage(_MissingThenPresentPage):
+    """点击不产生任何请求 —— 页面已处于目标状态。"""
+
+    def expect_response(self, predicate, timeout=None):
+        page = self
+
+        class _Waiter:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                from playwright.sync_api import TimeoutError as PWTimeoutError
+                raise PWTimeoutError(f"Timeout {timeout}ms exceeded")
+
+            @property
+            def value(self):
+                raise AssertionError("没有响应可读")
+
+        return _Waiter()
+
+    def get_by_text(self, text, **kwargs):
+        return _OkLocator(self, text)
+
+
+def test_read_response_may_be_absent_when_state_already_matches():
+    execution = replay_trace(_SilentPage(), _read_only_trace(required=False))
+
+    assert execution["steps"][0]["status"] == "success"
+    assert execution["status"] == "success"
+    note = execution["steps"][0]["responses"][0]
+    assert note["ok"] is False and note["required"] is False
+
+
+def test_write_response_absence_still_fails():
+    """写请求必发 —— 没发出去就是没做成，不能因为宽容读请求把它一起放过。"""
+    execution = replay_trace(_SilentPage(), _read_only_trace(required=True))
+
+    assert execution["steps"][0]["status"] == "failed"
+    assert execution["status"] == "failed"
+
+
+def test_absent_read_response_does_not_drag_down_the_score():
+    golden = _read_only_trace(required=False)
+    execution = replay_trace(_SilentPage(), golden)
+
+    report = evaluate_trace(golden, execution)
+    assert report["networkAssertionRate"] == 1.0   # 分母里本就不该有它
+    assert report["taskSuccess"] is True
+
+
+def test_ambiguity_beats_a_stale_dom_selector():
+    """「存在」的证据优先于「查不到」。
+
+    实测栽过：弹窗明明在（视觉 best=0.976，只是有两个长得一样的），
+    但那条 CSS 路径匹配不到 → DOM 命中 0 → 被判缺席跳过 → 遮罩没关掉，
+    下一步点击被吞、20 秒超时。DOM 命中 0 只说明选择器失效，不说明元素不在。
+    """
+    from rec_visual import VisualAbsent, VisualAmbiguous
+    from replay_trace import _target_absent
+
+    class _ZeroHit:
+        def count(self):
+            return 0
+
+    class _Page:
+        def locator(self, *a, **k):
+            return _ZeroHit()
+
+    node = {"selector": {"kind": "css", "sel": 'locator("div.stale")'}}
+    assert _target_absent(_Page(), node, VisualAmbiguous("不唯一")) is False
+    assert _target_absent(_Page(), node, VisualAbsent("分数不足")) is True

@@ -13,7 +13,9 @@ from urllib.parse import urlsplit
 
 from rec_assert import ANY_STR, assert_subset
 from rec_secrets import REDACTED
-from rec_visual import VisualAbsent, VisualMatchError, locate_visual_target
+from rec_visual import (
+    VisualAbsent, VisualAmbiguous, VisualMatchError, locate_visual_target,
+)
 from selector_py import to_python
 
 
@@ -148,10 +150,10 @@ def _target_absent(page, node: dict, error: Exception, targeting: str = "dom_fir
 
     只有拿得出缺席证据时才返回 True。判据按可靠性排：
 
-      1. DOM 选择器命中数为 0        —— 最硬的证据，元素压根不存在
+      1. VisualAmbiguous            —— 「存在」的直接证据，一票否决缺席
       2. DOM 命中数 > 0             —— 元素在，那就不是缺席（点不动是另一回事）
-      3. 没有 DOM 依据时，看视觉    —— 只认 VisualAbsent（分数不足）；
-                                       VisualAmbiguous 恰恰说明目标存在
+      3. DOM 命中数为 0             —— 只在没有存在证据时才当缺席
+      4. 没有 DOM 依据时            —— 只认 VisualAbsent（分数不足）
 
     注意「点击超时」不能当缺席：那说明元素在、只是被挡住了，必须失败。
 
@@ -159,6 +161,17 @@ def _target_absent(page, node: dict, error: Exception, targeting: str = "dom_fir
     只评视觉定位能力；用 DOM 判缺席会让评测结果被 DOM 信息污染，
     而且那一步的视觉匹配根本没被执行过。
     """
+    # 「存在」的证据优先于「查不到」。
+    #
+    # VisualAmbiguous 是**直接证据**：屏幕上有好几个长得很像的候选，目标显然在。
+    # 而 DOM 命中数为 0 只说明**那条选择器**失效了 —— 页面结构和录制时不同、
+    # 或者选择器本来就撞车，都会命中 0，它证明不了元素不在。
+    #
+    # 实测栽过：弹窗明明在（视觉 best=0.976），但 CSS 路径匹配不到 → DOM 命中 0
+    # → 判缺席 → 跳过 → 遮罩没关掉，下一步点击被吞，20 秒超时。
+    if isinstance(error, VisualAmbiguous):
+        return False
+
     selector = node.get("selector") or {}
     if targeting != "visual_only" and selector.get("sel"):
         try:
@@ -458,22 +471,39 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             "responses": [],
             "retries": 0,
         }
+        optional_waiters = []
         try:
             expected_responses = (node.get("expect") or {}).get("responses") or []
             occurrences: dict[tuple[str, str], int] = {}
+            # 必发的（写请求）用 ExitStack 等到底；非必发的（读请求）单独接住超时。
+            #
+            # 读请求只在状态真的变化时才重发：回放时如果页面已经处于目标状态，
+            # 同样的点击一个包都不发 —— 那一步其实是成功的，不该因此判失败。
+            required = [e for e in expected_responses if e.get("required", True)]
+            optional = [e for e in expected_responses if not e.get("required", True)]
             with ExitStack() as stack:
                 response_infos = []
-                for expected in expected_responses:
+                for expected in required:
                     key = (expected["method"], expected["url"])
                     occurrences[key] = occurrences.get(key, 0) + 1
                     response_infos.append(stack.enter_context(page.expect_response(
                         _response_predicate(expected, occurrences[key]), timeout=timeout_ms
                     )))
+                # 非必发的也必须在动作**之前**布置监听，否则请求会漏掉；
+                # 只是退出时单独处理，不让它的超时打断整步。
+                for expected in optional:
+                    key = (expected["method"], expected["url"])
+                    occurrences[key] = occurrences.get(key, 0) + 1
+                    waiter = page.expect_response(
+                        _response_predicate(expected, occurrences[key]),
+                        timeout=min(timeout_ms, 2_000),
+                    )
+                    optional_waiters.append((waiter, waiter.__enter__(), expected))
                 result["target"] = _execute_action(
                     page, node, root, targeting, timeout_ms, runtime_env,
                     focused_selector,
                 )
-            for info, expected in zip(response_infos, expected_responses):
+            for info, expected in zip(response_infos, required):
                 result["responses"].append(_validate_response(info.value, expected))
             result["status"] = "success"
             if targeting == "visual_only" and result["target"]["mode"] == "visual":
@@ -499,6 +529,19 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                 result["error"] = f"{type(error).__name__}: {error}"
                 first_error = error
         finally:
+            # 非必发响应的收尾必须在 finally 里。放在正常路径上的话，动作一旦
+            # 抛异常就直接跳出 with 块，这些等待器永远不会被退出 —— 实测留下
+            # 一串 "Future exception was never retrieved"，既是噪音也是泄漏。
+            for waiter, info, expected in optional_waiters:
+                try:
+                    waiter.__exit__(None, None, None)
+                    result["responses"].append(_validate_response(info.value, expected))
+                except Exception as missing:
+                    result["responses"].append({
+                        "method": expected["method"], "url": expected["url"],
+                        "ok": False, "required": False,
+                        "note": f"未出现（非必发）：{type(missing).__name__}",
+                    })
             result["durationMs"] = round((time.perf_counter() - started) * 1000, 3)
             execution["steps"].append(result)
         if first_error:
@@ -556,17 +599,20 @@ def evaluate_trace(golden: dict, execution: dict) -> dict:
         actual.get(node, {}).get("actualAction") == golden["steps"][node]["action"]["type"]
         for node in order if node in actual
     )
-    expected_network = sum(
-        len((golden["steps"][node].get("expect") or {}).get("responses") or [])
-        for node in order
-    )
+    # 只把**必发**的响应计入分母。非必发的（读请求）在页面已处于目标状态时
+    # 本来就不会重发，把它算进分母等于为一件正常的事扣分；
+    # 但它真的出现时仍然会被校验，出错照样算失败。
+    def _required(node_id: str) -> list:
+        expects = (golden["steps"][node_id].get("expect") or {}).get("responses") or []
+        return [e for e in expects if e.get("required", True)]
+
+    expected_network = sum(len(_required(node)) for node in order)
     network_hits = 0
     for node in order:
-        expected_count = len(
-            (golden["steps"][node].get("expect") or {}).get("responses") or []
-        )
+        expected_count = len(_required(node))
         responses = actual.get(node, {}).get("responses", [])
-        network_hits += min(expected_count, sum(bool(item.get("ok")) for item in responses))
+        hits = sum(bool(item.get("ok")) for item in responses if item.get("required", True))
+        network_hits += min(expected_count, hits)
     visual_scores = [
         step["target"]["matchScore"]
         for step in execution_steps

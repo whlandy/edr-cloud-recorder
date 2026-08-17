@@ -139,6 +139,17 @@ def _network_expectation(request: dict | None, response: dict) -> dict:
         "method": response["method"],
         "url": response["url"],
         "expectedStatus": response["status"],
+        # 读请求只有在**状态真的变化**时才会重发，所以不能当作必发。
+        #
+        # 实测：录制时从「未选中」点到「选中」，触发了一次 list-group-asset；
+        # 回放时 sessionStorage 恢复出的选中项正好就是它，同样一下点击什么都不发
+        # —— 那一步其实是成功的（作用域已经对了），却因为等不到响应被判失败。
+        #
+        # 这条规则 generate_spec 早就有了：只断言写请求，GET 留作注释。
+        # 轨迹这边一直没跟上，同一份录制又出现了两套语义。
+        #
+        # 写请求仍然必发：它是这一步真正产生的副作用，没发出去就是没做成。
+        "required": response["method"] != "GET",
     }
     payload = _request_payload(request)
     if payload:
