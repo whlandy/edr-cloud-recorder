@@ -50,6 +50,16 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
     <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
   </div>
 
+  <!-- 两棵结构完全相同的深子树：cssPath 只取最近 6 层，截断后两条路径一模一样。
+       图标无文字、无 role，必然落到 CSS 兜底 —— 正是最容易撞车的那条路。 -->
+  <div id="tree_a"><div><div><div><div><div><span class="ic_x" style="display:inline-block;width:16px;height:16px;background:#333"></span></div></div></div></div></div>
+  <div id="tree_b"><div><div><div><div><div><span class="ic_x" style="display:inline-block;width:16px;height:16px;background:#333"></span></div></div></div></div></div>
+
+  <!-- 两个叠着的弹窗，各自都 id="dialog_panel"（HTML 上不合法，现实里就这么写）。
+       遇到 id 就短路的话，产出的 CSS 路径命中 2 个元素，回放必然 strict mode 报错。 -->
+  <div id="dialog_panel"><span class="dlg_close">×</span></div>
+  <div id="dialog_panel"><span class="dlg_close">×</span></div>
+
   <!-- 组件框架批量吐出的同名 testid：不唯一，用它回放必然 strict mode 失败 -->
   <div data-testid="text-comp-span">重复标记甲</div>
   <div data-testid="text-comp-span">重复标记乙</div>
@@ -247,6 +257,14 @@ def drive(chrome: str | None = None) -> dict:
             page.locator("[data-testid=text-comp-span]").first.click()
             page.wait_for_timeout(300)
             page.click("[data-cy=cy-only]")
+            page.wait_for_timeout(300)
+
+            # 深子树里的无文字图标：两条 CSS 路径截断后相同，必然撞车
+            page.locator("#tree_b .ic_x").click()
+            page.wait_for_timeout(300)
+
+            # 重复 id 的弹窗：点第二个的关闭图标
+            page.locator("#dialog_panel").nth(1).locator(".dlg_close").click()
             page.wait_for_timeout(300)
 
             # 慢开关：class 要 500ms 后才变。固定等 60ms 检测不到变化，

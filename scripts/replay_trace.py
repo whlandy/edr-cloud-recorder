@@ -11,11 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from playwright.sync_api import TimeoutError as PWTimeoutError
-
 from rec_assert import ANY_STR, assert_subset
 from rec_secrets import REDACTED
-from rec_visual import VisualMatchError, locate_visual_target
+from rec_visual import VisualAbsent, VisualMatchError, locate_visual_target
 from selector_py import to_python
 
 
@@ -129,14 +127,57 @@ def _target(page, node: dict, template_root: Path, targeting: str, timeout_ms: i
                 page, template_root=template_root, ui=_visual_ui(node)
             )
             break
-        except VisualMatchError:
+        except VisualMatchError as visual_error:
             if time.monotonic() >= deadline:
+                # 两条路都失败时，DOM 的原因最有价值 —— 偏偏这时候它最容易丢：
+                # 异常在 target_info 构造之前就抛了，之前那版只在**视觉成功**时
+                # 才记得下 domError，等于在最需要它的场合没有它。
+                # 用同一个异常类重抛，保住 VisualAbsent / VisualAmbiguous 的区分。
+                if dom_error:
+                    raise type(visual_error)(
+                        f"{visual_error}\nDOM 先失败于：{dom_error}"
+                    ) from visual_error
                 raise
             time.sleep(0.1)
     return "visual", None, visual, dom_error
 
 
-AUTH_URL_HINTS = ("login", "signin", "sso", "auth", "oauth", "session")
+
+def _target_absent(page, node: dict, error: Exception, targeting: str = "dom_first") -> bool:
+    """判断这一步的目标是不是**真的不在页面上**。
+
+    只有拿得出缺席证据时才返回 True。判据按可靠性排：
+
+      1. DOM 选择器命中数为 0        —— 最硬的证据，元素压根不存在
+      2. DOM 命中数 > 0             —— 元素在，那就不是缺席（点不动是另一回事）
+      3. 没有 DOM 依据时，看视觉    —— 只认 VisualAbsent（分数不足）；
+                                       VisualAmbiguous 恰恰说明目标存在
+
+    注意「点击超时」不能当缺席：那说明元素在、只是被挡住了，必须失败。
+
+    visual_only 模式下**不看 DOM**。那个模式的全部意义就是隔离 DOM 知识、
+    只评视觉定位能力；用 DOM 判缺席会让评测结果被 DOM 信息污染，
+    而且那一步的视觉匹配根本没被执行过。
+    """
+    selector = node.get("selector") or {}
+    if targeting != "visual_only" and selector.get("sel"):
+        try:
+            locator = _locator(page, selector)
+            if locator is not None:
+                return locator.count() == 0
+        except Exception:
+            pass    # 选择器都算不出来，退回看视觉证据
+    return isinstance(error, VisualAbsent)
+
+
+# 按**路径段**匹配，不是子串。子串匹配会把业务路径误判成认证页：
+# /user/authorization 含 "auth"、/sessions/42 含 "session" —— 于是会话完全有效
+# 却被判「登录态失效」并中断回放，和这个检查本来要消灭的误导性报错是同一类。
+# 段匹配下 "authorization" != "auth"、"sessions" != "session"，
+# 而 Keycloak 那种 /auth/realms/... 仍然认得出来。
+AUTH_URL_SEGMENTS = frozenset({
+    "login", "signin", "sign-in", "sso", "oauth", "auth", "logout", "session",
+})
 
 
 def _assert_landed(page, start_url: str, execution: dict) -> None:
@@ -160,8 +201,10 @@ def _assert_landed(page, start_url: str, execution: dict) -> None:
         return
     if urlsplit(landed).path == urlsplit(start_url).path:
         return
-    lowered = landed.lower()
-    if any(hint in lowered for hint in AUTH_URL_HINTS):
+    segments = {seg for seg in urlsplit(landed).path.lower().split("/") if seg}
+    # login.action / signin.jsp 这类带后缀的入口也要认出来
+    stems = {seg.split(".")[0] for seg in segments}
+    if (segments | stems) & AUTH_URL_SEGMENTS:
         raise TraceReplayError(
             f"回放起点被重定向到 {landed}\n"
             f"（起点应为 {start_url}）\n"
@@ -436,16 +479,18 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             if targeting == "visual_only" and result["target"]["mode"] == "visual":
                 focused_selector = (node.get("selector") or {}).get("sel")
         except Exception as error:
-            # 可选步骤：定位不到就跳过，而不是判整条轨迹失败。
+            # 可选步骤：**确认目标不存在**时才跳过。
             #
             # 首启弹窗、提示条这类元素出现与否取决于账号状态和历史操作 ——
             # 录制时出现过，回放时往往已经不再出现（第一次关掉后应用记住了）。
-            # pytest 草稿早就把它们生成为「存在则点」，轨迹这边却当成必经节点，
-            # 同一份录制两条流水线语义不一致。
             #
-            # 只对「找不到目标」放行。断言失败、接口不符仍然算失败 ——
-            # 否则 optional 会变成万能挡箭牌，把真问题一起吞掉。
-            if node.get("optional") and isinstance(error, (VisualMatchError, PWTimeoutError)):
+            # 但「找不到」和「找到了却用不了」必须分开。第一版把两者混成一类，
+            # 结果实测栽了：弹窗**确实在**（视觉 best=0.995），只是因为页面上有
+            # 两个几乎一样的关闭图标而被判为歧义 —— 于是这一步被跳过，弹窗没关掉，
+            # 遮罩把后面每一次点击都吞了，最后报的是「点击超时」。
+            #
+            # 测试里把失败当跳过，等于把问题往后推，而且推到一个报错不知所云的地方。
+            if node.get("optional") and _target_absent(page, node, error, targeting):
                 result["status"] = "skipped"
                 result["error"] = f"{type(error).__name__}: {error}"
                 result["skippedReason"] = "optional 步骤未出现"
@@ -489,7 +534,24 @@ def evaluate_trace(golden: dict, execution: dict) -> dict:
         if type(retries) is not int or retries < 0:
             raise TraceReplayError("execution step 的 retries 必须是非负整数")
         actual.setdefault(step["nodeId"], step)
-    completed = sum(actual.get(node, {}).get("status") == "success" for node in order)
+    # 被正确跳过的 optional 步骤算「已满足」。
+    #
+    # 它的要求本来就是「出现了才做」，没出现而跳过就是按要求执行了。
+    # 只认 success 的话，任何含 optional 步骤的轨迹都永远拿不到 taskSuccess ——
+    # 实测：可选弹窗未出现、其余全成功，仍报 taskSuccess=False、score=45。
+    #
+    # 只对**golden 里标了 optional** 的节点放行；执行侧自称 skipped 不算数，
+    # 否则回放器将来多一种跳过路径就能悄悄抬高分数。
+    def _satisfied(node_id: str) -> bool:
+        step = actual.get(node_id, {})
+        if step.get("status") == "success":
+            return True
+        return (
+            step.get("status") == "skipped"
+            and bool(golden["steps"][node_id].get("optional"))
+        )
+
+    completed = sum(_satisfied(node) for node in order)
     action_hits = sum(
         actual.get(node, {}).get("actualAction") == golden["steps"][node]["action"]["type"]
         for node in order if node in actual
