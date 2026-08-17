@@ -301,3 +301,40 @@ def test_visual_double_click_uses_template_match(tmp_path):
     ) == "visual"
     assert page.mouse.clicked[:2] == pytest.approx((45, 33), abs=0.5)
     assert page.mouse.clicked[2] == {"click_count": 2}
+
+
+# ── 几何消歧 ──────────────────────────────────────────────────────────
+# 两个像素级相同的弹窗关闭图标，分数分不出高下，位置是它们唯一的区别。
+# 这不是放宽阈值：歧义仍然被识别，只是多了一个正当的第二判据。
+
+def _tied(x, y, score):
+    return {"x": x, "y": y, "w": 20, "h": 20, "score": score, "scale": 1.0}
+
+
+def test_geometry_picks_the_candidate_near_the_recorded_spot():
+    from rec_visual import _nearest_candidate
+
+    # 两个候选分数几乎一样；录制时元素在左上角
+    cands = [_tied(10, 10, 0.976), _tied(500, 400, 0.956)]
+    picked = _nearest_candidate(cands, expected_point=(20, 20), ambiguity_margin=0.04)
+
+    assert picked is not None and picked["x"] == 10
+
+
+def test_geometry_refuses_when_positions_are_also_close():
+    """位置也分不出高下时必须照常报歧义 —— 硬挑一个就成了猜。
+
+    猜错的表现是「点了另一个弹窗」，正是最难查的那类错。
+    """
+    from rec_visual import _nearest_candidate
+
+    # 录制点正好在两个候选中间：距离一样，位置提供不了任何区分信息
+    cands = [_tied(100, 100, 0.976), _tied(160, 100, 0.956)]
+    assert _nearest_candidate(cands, expected_point=(140, 110), ambiguity_margin=0.04) is None
+
+
+def test_geometry_is_skipped_without_a_recorded_point():
+    from rec_visual import _nearest_candidate
+
+    cands = [_tied(10, 10, 0.976), _tied(500, 400, 0.956)]
+    assert _nearest_candidate(cands, expected_point=None, ambiguity_margin=0.04) is None

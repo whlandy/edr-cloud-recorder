@@ -146,6 +146,39 @@ def _top_candidates(screen, template, scales: tuple[float, ...],
     return unique
 
 
+
+# 几何消歧要求「明显更近」的倍数。取 2 是想让它只在差距一目了然时才生效：
+# 两个弹窗一左一右、距离差几倍，可以判；两个并排的图标差 10%，不该判。
+GEOMETRY_MARGIN_RATIO = 2.0
+
+
+def _nearest_candidate(candidates, expected_point, ambiguity_margin):
+    """分数分不出高下时，用录制时的位置挑一个。
+
+    只在**位置差距一目了然**时才给结论：最近的那个必须比次近的近一倍以上。
+    否则返回 None，让调用方照常报歧义 —— 位置本身也分不清的时候，
+    硬挑一个就成了猜，而猜错的表现是「点了另一个弹窗」这种最难查的错。
+
+    只在分数已经过阈值的候选里挑：几何是**第二**判据，不能让它把一个
+    根本不像的东西拉进来。
+    """
+    if expected_point is None:
+        return None
+    tied = [c for c in candidates if candidates[0]["score"] - c["score"] < ambiguity_margin]
+    if len(tied) < 2:
+        return None
+
+    def distance(c):
+        cx, cy = c["x"] + c["w"] / 2, c["y"] + c["h"] / 2
+        return ((cx - expected_point[0]) ** 2 + (cy - expected_point[1]) ** 2) ** 0.5
+
+    ranked = sorted(tied, key=distance)
+    nearest, runner_up = distance(ranked[0]), distance(ranked[1])
+    if nearest * GEOMETRY_MARGIN_RATIO > runner_up:
+        return None          # 位置也分不出高下
+    return ranked[0]
+
+
 def locate_template(
     screenshot: bytes,
     template_path: str | Path,
@@ -154,8 +187,14 @@ def locate_template(
     threshold: float = MATCH_THRESHOLD,
     ambiguity_margin: float = AMBIGUITY_MARGIN,
     verify_threshold: float = VERIFY_THRESHOLD,
+    expected_point: tuple[float, float] | None = None,
 ) -> VisualMatch:
-    """在 viewport 截图中定位模板；低分或不唯一时拒绝返回坐标。"""
+    """在 viewport 截图中定位模板；低分或不唯一时拒绝返回坐标。
+
+    expected_point 是录制时该元素在截图坐标系里的位置。分数分不出高下时，
+    用它当第二判据 —— 这不是放宽阈值：歧义仍然被识别，只是多了一个正当的
+    区分依据。两个长得一模一样的弹窗关闭图标，位置是它们唯一的区别。
+    """
     cv2, np = _deps()
     screen = _decode_png(screenshot)
     template = cv2.imread(str(template_path), cv2.IMREAD_COLOR)
@@ -177,10 +216,14 @@ def locate_template(
             f"template={template_path}"
         )
     if best["score"] - second_score < ambiguity_margin:
-        raise VisualAmbiguous(
-            f"视觉匹配不唯一：best={best['score']:.3f}，second={second_score:.3f}，"
-            f"margin<{ambiguity_margin:.3f}，template={template_path}"
-        )
+        resolved = _nearest_candidate(candidates, expected_point, ambiguity_margin)
+        if resolved is None:
+            raise VisualAmbiguous(
+                f"视觉匹配不唯一：best={best['score']:.3f}，second={second_score:.3f}，"
+                f"margin<{ambiguity_margin:.3f}，template={template_path}"
+                + ("" if expected_point is None else "；且几何位置也分不出高下")
+            )
+        best = resolved
 
     patch = screen[best["y"]:best["y"] + best["h"],
                    best["x"]:best["x"] + best["w"]]
@@ -265,8 +308,26 @@ def locate_visual_target(page: Any, *, template_root: str | Path,
         if not meta:
             continue
         path = Path(template_root) / meta["path"]
+        # 录制时该元素在**截图像素坐标**里的中心。pageRect 是 CSS 坐标，
+        # 截图按设备像素比放大过，所以要用当前实测的 px/css 换算 ——
+        # 不能直接用 deviceScaleFactor：录制机和回放机可能不同。
+        rect = ui.get("pageRect") or {}
+        offset = (meta.get("elementOffset") or {}) if kind == "context" else {}
+        # 取不到坐标就不做几何消歧。它是**第二**判据，缺了只是少一个区分依据，
+        # 绝不能因为它自己算不出来而让整条视觉定位失败。
+        expected_point = None
+        if rect.get("x") is not None and rect.get("y") is not None:
+            expected_point = (
+                (float(rect["x"]) + float(rect.get("width", 0)) / 2
+                 - float(offset.get("x", 0))) * current_px_per_css,
+                (float(rect["y"]) + float(rect.get("height", 0)) / 2
+                 - float(offset.get("y", 0))) * current_px_per_css,
+            )
         try:
-            match = locate_template(screenshot, path, expected_scale=expected_scale)
+            match = locate_template(
+                screenshot, path, expected_scale=expected_scale,
+                expected_point=expected_point,
+            )
         except VisualMatchError as e:
             errors.append(str(e))
             continue
