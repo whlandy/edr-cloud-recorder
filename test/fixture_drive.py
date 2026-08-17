@@ -43,6 +43,14 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
     <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
   </div>
 
+  <!-- 二次确认型开关：点了先弹确认，class 要等点「确认」之后才变。
+       原来只等 1.2 秒，等不到就退回盲点击 —— 回放时可能朝反方向拨。 -->
+  <div id="row_confirm" class="labelAndItem" style="padding:24px">
+    <span>需确认自保护</span>
+    <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
+  </div>
+  <button id="confirm_btn" style="display:none">确认</button>
+
   <!-- 慢开关：拨动后 500ms 才更新 class。固定等 60ms 的话检测不到变化，
        会退回盲点击 —— 回放时方向取决于当时的初始状态，而且不报错 -->
   <div id="row_slow" class="labelAndItem" style="padding:24px">
@@ -105,6 +113,11 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
       // 只有点在行上才展开；点里面的标签只高亮 —— 和真实资产树一致
       if (ev.target.classList.contains('tree_label')) { ev.stopPropagation(); return; }
       expanded_marker.textContent = '终端甲';
+    });
+    row_confirm.addEventListener('click', () => { confirm_btn.style.display = 'inline-block'; });
+    confirm_btn.addEventListener('click', () => {
+      row_confirm.querySelector('.eui_toggle_container').classList.toggle('toggled');
+      confirm_btn.style.display = 'none';
     });
     row_slow.addEventListener('click', () => setTimeout(() =>
       row_slow.querySelector('.eui_toggle_container').classList.toggle('toggled'), 500));
@@ -170,7 +183,18 @@ def drive(chrome: str | None = None) -> dict:
     steps, seen, net = [], set(), []
 
     def accept(st):
-        if st and st.get("id") and st["id"] not in seen:
+        if not st or not st.get("id"):
+            return
+        # 和 record.py 一致：升级记录按 id 覆盖，不能当重复上报丢掉
+        if st.get("_upgrade"):
+            for index, old_step in enumerate(steps):
+                if old_step["id"] == st["id"]:
+                    merged = {**old_step, **st}
+                    merged.pop("_upgrade", None)
+                    steps[index] = merged
+                    return
+            return
+        if st["id"] not in seen:
             seen.add(st["id"])
             steps.append(st)
 
@@ -285,6 +309,12 @@ def drive(chrome: str | None = None) -> dict:
             # 重复 id 的弹窗：点第二个的关闭图标
             page.locator("#dialog_panel").nth(1).locator(".dlg_close").click()
             page.wait_for_timeout(300)
+
+            # 二次确认型开关：拨完要过好几秒才点确认，class 那时才变
+            page.click("#row_confirm", position={"x": 5, "y": 5})
+            page.wait_for_timeout(2500)          # 比原来的 1.2 秒检测窗口更久
+            page.click("#confirm_btn")
+            page.wait_for_timeout(800)
 
             # 慢开关：class 要 500ms 后才变。固定等 60ms 检测不到变化，
             # 会退回盲点击 —— 回放时方向取决于当时的初始状态，而且不报错

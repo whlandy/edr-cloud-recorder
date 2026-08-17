@@ -58,12 +58,31 @@ already have changed server state; visual fallback at that point would double-su
 | `DoubleClick` | one double-click operation, not two trace nodes |
 | `InputText` | focus visual target when needed, then replace current text |
 | `Check` / `Uncheck` | use Playwright state-aware methods in DOM mode |
-| `SetSwitch` | read recorded state carrier, click only if needed, poll desired state |
+| `SetSwitch` | read recorded state carrier, click only if needed, poll desired state unless gated |
 | `PressKey` | locator press in DOM mode; current keyboard focus in visual mode |
 | `Assert` | DOM verifier with polling and explicit expected value |
 
 An environment-backed input such as `REC_PASSWORD` fails if the variable is absent or empty. It
 must never silently input an empty string and report success.
+
+### Switches Behind A Confirmation Dialog
+
+A trace that flips policy switches mutates the state it starts from, so every switch step must be
+idempotent — already in the target state means do nothing. That alone is not enough when the state
+change is gated behind a confirmation dialog: the class or `aria-checked` only changes after a later
+click, so polling for arrival inside the switch step waits for something that cannot happen yet.
+
+The recorder decides this from evidence rather than from a timeout guess: if any other step was
+recorded between the switch click and the state change, that change needed follow-up interaction.
+It marks the step `via.gated` and lists the intervening step ids in `via.gatedSteps`.
+
+- `via.gated` — replay clicks and moves on; the following steps drive the state home.
+- `via.gatedSteps` — those nodes become `optional`, because the dialog only appears when the switch
+  actually needed flipping. Optional still means *skip on proven absence only*: if the dialog did
+  open, the confirm click is mandatory.
+
+Without the gate flag a gated switch degrades into a blind `Click`, which flips the switch in
+whichever direction the current state implies — and reports success either way.
 
 Text assertions follow Playwright string semantics and normalize whitespace. Value and attribute
 assertions remain exact.

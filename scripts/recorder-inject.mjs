@@ -549,7 +549,7 @@ export const RECORDER = () => {
           (t === document.body || t === document.documentElement)) return;
       const sel = selectorFor(t, { requireOwnText: type === 'switch' });
       const step = {
-        id: `${tag}-${++seq}`,
+        id: extra?._id || `${tag}-${++seq}`,
         t: now, actionT: extra?.actionT ?? now, type, sel: sel.code, kind: sel.kind,
         ambiguous: !!sel.ambiguous, matches: sel.matches,
         label: txt(t).slice(0, 60), css: cssPath(t),
@@ -577,7 +577,9 @@ export const RECORDER = () => {
       if (typeof window.__recPush === 'function') {
         try { window.__recPush(step); } catch { /* 页面正在卸载，靠副通道 */ }
       }
+      return step;                    // 开关观察器要用它的 id 发升级记录
     } catch { /* 录制出错绝不能影响用户操作 */ }
+    return null;
   };
 
   let seq = 0;
@@ -697,7 +699,53 @@ export const RECORDER = () => {
       if (typeof window.__recPush === 'function') {
         try { window.__recPush(step); } catch { /* 页面正在卸载 */ }
       }
+      return step;
     } catch { /* 录制出错不能影响用户操作 */ }
+    return null;
+  };
+
+  /**
+   * 开关的状态变化可能被二次确认挡在后面
+   *
+   * 实测：拨这个页面的开关会先弹确认框，class 要等人点了「确认」才变 ——
+   * 那可能是好几秒之后。原来只等 1.2 秒，等不到就退回普通点击，于是这一步
+   * 被录成盲点：回放时起始状态一变就朝反方向拨，而且不报错。
+   *
+   * 改成：**先照常把点击记下来**（不能为了等状态而拖着不记，页面随时可能跳转），
+   * 之后继续观察；真变了再用同一个 id 发一条升级记录，改写成「拨到指定状态」。
+   * 驱动侧按 id 覆盖。
+   *
+   * 只在恰好一层 class 变化时升级 —— 多层一起变说明分不清是哪个，
+   * 宁可留着普通点击，也不猜一个可能相反的状态。
+   */
+  const watchSwitchChange = (candidates, before, stepId, sourceEvent) => {
+    const deadline = Date.now() + 20000;
+    // 状态变化之前有没有别的步骤被录进来？有，就说明这一拨要靠后续交互
+    // （点「确认」）才落地。这不是时间长短的猜测，是有没有交互的事实。
+    const fromIndex = steps.length;
+    const tick = () => {
+      const moved = candidates.filter((x, i) => String(x.className) !== before[i]);
+      if (!moved.length) {
+        if (Date.now() < deadline) setTimeout(tick, 150);
+        return;
+      }
+      if (moved.length !== 1) return;
+      const info = switchInfo(moved[0]);
+      const within = info ? stateWithin(moved[0]) : undefined;
+      if (!info || info.on === null || within === undefined) return;
+      const between = steps.slice(fromIndex).map((x) => x.id);
+      push('switch', moved[0], {
+        _id: stepId, _upgrade: true,
+        to: info.on,
+        via: {
+          ...info.via, within,
+          // 需要后续交互才落地：回放时点完就走，不能堵在这里等状态
+          gated: between.length > 0,
+          gatedSteps: between,
+        },
+      }, sourceEvent);
+    };
+    setTimeout(tick, 150);
   };
 
   // 右键打开断言菜单。菜单自身的交互不能被当成被录的操作，
@@ -753,24 +801,9 @@ export const RECORDER = () => {
     const inside = switchInside(el);
     if (inside.length) {
       const before = inside.map((x) => String(x.className));
-      // 轮询到变化为止，而不是等一个固定的 60ms。
-      //
-      // 实测栽过：某控制台的开关拨动后 class 变得比 60ms 慢（要等一次往返或动画），
-      // 于是"没检测到变化"→ 退回普通点击 → 回放时盲拨，方向取决于当时的初始状态。
-      // 这类错**不报错**，只是把策略设反。固定延时改长也不对：换个页面又不够。
-      const t0 = Date.now();
-      const poll = () => {
-        const moved = inside.filter((x, i) => String(x.className) !== before[i]);
-        if (!moved.length && Date.now() - t0 < 1200) return void setTimeout(poll, 50);
-        const info = moved.length === 1 ? switchInfo(moved[0]) : null;
-        const within = info ? stateWithin(moved[0]) : undefined;
-        if (info && info.on !== null && within !== undefined) {
-          push('switch', moved[0], {
-            t: actionT, actionT, to: info.on, via: { ...info.via, within },
-          }, e);
-        } else push('click', el, { t: actionT, actionT }, e);
-      };
-      setTimeout(poll, 50);
+      // 先如实记下点击，再观察状态是否变化（可能要等二次确认）
+      const step = push('click', el, { t: actionT, actionT }, e);
+      if (step) watchSwitchChange(inside, before, step.id, e);
       return;
     }
 
