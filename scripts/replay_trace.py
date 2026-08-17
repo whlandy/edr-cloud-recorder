@@ -309,7 +309,14 @@ def _validate_response(response, expected: dict) -> dict:
             )
         except (TypeError, ValueError):
             if REDACTED not in expected_body and actual_body != expected_body:
-                raise AssertionError("响应体与成功 trace 不一致")
+                # 把两边都摘一段出来。只说「不一致」等于让人再跑一遍去抓包 ——
+                # 而这类差异往往就是一个字段（msg 文案、多出来的 data），
+                # 看一眼就知道该不该改断言。
+                raise AssertionError(
+                    "响应体与成功 trace 不一致\n"
+                    f"  期望: {expected_body[:200]}\n"
+                    f"  实际: {actual_body[:200]}"
+                )
     actual["ok"] = True
     return actual
 
@@ -360,17 +367,25 @@ def _switch_reader(locator, via: dict):
     return lambda: state_target.get_attribute("aria-checked") == "true"
 
 
-def _set_switch(locator, param: dict, timeout_ms: int) -> None:
+def _set_switch(locator, param: dict, timeout_ms: int) -> bool:
+    """拨到指定状态。返回是否真的点了 —— 已经在目标状态就什么都不做。"""
     desired = bool(param.get("state"))
-    read_state = _switch_reader(locator, param.get("via") or {})
+    via = param.get("via") or {}
+    read_state = _switch_reader(locator, via)
     if read_state() == desired:
-        return
+        return False
     locator.click()
+    # 需要二次确认的开关，class 要等后面那一下「确认」才变。堵在这里等状态
+    # 到达，等的东西永远不会来 —— 确认按钮就在后续步骤里。录制时已经看到
+    # 「状态变化之前还录了别的步骤」，那就点完即走，由后续步骤把它落地。
+    if via.get("gated"):
+        return True
     deadline = time.monotonic() + timeout_ms / 1000
     while read_state() != desired:
         if time.monotonic() >= deadline:
             raise AssertionError(f"开关未到达目标状态: expected={desired}")
         time.sleep(0.1)
+    return True
 
 
 def _execute_action(page, node: dict, template_root: Path, targeting: str,

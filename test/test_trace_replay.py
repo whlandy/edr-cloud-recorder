@@ -296,6 +296,88 @@ def test_set_switch_waits_for_async_target_state():
     assert switch.reads == 3
 
 
+def _switch_page(state, *, on_click=None):
+    class Switch:
+        clicks = 0
+
+        def wait_for(self, **kwargs):
+            pass
+
+        def get_attribute(self, name):
+            assert name == "aria-checked"
+            return "true" if state["on"] else "false"
+
+        def click(self):
+            self.clicks += 1
+            if on_click:
+                on_click()
+
+    switch = Switch()
+
+    class Page:
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            return switch
+
+    return Page(), switch
+
+
+def test_set_switch_skips_when_already_in_target_state():
+    """拨开关必须是幂等的：轨迹会改动策略状态，同一条连跑两次不能一次成一次败。"""
+    page, switch = _switch_page({"on": True})
+    trace = _trace({
+        "selector": {"sel": 'locator("#switch")'},
+        "action": {
+            "type": "SetSwitch",
+            "param": {"state": True, "via": {"type": "aria"}},
+        },
+    })
+
+    execution = replay_trace(page, trace, timeout_ms=500)
+
+    assert execution["status"] == "success"
+    assert switch.clicks == 0
+
+
+def test_set_switch_does_not_wait_when_change_is_gated():
+    """二次确认型开关：状态要等后面那一下「确认」才变，堵在这里等必然超时。"""
+    page, switch = _switch_page({"on": False})
+    trace = _trace({
+        "selector": {"sel": 'locator("#switch")'},
+        "action": {
+            "type": "SetSwitch",
+            "param": {
+                "state": True,
+                "via": {"type": "aria", "gated": True, "gatedSteps": ["x-1"]},
+            },
+        },
+    })
+
+    execution = replay_trace(page, trace, timeout_ms=500)
+
+    assert execution["status"] == "success"
+    assert switch.clicks == 1
+
+
+def test_set_switch_still_fails_when_state_never_arrives():
+    """没标 gated 的开关，拨了却不动就是失败 —— 不能因为放宽而把它也放过。"""
+    page, switch = _switch_page({"on": False})
+    trace = _trace({
+        "selector": {"sel": 'locator("#switch")'},
+        "action": {
+            "type": "SetSwitch",
+            "param": {"state": True, "via": {"type": "aria"}},
+        },
+    })
+
+    execution = replay_trace(page, trace, timeout_ms=300)
+
+    assert execution["status"] == "failed"
+    assert "开关未到达目标状态" in execution["steps"][0]["error"]
+
+
 def test_evaluation_rejects_reversed_golden_path():
     golden = _network_trace()
     golden["steps"]["step-0001"]["next"] = "step-0002"

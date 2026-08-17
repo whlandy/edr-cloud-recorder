@@ -164,6 +164,15 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
     _, steps = prepare_steps(steps)
     steps = _fold_input_focus(steps)
     network_pairs = pair_network_events(net or [])
+    # 二次确认型开关：确认框只在开关**真的需要拨**的时候才弹。回放遇到开关已经
+    # 在目标状态就跳过点击（拨开关是幂等的），于是确认框根本不出现，后面那几步
+    # 就成了无处可点的孤儿步骤。标成可选 —— 现有语义是「证实不存在才跳过」，
+    # 确认框没弹正是这种情形；真弹出来了它就不算不存在，照旧必须点。
+    gated_ids = {
+        step_id
+        for step in steps
+        for step_id in ((step.get("via") or {}).get("gatedSteps") or [])
+    }
     linear_nodes = []
 
     for index, step in enumerate(steps, 1):
@@ -199,6 +208,8 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
         # 同一份录制就有了两套语义：pytest 草稿跳过它，轨迹却判整条失败。
         # 实测正是这样断在第 2 步，完成率 1/9。
         if step.get("kind") == "css" and step.get("type") == "click":
+            node["optional"] = True
+        if step.get("id") in gated_ids:
             node["optional"] = True
         if step.get("_sourceStepIds"):
             node["sourceStepIds"] = step["_sourceStepIds"]

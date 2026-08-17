@@ -327,7 +327,22 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     frame_history: list[dict] = []
 
     def accept(step, source=None):
-        if not step or not step.get("id") or step["id"] in seen:
+        if not step or not step.get("id"):
+            return
+        # 升级记录：开关的状态变化可能被二次确认挡在后面，录制器会先记一条普通
+        # 点击、之后再用同一个 id 把它改写成「拨到指定状态」。按 id 覆盖，
+        # 不能当成重复上报丢掉 —— 丢了就退回盲点，回放时可能朝反方向拨。
+        if step.get("_upgrade"):
+            for index, old in enumerate(steps):
+                if old["id"] == step["id"]:
+                    merged = {**old, **step}
+                    merged.pop("_upgrade", None)
+                    steps[index] = merged
+                    print(f"  [升级] {old['type']} → {step['type']}  {step['sel']}"
+                          f"  to={step.get('to')}")
+                    return
+            return
+        if step["id"] in seen:
             return                                  # 双通道上报，按 id 去重
         seen.add(step["id"])
         steps.append(step)

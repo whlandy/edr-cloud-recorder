@@ -15,6 +15,7 @@ import re
 import pytest
 
 from generate_spec import generate_spec
+from generate_trace import generate_trace
 
 CHECKS: dict[str, callable] = {}
 
@@ -291,6 +292,11 @@ def spec_of(rec):
                          start_url=rec["startUrl"], name="gen-check")
 
 
+def trace_of(rec):
+    return generate_trace(rec["steps"], rec["net"],
+                          start_url=rec["startUrl"], name="gen-check")
+
+
 @check("写请求生成状态码断言")
 def _(rec):
     spec = spec_of(rec)
@@ -463,6 +469,71 @@ def _(rec):
     s = find(rec["steps"],
              lambda s: s["type"] == "switch" and s.get("label") == "延迟自保护")
     assert s and s.get("to") is True, s and f"to={s.get('to')}"
+
+
+# ── 二次确认型开关 ──
+# 拨开关先弹确认框，class 要等人点了「确认」才变 —— 那可能是好几秒之后。
+# 原来只等 1.2 秒，等不到就退回盲点：回放时起始状态一变就朝反方向拨。
+# 现在改成先如实记点击、之后继续观察，真变了再按同一个 id 升级。
+
+@check("二次确认后才变的开关也能升级成拨开关")
+def _(rec):
+    s = find(rec["steps"],
+             lambda s: s["type"] == "switch" and s.get("label") == "需确认自保护")
+    assert s, "退回成了普通 click（升级记录没生效）"
+
+
+@check("升级后的开关带着目标状态和状态层")
+def _(rec):
+    s = find(rec["steps"],
+             lambda s: s["type"] == "switch" and s.get("label") == "需确认自保护")
+    assert s and s.get("to") is True, s and f"to={s.get('to')}"
+    assert s and (s.get("via") or {}).get("within"), "缺 via.within，回放读不出当前状态"
+
+
+@check("需确认的开关标出了「要靠后续交互才落地」")
+def _(rec):
+    s = find(rec["steps"],
+             lambda s: s["type"] == "switch" and s.get("label") == "需确认自保护")
+    via = (s or {}).get("via") or {}
+    assert via.get("gated") is True, via
+    assert via.get("gatedSteps"), "没记下中间那几步，回放会把确认按钮当必经步骤"
+
+
+@check("慢开关不该被当成需要后续交互")
+def _(rec):
+    s = find(rec["steps"],
+             lambda s: s["type"] == "switch" and s.get("label") == "延迟自保护")
+    assert not ((s or {}).get("via") or {}).get("gated"), s and s.get("via")
+
+
+@check("确认框里的步骤在轨迹里是可选的")
+def _(rec):
+    trace = trace_of(rec)
+    sw = find(trace["steps"].values(),
+              lambda n: n["action"]["type"] == "SetSwitch"
+              and n["selector"].get("label") == "需确认自保护")
+    gated = ((sw or {})["action"]["param"].get("via") or {}).get("gatedSteps") or []
+    assert gated, sw
+    for node in trace["steps"].values():
+        if node.get("sourceStepId") in gated:
+            assert node.get("optional") is True, node["selector"]
+
+
+@check("升级是覆盖而不是追加，同一下拨动只留一条")
+def _(rec):
+    hits = [s for s in rec["steps"] if s.get("label") == "需确认自保护"]
+    assert len(hits) == 1, [(h["type"], h["id"]) for h in hits]
+
+
+# ── 断言步骤没被升级改动波及 ──
+# 升级机制给 push 加了 _id 入口，改错函数会让 pushAssert 引用不存在的变量，
+# 而那里的 try/catch 会把 ReferenceError 静默吞掉 —— 断言全部消失且不报错。
+
+@check("右键菜单录出的断言步骤仍然完整")
+def _(rec):
+    kinds = {s.get("assertion") for s in rec["steps"] if s["type"] == "assert"}
+    assert kinds == {"text", "visible", "checked"}, kinds
 
 
 # ── placeholder 撞车 ──
