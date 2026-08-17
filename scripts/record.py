@@ -25,6 +25,7 @@ codegen 给不了答案。
 import argparse
 import base64
 import hashlib
+import inspect
 import json
 import re
 import struct
@@ -313,6 +314,11 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     on_ready 是**测试接缝**：传进来就用它驱动页面（回调自己负责把 page 关掉），
     不传就走正常路径 —— 等用户在浏览器窗口里操作完、自己关窗口。
     录制器本体的行为两条路完全一样，差别只在「谁来操作」。
+
+    回调可以只收 page，也可以收 (page, pump)。收了 pump 就该在每次操作前调，
+    它做的正是人工路径那条轮询循环做的事（搬运步骤、抓模板、刷新 viewport
+    前帧）。不调的话，延迟上报的动作（开关、勾选）会因为没有动作前的帧而
+    缺模板 —— 那是接缝本身的失真，不是页面的问题。
     """
     name = name or "session-" + datetime.now().isoformat(
         timespec="seconds").replace(":", "-")
@@ -332,15 +338,29 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         # 升级记录：开关的状态变化可能被二次确认挡在后面，录制器会先记一条普通
         # 点击、之后再用同一个 id 把它改写成「拨到指定状态」。按 id 覆盖，
         # 不能当成重复上报丢掉 —— 丢了就退回盲点，回放时可能朝反方向拨。
+        # 升级也走双通道，两份内容一样，应用一次就够（第二次只是噪音）
+        if step.get("_upgrade") and f"{step['id']}:upgrade" in seen:
+            return
         if step.get("_upgrade"):
-            for index, old in enumerate(steps):
-                if old["id"] == step["id"]:
-                    merged = {**old, **step}
-                    merged.pop("_upgrade", None)
-                    steps[index] = merged
-                    print(f"  [升级] {old['type']} → {step['type']}  {step['sel']}"
-                          f"  to={step.get('to')}")
-                    return
+            for old in steps:
+                if old["id"] != step["id"]:
+                    continue
+                was = old["type"]
+                # 只接受语义字段。视觉字段必须保留点击那一刻抓的：
+                #   - ui.templates 由 capture_pending 事后写进**这个字典对象**，
+                #     换成新字典就成了孤儿，模板全丢（轨迹会变 incomplete）；
+                #     所以原地改，不替换。
+                #   - 模板要的是「拨之前」的样子。升级发生在状态已经变了之后，
+                #     那时再截图描述的是目标状态，回放时反而对不上。
+                old.update({
+                    key: value for key, value in step.items()
+                    if key in ("type", "to", "via", "sel", "kind",
+                               "ambiguous", "matches", "label", "css")
+                })
+                seen.add(f"{step['id']}:upgrade")
+                print(f"  [升级] {was} → {old['type']}  {old['sel']}"
+                      f"  to={old.get('to')}")
+                return
             return
         if step["id"] in seen:
             return                                  # 双通道上报，按 id 去重
@@ -506,12 +526,32 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         # JS 版用 setInterval 与 waitForEvent 并发；Python sync API 是单线程的，
         # 只能把两件事合进一个循环 —— wait_for_timeout 本身会驱动事件分发，
         # 所以 binding 回调照常触发。
+        def pump():
+            """把下面那条轮询循环干的活暴露给驱动方。
+
+            人工路径靠循环持续刷新 viewport 前帧；脚本驱动路径下循环还没开始，
+            整个操作期间一帧都不会刷新。而 switch / check 这类延迟上报的动作
+            **只能**用动作前的帧做模板（用动作后的帧会描述成目标状态），
+            于是脚本录出来的轨迹里每个开关都缺模板、整条轨迹 incomplete。
+            驱动方在每次操作前调一下，两条路径的行为就一致了。
+            """
+            try:
+                for item in page.evaluate(DRAIN):
+                    accept(item)
+            except Exception:
+                pass                                # 导航中，下次再取
+            capture_pending()
+            refresh_pre_frame()
+
         if on_ready is not None:
             # 测试路径：回调驱动页面，返回即视为「操作完毕」，由这里收尾 ——
             # 拍最后一张快照再关页面。人工路径下这一步由用户关窗口触发，
             # 收尾快照则由下面循环里的每周期快照承担。
             try:
-                on_ready(page)
+                if len(inspect.signature(on_ready).parameters) >= 2:
+                    on_ready(page, pump)
+                else:
+                    on_ready(page)
             except Exception as e:
                 print(f"on_ready 抛出: {e}")
             capture_pending()
