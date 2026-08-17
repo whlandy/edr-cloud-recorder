@@ -444,6 +444,68 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
     return target_info
 
 
+POINTER_INTERCEPT = "intercepts pointer events"
+
+
+def _intercepted(error: Exception) -> bool:
+    """这一步是「找到了但点不动」——有别的元素挡在上面，不是找不到。"""
+    return POINTER_INTERCEPT in str(error)
+
+
+def _perform(page, node: dict, root: Path, targeting: str, timeout_ms: int,
+             env: dict, focused_selector: str | None) -> tuple[dict, list]:
+    """执行一步，并校验它应当触发的响应。返回 (target, responses)。"""
+    responses: list = []
+    optional_waiters = []
+    try:
+        expected_responses = (node.get("expect") or {}).get("responses") or []
+        occurrences: dict[tuple[str, str], int] = {}
+        # 必发的（写请求）用 ExitStack 等到底；非必发的（读请求）单独接住超时。
+        #
+        # 读请求只在状态真的变化时才重发：回放时如果页面已经处于目标状态，
+        # 同样的点击一个包都不发 —— 那一步其实是成功的，不该因此判失败。
+        required = [e for e in expected_responses if e.get("required", True)]
+        optional = [e for e in expected_responses if not e.get("required", True)]
+        with ExitStack() as stack:
+            response_infos = []
+            for expected in required:
+                key = (expected["method"], expected["url"])
+                occurrences[key] = occurrences.get(key, 0) + 1
+                response_infos.append(stack.enter_context(page.expect_response(
+                    _response_predicate(expected, occurrences[key]), timeout=timeout_ms
+                )))
+            # 非必发的也必须在动作**之前**布置监听，否则请求会漏掉；
+            # 只是退出时单独处理，不让它的超时打断整步。
+            for expected in optional:
+                key = (expected["method"], expected["url"])
+                occurrences[key] = occurrences.get(key, 0) + 1
+                waiter = page.expect_response(
+                    _response_predicate(expected, occurrences[key]),
+                    timeout=min(timeout_ms, 2_000),
+                )
+                optional_waiters.append((waiter, waiter.__enter__(), expected))
+            target = _execute_action(
+                page, node, root, targeting, timeout_ms, env, focused_selector,
+            )
+        for info, expected in zip(response_infos, required):
+            responses.append(_validate_response(info.value, expected))
+        return target, responses
+    finally:
+        # 非必发响应的收尾必须在 finally 里。放在正常路径上的话，动作一旦
+        # 抛异常就直接跳出 with 块，这些等待器永远不会被退出 —— 实测留下
+        # 一串 "Future exception was never retrieved"，既是噪音也是泄漏。
+        for waiter, info, expected in optional_waiters:
+            try:
+                waiter.__exit__(None, None, None)
+                responses.append(_validate_response(info.value, expected))
+            except Exception as missing:
+                responses.append({
+                    "method": expected["method"], "url": expected["url"],
+                    "ok": False, "required": False,
+                    "note": f"未出现（非必发）：{type(missing).__name__}",
+                })
+
+
 def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | None = None,
                  targeting: str = "dom_first", timeout_ms: int = 5_000,
                  env: dict | None = None, execution_path: str | Path | None = None,
@@ -475,6 +537,8 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
         _assert_landed(page, golden["startUrl"], execution)
     first_error = None
     focused_selector = None
+    # 被跳过的 optional 步骤：目标当时不在，但可能只是还没出现
+    pending_optional: list[tuple[str, dict]] = []
     for node_id in order:
         node = golden["steps"][node_id]
         started = time.perf_counter()
@@ -486,44 +550,46 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             "responses": [],
             "retries": 0,
         }
-        optional_waiters = []
         try:
-            expected_responses = (node.get("expect") or {}).get("responses") or []
-            occurrences: dict[tuple[str, str], int] = {}
-            # 必发的（写请求）用 ExitStack 等到底；非必发的（读请求）单独接住超时。
-            #
-            # 读请求只在状态真的变化时才重发：回放时如果页面已经处于目标状态，
-            # 同样的点击一个包都不发 —— 那一步其实是成功的，不该因此判失败。
-            required = [e for e in expected_responses if e.get("required", True)]
-            optional = [e for e in expected_responses if not e.get("required", True)]
-            with ExitStack() as stack:
-                response_infos = []
-                for expected in required:
-                    key = (expected["method"], expected["url"])
-                    occurrences[key] = occurrences.get(key, 0) + 1
-                    response_infos.append(stack.enter_context(page.expect_response(
-                        _response_predicate(expected, occurrences[key]), timeout=timeout_ms
-                    )))
-                # 非必发的也必须在动作**之前**布置监听，否则请求会漏掉；
-                # 只是退出时单独处理，不让它的超时打断整步。
-                for expected in optional:
-                    key = (expected["method"], expected["url"])
-                    occurrences[key] = occurrences.get(key, 0) + 1
-                    waiter = page.expect_response(
-                        _response_predicate(expected, occurrences[key]),
-                        timeout=min(timeout_ms, 2_000),
-                    )
-                    optional_waiters.append((waiter, waiter.__enter__(), expected))
-                result["target"] = _execute_action(
-                    page, node, root, targeting, timeout_ms, runtime_env,
-                    focused_selector,
-                )
-            for info, expected in zip(response_infos, required):
-                result["responses"].append(_validate_response(info.value, expected))
+            result["target"], result["responses"] = _perform(
+                page, node, root, targeting, timeout_ms, runtime_env, focused_selector,
+            )
             result["status"] = "success"
             if targeting == "visual_only" and result["target"]["mode"] == "visual":
                 focused_selector = (node.get("selector") or {}).get("sel")
         except Exception as error:
+            # 「找到了但点不动」是单独一类：有东西挡在上面。
+            #
+            # 最常见的成因是**晚出现的浮层**：首启弹窗在页面加载好几秒后才弹，
+            # 而轨迹里关它的那一步排在最前面 —— 回放走到那一步时它还没出现，
+            # 于是按 optional 跳过；几秒后它弹了出来，遮罩把后面每一次点击都吞掉，
+            # 最后报的是一堆「点击超时」，看不出根因。
+            #
+            # 所以跳过 optional 步骤只是**暂缓**，不是就此作废：真被挡住了，
+            # 就把这些暂缓的步骤补做一遍，再重试当前这一步。补做和重试都记在
+            # retries 里，效率分照扣 —— 多做的动作就该算多做。
+            if _intercepted(error) and pending_optional:
+                recovered = []
+                while pending_optional:
+                    skipped_id, skipped_result = pending_optional.pop(0)
+                    try:
+                        _perform(page, golden["steps"][skipped_id], root, targeting,
+                                 timeout_ms, runtime_env, focused_selector)
+                    except Exception:
+                        continue                    # 补做也不成，按原样报错
+                    skipped_result["laterPerformed"] = True
+                    recovered.append(skipped_id)
+                if recovered:
+                    result["retries"] += 1
+                    result["recoveredOptional"] = recovered
+                    try:
+                        result["target"], result["responses"] = _perform(
+                            page, node, root, targeting, timeout_ms, runtime_env,
+                            focused_selector,
+                        )
+                        result["status"] = "success"
+                    except Exception as retry_error:
+                        error = retry_error
             # 可选步骤：**确认目标不存在**时才跳过。
             #
             # 首启弹窗、提示条这类元素出现与否取决于账号状态和历史操作 ——
@@ -535,28 +601,19 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             # 遮罩把后面每一次点击都吞了，最后报的是「点击超时」。
             #
             # 测试里把失败当跳过，等于把问题往后推，而且推到一个报错不知所云的地方。
-            if node.get("optional") and _target_absent(page, node, error, targeting):
+            if result["status"] == "success":
+                pass                                # 补做浮层之后重试成功了
+            elif node.get("optional") and _target_absent(page, node, error, targeting):
                 result["status"] = "skipped"
                 result["error"] = f"{type(error).__name__}: {error}"
                 result["skippedReason"] = "optional 步骤未出现"
+                # 只是暂缓：它可能只是还没出现。后面某一步被挡住时会回来补做。
+                pending_optional.append((node_id, result))
             else:
                 result["status"] = "failed"
                 result["error"] = f"{type(error).__name__}: {error}"
                 first_error = error
         finally:
-            # 非必发响应的收尾必须在 finally 里。放在正常路径上的话，动作一旦
-            # 抛异常就直接跳出 with 块，这些等待器永远不会被退出 —— 实测留下
-            # 一串 "Future exception was never retrieved"，既是噪音也是泄漏。
-            for waiter, info, expected in optional_waiters:
-                try:
-                    waiter.__exit__(None, None, None)
-                    result["responses"].append(_validate_response(info.value, expected))
-                except Exception as missing:
-                    result["responses"].append({
-                        "method": expected["method"], "url": expected["url"],
-                        "ok": False, "required": False,
-                        "note": f"未出现（非必发）：{type(missing).__name__}",
-                    })
             result["durationMs"] = round((time.perf_counter() - started) * 1000, 3)
             execution["steps"].append(result)
         if first_error:

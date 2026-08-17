@@ -43,6 +43,20 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
     <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
   </div>
 
+  <!-- 叠着两层弹窗，各自一个关闭叉，正文都上百字。图标没文本没 role，
+       只靠 CSS 绝对路径会得到一串 nth-of-type —— 弹窗层级一变就失效。
+       实测同一个关闭叉两次录制分别录成 div:nth-of-type(8) 和 (9)。 -->
+  <div class="dlg_panel">
+    <span class="dlg_close" style="display:inline-block;width:16px;height:16px;background:#999"></span>
+    <div>卸载校验码 1. 本校验码用于本地卸载客户端，请在有效期内使用，过期后需重新获取；
+      2. 每个校验码仅可使用一次；3. 如需批量卸载，请联系管理员开通批量通道。</div>
+  </div>
+  <div class="dlg_panel">
+    <span class="dlg_close" style="display:inline-block;width:16px;height:16px;background:#999"></span>
+    <div>校验码历史记录 仅保留近 10 条校验码，无可使用校验码时，可前往策略页重新申请；
+      历史记录不支持导出，如需留档请自行截图保存。</div>
+  </div>
+
   <!-- 点在滑块上：滑块和轨道都带 toggle 字样，但状态只写在容器那一层。
        撞到的第一层是滑块，它永远读不出状态 —— 那样整步会退化成盲点击。 -->
   <div id="row_thumb_on" class="labelAndItem" style="padding:24px">
@@ -92,8 +106,8 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
 
   <!-- 两个叠着的弹窗，各自都 id="dialog_panel"（HTML 上不合法，现实里就这么写）。
        遇到 id 就短路的话，产出的 CSS 路径命中 2 个元素，回放必然 strict mode 报错。 -->
-  <div id="dialog_panel"><span class="dlg_close">×</span></div>
-  <div id="dialog_panel"><span class="dlg_close">×</span></div>
+  <div id="dialog_panel"><span class="dlg_close" style="display:inline-block;width:16px;height:16px;background:#999"></span></div>
+  <div id="dialog_panel"><span class="dlg_close" style="display:inline-block;width:16px;height:16px;background:#999"></span></div>
 
   <!-- 组件框架批量吐出的同名 testid：不唯一，用它回放必然 strict mode 失败 -->
   <div data-testid="text-comp-span">重复标记甲</div>
@@ -344,6 +358,10 @@ def drive(chrome: str | None = None) -> dict:
             # 重复 id 的弹窗：点第二个的关闭图标
             page.locator("#dialog_panel").nth(1).locator(".dlg_close").click()
             page.wait_for_timeout(300)
+
+            # 长文本弹窗里的关闭叉
+            page.locator(".dlg_panel").first.locator(".dlg_close").click()
+            page.wait_for_timeout(200)
 
             # 点滑块：状态在祖先容器上，不在滑块自己身上
             page.click("#row_thumb_on .eui_toggle_thumb")

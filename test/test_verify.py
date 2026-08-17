@@ -471,6 +471,26 @@ def _(rec):
     assert s and s.get("to") is True, s and f"to={s.get('to')}"
 
 
+# ── 长文本容器里的图标 ──
+# 弹窗关闭叉没文本、没 role，正文又上百字。原来要求作用域容器整段文本 ≤40 字，
+# 于是这类图标只能退到 CSS 绝对路径，而那串路径带 nth-of-type：实测同一个关闭
+# 叉两次录制分别录成 div:nth-of-type(8) 和 (9)，回放时按第一次的路径根本点不中，
+# 弹窗留在页面上，后面每一步都被它的遮罩挡住。
+
+@check("长文本弹窗里的图标也能拿到作用域选择器")
+def _(rec):
+    s = find(rec["steps"], lambda s: "dlg_panel" in (s.get("css") or ""))
+    assert s and s["kind"] == "scoped", s and (s["kind"], s["sel"])
+    assert "nth-of-type" not in s["sel"], s["sel"]
+
+
+@check("作用域锚点用文本前缀，且能区分两个同类弹窗")
+def _(rec):
+    s = find(rec["steps"], lambda s: "dlg_panel" in (s.get("css") or ""))
+    assert s and "卸载校验码" in s["sel"], s and s["sel"]
+    assert "历史记录" not in s["sel"], s["sel"]
+
+
 # ── 点在滑块上 ──
 # 开关组件层层嵌套，滑块 / 轨道 / 容器都带 toggle 字样，但状态只写在容器上。
 # 往上撞到的第一层是滑块，它永远读不出状态 —— 真实录制里绝大多数拨开关的

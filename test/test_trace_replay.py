@@ -378,6 +378,103 @@ def test_set_switch_still_fails_when_state_never_arrives():
     assert "开关未到达目标状态" in execution["steps"][0]["error"]
 
 
+def test_late_overlay_reruns_the_skipped_optional_step():
+    """晚出现的浮层：跳过 optional 只是暂缓，被挡住时要回来补做。
+
+    首启弹窗常在页面加载好几秒后才弹出，而关它的那一步排在轨迹最前面。
+    走到那一步时它还不在（optional，跳过），几秒后弹出来，遮罩把后面每一次
+    点击都吞掉 —— 报出来是一串「点击超时」，看不出根因。
+    """
+    world = {"overlay": False, "closed": False, "looked": 0}
+
+    class Closer:
+        def wait_for(self, **kwargs):
+            world["looked"] += 1
+            if not world["overlay"]:
+                raise TimeoutError("Locator.wait_for: Timeout")
+
+        def count(self):
+            return 1 if world["overlay"] else 0
+
+        def click(self):
+            world["closed"] = True
+            world["overlay"] = False
+
+    class Target:
+        def wait_for(self, **kwargs):
+            # 浮层是在第一步之后才弹出来的，弹一次
+            if not world["closed"]:
+                world["overlay"] = True
+
+        def click(self):
+            if world["overlay"]:
+                raise TimeoutError(
+                    "Locator.click: Timeout 5000ms exceeded.\n"
+                    '  - <div class="overlay"></div> intercepts pointer events'
+                )
+
+    class Page:
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            return Closer() if "close" in selector else Target()
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#close")'},
+        "action": {"type": "Click", "param": {}},
+        "optional": True,
+    })
+    trace["steps"]["step-0001"]["next"] = "step-0002"
+    trace["steps"]["step-0002"] = {
+        "status": "ready",
+        "selector": {"sel": 'locator("#save")'},
+        "action": {"type": "Click", "param": {}},
+        "next": None,
+    }
+
+    execution = replay_trace(Page(), trace, timeout_ms=300)
+
+    assert execution["status"] == "success", execution["steps"]
+    assert world["closed"] is True, "没有回来补做那一步，浮层还挡着"
+    first, second = execution["steps"]
+    assert first["status"] == "skipped"
+    assert first["laterPerformed"] is True
+    assert second["status"] == "success"
+    assert second["recoveredOptional"] == ["step-0001"]
+    assert second["retries"] == 1, "补做和重试要算进 retries，效率分该扣"
+
+
+def test_intercepted_click_still_fails_when_nothing_to_recover():
+    """没有暂缓步骤可补时，「点不动」照样是失败 —— 不能因为放宽而放过它。"""
+    class Target:
+        def wait_for(self, **kwargs):
+            pass
+
+        def click(self):
+            raise TimeoutError(
+                "Locator.click: Timeout 300ms exceeded.\n"
+                '  - <div class="mask"></div> intercepts pointer events'
+            )
+
+    class Page:
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            return Target()
+
+    trace = _trace({
+        "selector": {"sel": 'locator("#save")'},
+        "action": {"type": "Click", "param": {}},
+    })
+
+    execution = replay_trace(Page(), trace, timeout_ms=300)
+
+    assert execution["status"] == "failed"
+    assert "intercepts pointer events" in execution["steps"][0]["error"]
+
+
 def test_evaluation_rejects_reversed_golden_path():
     golden = _network_trace()
     golden["steps"]["step-0001"]["next"] = "step-0002"

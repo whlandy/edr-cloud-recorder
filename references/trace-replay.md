@@ -65,6 +65,22 @@ already have changed server state; visual fallback at that point would double-su
 An environment-backed input such as `REC_PASSWORD` fails if the variable is absent or empty. It
 must never silently input an empty string and report success.
 
+### Skipping An Optional Step Is Provisional
+
+An `optional` step is skipped only on proven absence — but absence proven at one moment is not
+absence forever. Welcome dialogs and notices often appear several seconds after load, while the step
+that dismisses them sits first in the trace. The dismissal gets skipped, the overlay then appears,
+and every later click is swallowed by it. What surfaces is a pile of click timeouts with no hint of
+the cause.
+
+So a skipped optional step stays pending. When a later step fails specifically because something
+intercepts pointer events — "found it but cannot click it", which is a different diagnosis from
+"cannot find it" — replay performs the pending optional steps and retries the current step once.
+Both the recovery and the retry count as `retries`, so the efficiency score pays for them.
+
+If nothing is pending, an intercepted click is still a failure. Interception is never itself a
+reason to pass a step.
+
 ### Switches Behind A Confirmation Dialog
 
 A trace that flips policy switches mutates the state it starts from, so every switch step must be

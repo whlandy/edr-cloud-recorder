@@ -9,6 +9,16 @@ export const RECORDER = () => {
   const steps = [];
   const txt = (e) => ((e && e.textContent) || '').replace(/\s+/g, ' ').trim();
 
+  // 作用域锚点**不能用时间、数字 id 这类会变的值**。实测栽过：一行合规检查
+  // 结果被锚在 hasText: "2026-08-14 10:22:29" 上，当时跑三遍全绿，几小时后
+  // 重跑、时间推进，整条用例就再也找不到那一行了。
+  // 这类失败最坏的地方在于**延迟发作**：录完当场验证不出来。
+  const volatileMarker = (t) =>
+    /\d{4}-\d{2}-\d{2}/.test(t) ||           // 2026-08-14
+    /\d{1,2}:\d{2}(:\d{2})?/.test(t) ||      // 10:22:29
+    /\d{6,}/.test(t) ||                      // 雪花 id / 时间戳
+    /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t);    // UUID
+
   /**
    * 开关识别
    *
@@ -236,11 +246,6 @@ export const RECORDER = () => {
         // 锚在 hasText: "2026-08-14 10:22:29" 上，当时跑三遍全绿，几小时后检查
         // 重跑、时间推进，整条用例就再也找不到那一行了。
         // 这类失败最坏的地方在于**延迟发作**：录完当场验证不出来。
-        const volatileMarker = (t) =>
-          /\d{4}-\d{2}-\d{2}/.test(t) ||           // 2026-08-14
-          /\d{1,2}:\d{2}(:\d{2})?/.test(t) ||      // 10:22:29
-          /\d{6,}/.test(t) ||                      // 雪花 id / 时间戳
-          /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t);    // UUID
         const marker = [...n.querySelectorAll('*')]
           .filter((x) => x.offsetParent && x.querySelectorAll('*').length === 0)
           .map((x) => txt(x))
@@ -408,16 +413,23 @@ export const RECORDER = () => {
           ? host.className.trim().split(/\s+/)
               .filter((c) => c && !/^\d/.test(c) && !/\d{3,}/.test(c))[0]
           : null;
-        if (hostText && hostText.length <= 40 && hostCls) {
+        // 容器文本很长也能当作用域（弹窗正文动辄上百字）：hasText 是**子串**
+        // 匹配，取开头一段就够。原来要求整段 ≤40 字，于是关闭叉这类图标只能
+        // 退到 CSS 绝对路径 —— 那串路径带 nth-of-type，弹窗多一层少一层就失效。
+        // 实测同一个关闭叉两次录制分别录成 div:nth-of-type(8) 和 (9)。
+        const anchor = hostText.length <= 40 ? hostText : hostText.slice(0, 24).trim();
+        if (hostText && hostCls && anchor && !volatileMarker(anchor)) {
           const base = `${host.tagName.toLowerCase()}.${hostCls}`;
           let owners = [];
           try {
-            owners = [...document.querySelectorAll(base)].filter((x) => txt(x) === hostText);
+            // 用和 Playwright 一致的语义验唯一性：整段等值 or 前缀包含
+            owners = [...document.querySelectorAll(base)].filter(
+              (x) => (anchor === hostText ? txt(x) === hostText : txt(x).includes(anchor)));
           } catch { owners = []; }
           if (owners.length === 1 && owners[0].querySelectorAll(`.${ownCls}`).length === 1) {
             return {
               kind: 'scoped',
-              code: `locator(${JSON.stringify(base)}, { hasText: ${JSON.stringify(hostText)} })`
+              code: `locator(${JSON.stringify(base)}, { hasText: ${JSON.stringify(anchor)} })`
                 + `.locator(${JSON.stringify('.' + ownCls)})`,
             };
           }
