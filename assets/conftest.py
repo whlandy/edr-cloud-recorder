@@ -41,12 +41,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from auth_setup import credentials, export_state, login  # noqa: E402
 from chrome_path import resolve_chrome      # noqa: E402
+from rec_config import load_config          # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 AUTH_DIR = HERE / ".auth"
 STORAGE_STATE = AUTH_DIR / "state.json"
 SESSION_STORAGE = AUTH_DIR / "session-storage.json"
 TEST_RESULTS = HERE / "test-results"
+
+# 探测登录态是否有效时用它。根路径未必需要登录，拿它探测会把失效判成有效。
+try:
+    ENTRY_PATH = (load_config(None) or {}).get("entryPath") or "/"
+except Exception:                     # 配置坏了不该拖垮整个 session
+    ENTRY_PATH = "/"
 
 # 对应 config 里的 expect: { timeout: 15_000 }
 expect.set_options(timeout=15_000)
@@ -73,6 +80,36 @@ def base_url(base_url):
 
 # ────────────────────────── 登录一次 ──────────────────────────
 
+
+AUTH_URL_HINTS = ("login", "signin", "sso", "auth", "oauth", "session")
+
+
+def _storage_state_expired(browser: Browser, base_url) -> str | None:
+    """带着已有登录态打开入口页，看会不会被踢到登录页。
+
+    返回失效原因；有效则返回 None。探测本身很便宜（一次导航），
+    比后面每条用例都以「找不到元素」失败要划算得多。
+
+    没有 base_url 就没法探测 —— 那种情况不阻塞，交给后面的步骤去报。
+    """
+    if not base_url:
+        return None
+    context = browser.new_context(
+        ignore_https_errors=True, base_url=base_url, storage_state=str(STORAGE_STATE)
+    )
+    try:
+        page = context.new_page()
+        page.set_default_navigation_timeout(60_000)
+        page.goto(ENTRY_PATH or "/")
+        landed = page.url.lower()
+        if any(hint in landed for hint in AUTH_URL_HINTS):
+            return f"入口页被重定向到 {page.url}"
+        return None
+    except Exception:                     # 探测本身失败时不阻塞，交给后面的步骤去报
+        return None
+    finally:
+        context.close()
+
 @pytest.fixture(scope="session")
 def auth_state(browser: Browser, base_url) -> Path | None:
     """对应 JS 侧的 setup project。整个 session 只跑一次。
@@ -91,7 +128,19 @@ def auth_state(browser: Browser, base_url) -> Path | None:
 
     if not has_creds:
         if STORAGE_STATE.exists():
-            print(f"复用已有登录态 {STORAGE_STATE}（没有可用凭据）")
+            # 只检查文件在不在是不够的：会话过期后这个文件照样在，
+            # 于是每条用例都被重定向到登录页，然后以「找不到元素」的形式失败 ——
+            # 报错指不到真正的原因，实测为此白查过一整轮。
+            stale = _storage_state_expired(browser, base_url)
+            if stale:
+                pytest.fail(
+                    f"{STORAGE_STATE} 里的登录态已失效（{stale}）。\n"
+                    "刷新它：\n"
+                    "  1) export REC_USER=... REC_PASSWORD=...   然后重跑（自动登录）\n"
+                    "  2) python manual_login.py                 （站点有验证码时用这条）",
+                    pytrace=False,
+                )
+            print(f"复用已有登录态 {STORAGE_STATE}（没有可用凭据，已验证有效）")
             return STORAGE_STATE
         pytest.fail(
             "没有可用的登录态，也没有凭据。三选一：\n"
