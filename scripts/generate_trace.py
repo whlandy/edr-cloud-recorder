@@ -178,6 +178,17 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
                 for key in ("pageRect", "pageViewport", "viewport", "deviceScaleFactor")
                 if visual_ui.get(key) is not None
             }
+        # 可选步骤要标出来，否则轨迹回放会把它当必经节点。
+        #
+        # 落到 CSS 兜底的点击，绝大多数是关首启弹窗、提示条 —— 它们出现与否
+        # 取决于账号状态和历史操作，录制时出现过，回放时往往已经不再出现
+        # （第一次关掉后应用记住了）。
+        #
+        # generate_spec 早就把这类步骤生成为「存在则点」，轨迹这边如果不标，
+        # 同一份录制就有了两套语义：pytest 草稿跳过它，轨迹却判整条失败。
+        # 实测正是这样断在第 2 步，完成率 1/9。
+        if step.get("kind") == "css" and step.get("type") == "click":
+            node["optional"] = True
         if step.get("_sourceStepIds"):
             node["sourceStepIds"] = step["_sourceStepIds"]
         high = steps[index].get("t", float("inf")) if index < len(steps) else float("inf")

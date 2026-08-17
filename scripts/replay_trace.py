@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from playwright.sync_api import TimeoutError as PWTimeoutError
+
 from rec_assert import ANY_STR, assert_subset
 from rec_secrets import REDACTED
 from rec_visual import VisualMatchError, locate_visual_target
@@ -96,21 +98,26 @@ def _target(page, node: dict, template_root: Path, targeting: str, timeout_ms: i
         locator = _locator(page, node.get("selector") or {})
         if locator is None:
             raise TraceReplayError("断言步骤缺少 DOM 选择器")
-        return "verifier", locator, None
+        return "verifier", locator, None, None
     if action_type == "PressKey" and targeting == "visual_only":
         selector = (node.get("selector") or {}).get("sel")
         if not selector or selector != focused_selector:
             raise TraceReplayError("视觉按键步骤没有同目标动作建立的可信焦点")
-        return "keyboard", None, None
+        return "keyboard", None, None, None
 
     locator = None
+    dom_error = None
     if targeting != "visual_only":
         locator = _locator(page, node.get("selector") or {})
     if locator is not None:
         try:
             locator.wait_for(state="visible", timeout=timeout_ms)
-            return "dom", locator, None
-        except Exception:
+            return "dom", locator, None, None
+        except Exception as error:
+            # DOM 的失败原因必须留下来。以前这里直接吞掉回退视觉，
+            # 于是执行记录里只剩「视觉匹配分数不足」—— 分不清是选择器写错了、
+            # 元素本来就不该出现、还是整个页面根本不对（会话超时最典型）。
+            dom_error = f"{type(error).__name__}: {error}"
             if not node.get("recognition"):
                 raise
     if not node.get("recognition"):
@@ -126,7 +133,45 @@ def _target(page, node: dict, template_root: Path, targeting: str, timeout_ms: i
             if time.monotonic() >= deadline:
                 raise
             time.sleep(0.1)
-    return "visual", None, visual
+    return "visual", None, visual, dom_error
+
+
+AUTH_URL_HINTS = ("login", "signin", "sso", "auth", "oauth", "session")
+
+
+def _assert_landed(page, start_url: str, execution: dict) -> None:
+    """确认真的落在了 trace 的起点，而不是被踢到登录页。
+
+    为什么值得单独一步：登录态失效时，页面会被重定向到一个只有几个 div 的
+    会话超时页。于是**每一个**步骤的 DOM 定位都找不到元素，回退到视觉又在
+    那张陌生的页面上匹配不到模板，最终报出来的是「视觉匹配分数不足」——
+    整条链路没有一处提到「你没登录」。
+
+    实测被这个坑带偏过一整轮：据此去查选择器和视觉阈值，而真正的原因是会话超时。
+    与其让它伪装成 9 个定位失败，不如在第一步就说清楚。
+
+    只有重定向到**像认证页**的地址才判失败；其他重定向（尾斜杠、语言前缀）
+    只记一条警告，不打断回放 —— 免得对正常跳转的站点误报。
+    """
+    # 拿不到当前地址就不做判断。这个检查是**附加的诊断**，
+    # 不能因为它自己取不到值就把回放打断。
+    landed = getattr(page, "url", None)
+    if not isinstance(landed, str) or not landed:
+        return
+    if urlsplit(landed).path == urlsplit(start_url).path:
+        return
+    lowered = landed.lower()
+    if any(hint in lowered for hint in AUTH_URL_HINTS):
+        raise TraceReplayError(
+            f"回放起点被重定向到 {landed}\n"
+            f"（起点应为 {start_url}）\n"
+            "最常见的原因是登录态失效。先刷新登录态再回放 —— "
+            "否则后续每一步都会以「找不到元素 / 视觉匹配不足」的形式失败，"
+            "而那些报错都指不到真正的原因。"
+        )
+    execution.setdefault("warnings", []).append(
+        f"起点发生重定向：{start_url} → {landed}"
+    )
 
 
 def _response_predicate(expected: dict, occurrence: int):
@@ -277,10 +322,13 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
                     focused_selector: str | None) -> dict:
     action = node["action"]
     action_type, param = action["type"], action.get("param") or {}
-    mode, locator, visual = _target(
+    mode, locator, visual, dom_error = _target(
         page, node, template_root, targeting, timeout_ms, focused_selector
     )
     target_info = {"mode": mode}
+    if dom_error:
+        # 回退到视觉时，把 DOM 为什么失败一并留在执行记录里
+        target_info["domError"] = dom_error
     if visual is not None:
         target_info.update(
             templateKind=visual.kind,
@@ -353,6 +401,7 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             page.goto(golden["startUrl"])
         except Exception as error:
             raise TraceReplayError(f"无法进入 trace 起始页面: {error}") from error
+        _assert_landed(page, golden["startUrl"], execution)
     first_error = None
     focused_selector = None
     for node_id in order:
@@ -387,9 +436,23 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             if targeting == "visual_only" and result["target"]["mode"] == "visual":
                 focused_selector = (node.get("selector") or {}).get("sel")
         except Exception as error:
-            result["status"] = "failed"
-            result["error"] = f"{type(error).__name__}: {error}"
-            first_error = error
+            # 可选步骤：定位不到就跳过，而不是判整条轨迹失败。
+            #
+            # 首启弹窗、提示条这类元素出现与否取决于账号状态和历史操作 ——
+            # 录制时出现过，回放时往往已经不再出现（第一次关掉后应用记住了）。
+            # pytest 草稿早就把它们生成为「存在则点」，轨迹这边却当成必经节点，
+            # 同一份录制两条流水线语义不一致。
+            #
+            # 只对「找不到目标」放行。断言失败、接口不符仍然算失败 ——
+            # 否则 optional 会变成万能挡箭牌，把真问题一起吞掉。
+            if node.get("optional") and isinstance(error, (VisualMatchError, PWTimeoutError)):
+                result["status"] = "skipped"
+                result["error"] = f"{type(error).__name__}: {error}"
+                result["skippedReason"] = "optional 步骤未出现"
+            else:
+                result["status"] = "failed"
+                result["error"] = f"{type(error).__name__}: {error}"
+                first_error = error
         finally:
             result["durationMs"] = round((time.perf_counter() - started) * 1000, 3)
             execution["steps"].append(result)

@@ -650,3 +650,183 @@ def test_validate_trace_rejects_cycle():
 
     with pytest.raises(TraceReplayError, match="存在环"):
         validate_trace(trace)
+
+
+# ── 可选步骤 ──────────────────────────────────────────────────────────
+# 首启弹窗、提示条这类元素出现与否取决于账号状态和历史操作：录制时出现过，
+# 回放时往往已经不在（第一次关掉后应用记住了）。generate_spec 早就把它们
+# 生成为「存在则点」，轨迹这边必须有同样的语义，否则同一份录制两套行为。
+
+def _optional_trace(optional=True):
+    trace = _trace({
+        "selector": {"kind": "css", "sel": 'locator("div.tip > span.close")'},
+        "action": {"type": "Click", "param": {}},
+    })
+    trace["steps"]["step-0001"]["optional"] = optional
+    trace["steps"]["step-0001"]["next"] = "step-0002"
+    trace["steps"]["step-0002"] = {
+        "status": "ready", "next": None,
+        "selector": {"kind": "text", "sel": 'getByText("下一步", { exact: true })'},
+        "action": {"type": "Click", "param": {}},
+    }
+    return trace
+
+
+class _Mouse:
+    def __init__(self, page):
+        self.page = page
+
+    def click(self, x, y, **kwargs):
+        self.page.clicked.append(("mouse", x, y))
+
+
+class _MissingThenPresentPage:
+    """第一个元素找不到（可选弹窗没出现），第二个正常。"""
+
+    def __init__(self):
+        self.clicked = []
+        self.mouse = _Mouse(self)
+
+    def goto(self, url, **kwargs):
+        pass
+
+    def locator(self, selector, **kwargs):
+        return _MissingLocator(self, selector) if "close" in selector else _OkLocator(self, selector)
+
+    def get_by_text(self, text, **kwargs):
+        return _OkLocator(self, text)
+
+
+class _MissingLocator:
+    def __init__(self, page, selector):
+        self.page, self.selector = page, selector
+
+    def wait_for(self, **kwargs):
+        from playwright.sync_api import TimeoutError as PWTimeoutError
+        raise PWTimeoutError("Timeout 5000ms exceeded")
+
+    def click(self, **kwargs):
+        raise AssertionError("不该点到没出现的可选元素")
+
+
+class _OkLocator:
+    def __init__(self, page, selector):
+        self.page, self.selector = page, selector
+
+    def wait_for(self, **kwargs):
+        pass
+
+    def click(self, **kwargs):
+        self.page.clicked.append(self.selector)
+
+
+def test_optional_step_missing_is_skipped_not_failed():
+    page = _MissingThenPresentPage()
+
+    execution = replay_trace(page, _optional_trace())
+
+    assert [s["status"] for s in execution["steps"]] == ["skipped", "success"]
+    assert execution["status"] == "success"
+    assert page.clicked == ["下一步"]   # 可选步没点，必经步点了
+
+
+def test_missing_step_without_optional_still_fails():
+    """optional 必须是显式的 —— 否则它会变成万能挡箭牌，把真问题一起吞掉。"""
+    page = _MissingThenPresentPage()
+
+    execution = replay_trace(page, _optional_trace(optional=False))
+
+    assert execution["steps"][0]["status"] == "failed"
+    assert execution["status"] == "failed"
+
+
+def test_generate_trace_marks_css_fallback_clicks_optional():
+    """CSS 兜底的点击几乎都是关弹窗/提示条，编译进轨迹时必须标可选。
+
+    不标的话，重新生成轨迹就会把回放器那条修复抹掉 —— 同一份录制，
+    pytest 草稿跳过它、轨迹判整条失败。
+    """
+    from generate_trace import generate_trace
+
+    steps = [
+        {"id": "s1", "t": 1, "type": "click", "kind": "css",
+         "sel": 'locator("div.tip > span.close")', "css": "div.tip > span.close"},
+        {"id": "s2", "t": 2, "type": "click", "kind": "text",
+         "sel": 'getByText("提交", { exact: true })', "label": "提交"},
+    ]
+    trace = generate_trace(steps, [], name="t", start_url="https://app.example/")
+
+    assert trace["steps"]["step-0001"].get("optional") is True
+    assert "optional" not in trace["steps"]["step-0002"]
+
+
+# ── 起点校验 ──────────────────────────────────────────────────────────
+# 登录态失效时页面会被踢到登录页，于是每一步 DOM 都找不到元素、视觉又匹配不到，
+# 最终报「视觉匹配分数不足」—— 整条链路没有一处提到「你没登录」。
+# 实测被这个坑带偏过一整轮，所以要在第一步就说清楚。
+
+class _RedirectedPage(_NetworkPage):
+    def __init__(self, landed):
+        super().__init__()
+        self._landed = landed
+
+    def goto(self, url, **kwargs):
+        super().goto(url)
+
+    @property
+    def url(self):
+        return self._landed
+
+
+def test_replay_reports_auth_redirect_instead_of_locator_noise():
+    page = _RedirectedPage("https://app.example/unisso/login.action?service=%2Fform")
+
+    with pytest.raises(TraceReplayError) as excinfo:
+        replay_trace(page, _network_trace())
+
+    message = str(excinfo.value)
+    assert "登录态" in message          # 说出真正的原因
+    assert "login.action" in message    # 并给出落到了哪里
+
+
+def test_replay_tolerates_benign_redirect_with_warning():
+    """尾斜杠、语言前缀这类正常跳转不该打断回放，只记一条警告。"""
+    page = _RedirectedPage("https://app.example/zh-CN/form")
+
+    execution = replay_trace(page, _network_trace())
+
+    assert execution["status"] == "success"
+    assert any("重定向" in w for w in execution.get("warnings", []))
+
+
+def test_visual_fallback_keeps_the_dom_failure_reason(monkeypatch):
+    """回退到视觉时，DOM 为什么失败必须留在执行记录里。
+
+    否则事后翻 execution.json 只看得到「视觉匹配分数不足」，
+    分不清是选择器写错了、元素本来就不该出现、还是整页都不对。
+    """
+    import replay_trace as rt
+
+    class _Match:
+        score = 0.99
+        verify_score = 0.98
+        scale = 1.0
+
+    class _Visual:
+        kind = "element"
+        match = _Match()
+        x, y = 10, 20
+
+    monkeypatch.setattr(rt, "locate_visual_target", lambda *a, **k: _Visual())
+
+    node = {
+        "selector": {"kind": "css", "sel": 'locator("div.close-gone")'},
+        "action": {"type": "Click", "param": {}},
+        "recognition": {"type": "TemplateMatch", "templates": {"element": {}}},
+    }
+    page = _MissingThenPresentPage()
+    execution = replay_trace(page, _trace(node))
+
+    target = execution["steps"][0]["target"]
+    assert target["mode"] == "visual"
+    assert "TimeoutError" in target["domError"]
