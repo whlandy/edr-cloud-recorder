@@ -316,6 +316,37 @@ export const RECORDER = () => {
       ? ![...e.querySelectorAll('*')].some((x) => txt(x) === name)
       : false;
 
+    // 文本在后代里 → getByText 会选中那个后代，而不是被点的这个容器。
+    //
+    // 原来的注释说「普通点击影响不大，事件会冒泡回来」—— **实测推翻了这个假设**：
+    // 资产树的一行里，点整行会展开+选中，点行内的 span.eui_tree_text 只选中。
+    // 录到的是整行，生成的却是 getByText → 回放时子节点永远不出现，
+    // 而那一步还报 success（点击确实成功了，只是做的不是同一件事）。
+    //
+    // 所以这里给容器本身算一个可读的定位方式：locator('div.类名', { hasText: 名字 })。
+    // 这正是人工会写的形态，而且 hasText 匹配的是容器、不是里面的文本节点。
+    if (name && !isFormControl && !textIsOwn) {
+        const tag = e.tagName.toLowerCase();
+        const cls = typeof e.className === 'string'
+          ? e.className.trim().split(/\s+/)
+              .filter((c) => c && !/^\d/.test(c) && !/\d{3,}/.test(c))[0]
+          : null;
+        if (cls) {
+          const base = `${tag}.${cls}`;
+          let owners = [];
+          try {
+            owners = [...document.querySelectorAll(base)].filter((x) => txt(x) === name);
+          } catch { owners = []; }
+          if (owners.length === 1) {
+            return {
+              kind: 'scoped',
+              code: `locator(${JSON.stringify(base)}, { hasText: ${JSON.stringify(name)} })`,
+            };
+          }
+        }
+        // 算不出可读的容器定位就落到 CSS 路径 —— 它至少指向被点的那个元素本身
+      }
+
     if (name && !isFormControl && (!requireOwnText || textIsOwn)) {
       const n = countText(name);
       if (n <= 1) return { kind: 'text', code: `getByText(${JSON.stringify(name)}, { exact: true })` };
@@ -347,6 +378,42 @@ export const RECORDER = () => {
     //
     // 撞车了也不能不给选择器，否则这一步就丢了。标出来交给生成器提示人工处理，
     // 这和文本撞车走的是同一套处理方式。
+    // 图标类控件（展开箭头、关闭叉）没有文本也没有 role，直接走 CSS 路径的话
+    // 会得到一长串 nth-of-type —— 既难读，又会因为弹窗层级变化而失效。
+    //
+    // 更好的形态是人工会写的那种：用外层那一行做作用域，再点进图标。
+    //   locator('div.eui_tree_node_cont', { hasText: 'default-group' }).locator('.eui_tree_hit')
+    // 作用域来自最近的带文本祖先，图标本身用它的稳定类名。
+    const ownCls = typeof e.className === 'string'
+      ? e.className.trim().split(/\s+/)
+          .filter((c) => c && !/^\d/.test(c) && !/\d{3,}/.test(c))[0]
+      : null;
+    if (ownCls && !txt(e)) {
+      let host = e.parentElement, depth = 0;
+      while (host && host !== document.body && depth < 4) {
+        const hostText = txt(host);
+        const hostCls = typeof host.className === 'string'
+          ? host.className.trim().split(/\s+/)
+              .filter((c) => c && !/^\d/.test(c) && !/\d{3,}/.test(c))[0]
+          : null;
+        if (hostText && hostText.length <= 40 && hostCls) {
+          const base = `${host.tagName.toLowerCase()}.${hostCls}`;
+          let owners = [];
+          try {
+            owners = [...document.querySelectorAll(base)].filter((x) => txt(x) === hostText);
+          } catch { owners = []; }
+          if (owners.length === 1 && owners[0].querySelectorAll(`.${ownCls}`).length === 1) {
+            return {
+              kind: 'scoped',
+              code: `locator(${JSON.stringify(base)}, { hasText: ${JSON.stringify(hostText)} })`
+                + `.locator(${JSON.stringify('.' + ownCls)})`,
+            };
+          }
+        }
+        host = host.parentElement; depth++;
+      }
+    }
+
     const path = cssPath(e);
     const code = `locator(${JSON.stringify(path)})`;
     // 校验不了唯一性时按**可疑**处理，不能按干净放行 ——
@@ -358,11 +425,47 @@ export const RECORDER = () => {
   };
 
   // 事件 target 常是内层 span/svg/i，往上找到真正「可操作」的那个元素
+  /**
+   * 判断一个元素本身是不是「独立控件」
+   *
+   * 图标类控件（展开箭头、关闭叉、排序标记）通常既没有文本也没有 role，
+   * 但它们是**独立的交互目标** —— 点它和点它外面那一行是两件事。
+   *
+   * cursor:pointer 是最通用的信号：CSS 明确声明了「这里可以点」。
+   * tabindex 说明它能被键盘聚焦，同样是控件的标志。
+   */
+  const isOwnControl = (n) => {
+    if (!n || n === document.body) return false;
+    if (n.hasAttribute?.('tabindex')) return true;
+    try {
+      if (getComputedStyle(n).cursor === 'pointer') return true;
+    } catch { /* 元素已脱离文档 */ }
+    return false;
+  };
+
+  /**
+   * 从事件目标找出「这一下到底点了什么」—— 最小捕获原则
+   *
+   * 事件 target 常是内层的 span/svg/i，往上找能得到更好的选择器（有 role、有名字）。
+   * 但**不能无限上溯**：实测踩过一次代价很大的坑 ——
+   *
+   *   资产树的一行里有个展开箭头 span.eui_tree_hit，没有文本也没有 role。
+   *   人点的是箭头（展开，列出终端），录制器却一路上溯停在带文本的整行上，
+   *   于是生成的选择器指向行。回放点行 → 只选中不展开 → 终端永远不出现，
+   *   而那一步还报 success：点击确实成功了，只是做的不是同一件事。
+   *
+   * 所以顺序是：
+   *   1. 语义祖先（button / a / input / role）—— 选择器最好，优先
+   *   2. 事件目标自己就是独立控件 —— **就地停下**，别爬到外层容器
+   *   3. 都不是，才上溯到带文本的容器
+   */
   const meaningful = (e) => {
     let n = e, d = 0;
     while (n && n !== document.body && d < 6) {
       const t = n.tagName.toLowerCase();
       if (['button', 'a', 'input', 'textarea', 'select'].includes(t) || n.getAttribute('role')) return n;
+      // 起点自己是独立控件时就地停下：它和外层容器是两个不同的交互目标
+      if (n === e && isOwnControl(n) && !txt(n)) return n;
       const s = txt(n);
       if (s && s.length <= 40 && n.children.length <= 2) return n;
       n = n.parentElement; d++;

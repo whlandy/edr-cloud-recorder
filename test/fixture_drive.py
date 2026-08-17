@@ -50,6 +50,15 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
     <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
   </div>
 
+  <!-- 整行可点：点行会展开（加一个子节点），点行内的 span 只高亮。
+       录到的是行，若生成 getByText 就会解析到 span —— 回放时展不开，
+       而且那一步还报成功。 -->
+  <div id="row_expand" class="tree_row" style="padding:10px;border:1px solid #ccc">
+    <span class="row_hit" style="cursor:pointer;display:inline-block;width:14px;height:14px;background:#888"></span>
+    <span class="tree_label">分组甲</span>
+  </div>
+  <div id="expanded_marker"></div>
+
   <!-- 两棵结构完全相同的深子树：cssPath 只取最近 6 层，截断后两条路径一模一样。
        图标无文字、无 role，必然落到 CSS 兜底 —— 正是最容易撞车的那条路。 -->
   <div id="tree_a"><div><div><div><div><div><span class="ic_x" style="display:inline-block;width:16px;height:16px;background:#333"></span></div></div></div></div></div>
@@ -92,6 +101,11 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
     trigger.addEventListener('click', () => { pop.style.display = 'block'; });
     row_sp.addEventListener('click', () =>
       row_sp.querySelector('.eui_toggle_container').classList.toggle('toggled'));
+    row_expand.addEventListener('click', (ev) => {
+      // 只有点在行上才展开；点里面的标签只高亮 —— 和真实资产树一致
+      if (ev.target.classList.contains('tree_label')) { ev.stopPropagation(); return; }
+      expanded_marker.textContent = '终端甲';
+    });
     row_slow.addEventListener('click', () => setTimeout(() =>
       row_slow.querySelector('.eui_toggle_container').classList.toggle('toggled'), 500));
   </script>
@@ -257,6 +271,11 @@ def drive(chrome: str | None = None) -> dict:
             page.locator("[data-testid=text-comp-span]").first.click()
             page.wait_for_timeout(300)
             page.click("[data-cy=cy-only]")
+            page.wait_for_timeout(300)
+
+            # 展开箭头：没有文本、没有 role，但它是独立控件。
+            # 点它和点外面那一行是两件事 —— 录制器必须抓住它本身。
+            page.click("#row_expand .row_hit")
             page.wait_for_timeout(300)
 
             # 深子树里的无文字图标：两条 CSS 路径截断后相同，必然撞车
