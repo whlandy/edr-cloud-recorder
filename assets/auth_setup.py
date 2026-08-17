@@ -173,6 +173,50 @@ def _visible_login_form(page: Page, *, timeout_ms: int = 30_000):
         page.wait_for_timeout(250)
 
 
+
+def _fill_credentials(user_box, pass_box, user: str, attempts: int = 3) -> None:
+    """把用户名和密码填进各自的框，填错就重来。
+
+    这个登录页有个**偶发**故障：填完密码之后，用户名框里会变成「用户名+密码」
+    拼在一起（组件把两次输入并进了同一个 model，title 属性上看得最清楚）。
+    根因未查明 —— 已排除的方向见下，别重复走：
+
+      - 不是 fill() 在受控组件上失效：单独测，值读得回来
+      - 不是两个 fill 背靠背的竞态：照抄同样时序连跑 6 次，全对
+      - 不是入口 URL 不同导致的 iframe 重载：从 / 进也连跑 6 次，全对
+
+    所以这里不假装修好了它，只做三件让它可控的事：
+      1. 每步单独校验，故障早暴露，且用户名那步与密码无关
+      2. 校验只比长度，**不打印内容** —— 旧写法 to_have_value 会把
+         「用户名+密码」整串打进终端和 error-context.md，那正是密码泄露的路径
+      3. 发现污染就清空重来，并大声记录；重来仍失败才抛
+
+    重来时**两个框都清**：污染意味着密码可能压根没进密码框，只补用户名会留下
+    一个填了一半的表单，随后以「登录失败」这种无关的理由收场。
+    """
+    for attempt in range(1, attempts + 1):
+        user_box.fill("")
+        pass_box.fill("")
+        user_box.fill(user)
+        # 密码不绑定到局部变量，避免进 --showlocals 的输出。
+        # credentials() 返回的是临时 dict，不是具名局部变量，取完即弃。
+        pass_box.fill(credentials()["password"])
+
+        polluted = len(user_box.input_value()) != len(user)
+        empty_pass = len(pass_box.input_value()) != len(credentials()["password"])
+        if not polluted and not empty_pass:
+            return
+        print(
+            f"⚠ 第 {attempt} 次填写异常（用户名框被污染={polluted}、密码框长度不符={empty_pass}），"
+            "重填。这是已知偶发，根因未查明。"
+        )
+    raise RuntimeError(
+        f"连续 {attempts} 次都没能把凭据正确填进登录表单。"
+        "为避免泄露，这里不打印框里的实际内容；"
+        "改用 python manual_login.py 人工登录一次并导出登录态。"
+    )
+
+
 def login(page: Page) -> None:
     """走一遍登录流程。跑完时页面应已处于登录态。"""
     user = require_credentials()
@@ -207,12 +251,7 @@ def login(page: Page) -> None:
     # 判据是「密码框可见」：可见的那个才是人正在用的那个。
     user_box, pass_box, form = _visible_login_form(page, timeout_ms=30_000)
 
-    user_box.fill(user)
-    # 密码不绑定到局部变量，避免进 --showlocals 的输出。
-    # credentials() 返回的 dict 是临时对象，不是具名局部变量，取完即弃。
-    pass_box.fill(credentials()["password"])
-    # 填完校验一次：填错框是静默失败，只有断言能把它变成显式失败
-    expect(user_box, "用户名框内容异常，疑似把密码也填了进去").to_have_value(user)
+    _fill_credentials(user_box, pass_box, user)
 
     # 在**表单所在的 frame** 里找提交按钮，不是 page —— 见 _visible_login_form 的说明。
     # 有些登录页的提交是 <a> 或 <div>，所以 role=button 找不到时按文本兜底。
