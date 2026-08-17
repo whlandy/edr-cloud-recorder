@@ -64,6 +64,25 @@ page.locator(".toolbar").get_by_text("导出").click()
 page.get_by_role("row").nth(1).click()   # 而不是 CSS nth-of-type
 ```
 
+### 图标控件：用外层容器做作用域，别用绝对路径
+
+关闭叉、展开箭头这类图标没有文本也没有 role，直接走 CSS 会得到一串
+`body > div:nth-of-type(8) > ... > span.eui_Dialog_closeIcon`。**实测同一个关闭叉两次录制
+分别录成 `div:nth-of-type(8)` 和 `(9)`** —— 页面上多一个浮层，路径就指到别处去了。
+更坏的是它的失败形态：叉没点中，弹窗留在页面上，后面每一步都被它的遮罩吞掉，
+最后报的是「点击超时」，看不出根因。
+
+正确形态是用外层那一块做作用域，再点进图标：
+
+```python
+# ✅ 容器文本很长也没关系，hasText 是子串匹配，取开头一段就够
+page.locator("div.eui_Dialog_Panel", has_text="Agent卸载校验码").locator(
+    ".eui_Dialog_closeIcon").click()
+```
+
+前缀里**不能带时间、长数字**（见陷阱二的延迟发作），并且要验证这段前缀在同类容器里
+只命中一个 —— 两个弹窗都含它的话，等于没限定。
+
 ## 陷阱三：运行时生成的 id 和 class
 
 ```html
