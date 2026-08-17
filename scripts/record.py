@@ -355,7 +355,8 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
                 old.update({
                     key: value for key, value in step.items()
                     if key in ("type", "to", "via", "sel", "kind",
-                               "ambiguous", "matches", "label", "css")
+                               "ambiguous", "matches", "label", "css",
+                               "dismissesOverlay")
                 })
                 seen.add(f"{step['id']}:upgrade")
                 print(f"  [升级] {was} → {old['type']}  {old['sel']}"

@@ -209,6 +209,16 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
         # 实测正是这样断在第 2 步，完成率 1/9。
         if step.get("kind") == "css" and step.get("type") == "click":
             node["optional"] = True
+        # 关浮层的那一步天生是条件步骤：弹窗出现与否取决于账号状态和历史操作。
+        # 原来靠「选择器落到 CSS 兜底」当代理信号 —— 那只是因为这类图标以前
+        # 只能产出绝对路径。选择器变好之后代理就不成立了，弹窗步骤反而变成
+        # 必经节点。现在用录制时观察到的事实：点完之后那个浮层不在了。
+        #
+        # 同时把这个事实带进轨迹：回放遇到「找到了但点不动」时，可以把关浮层
+        # 的步骤提前做掉再重试 —— 挡路的东西和关它的那一步就是这么对上的。
+        if step.get("dismissesOverlay"):
+            node["optional"] = True
+            node["dismissesOverlay"] = True
         if step.get("id") in gated_ids:
             node["optional"] = True
         if step.get("_sourceStepIds"):

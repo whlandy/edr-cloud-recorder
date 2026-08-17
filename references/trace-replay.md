@@ -78,6 +78,17 @@ intercepts pointer events — "found it but cannot click it", which is a differe
 "cannot find it" — replay performs the pending optional steps and retries the current step once.
 Both the recovery and the retry count as `retries`, so the efficiency score pays for them.
 
+The dismissal step can also sit *after* the blocked one: during recording the dialog appeared later
+than the click, on replay it appeared earlier. Replay may therefore pull one **overlay-dismissal**
+step forward. Eligibility is not a guess — the recorder marks `dismissesOverlay` only when it
+watched the click remove the floating layer, and only for a **textless icon** (a close X). Clicking
+a dropdown option also removes its layer, and that is a real action; labelled confirm buttons are
+deliberately left out too, since "确定" inside a form dialog is a submit. Missing a few dismissals
+is safe; marking a real action optional is not.
+
+When a node is performed early, the later visit records `status: skipped` with
+`performedEarly: true` rather than pretending it ran in order.
+
 If nothing is pending, an intercepted click is still a failure. Interception is never itself a
 reason to pass a step.
 

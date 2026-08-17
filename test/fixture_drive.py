@@ -46,12 +46,12 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
   <!-- 叠着两层弹窗，各自一个关闭叉，正文都上百字。图标没文本没 role，
        只靠 CSS 绝对路径会得到一串 nth-of-type —— 弹窗层级一变就失效。
        实测同一个关闭叉两次录制分别录成 div:nth-of-type(8) 和 (9)。 -->
-  <div class="dlg_panel">
+  <div class="dlg_panel" style="position:fixed;right:8px;bottom:8px;z-index:1000;width:180px;background:#eee">
     <span class="dlg_close" style="display:inline-block;width:16px;height:16px;background:#999"></span>
     <div>卸载校验码 1. 本校验码用于本地卸载客户端，请在有效期内使用，过期后需重新获取；
       2. 每个校验码仅可使用一次；3. 如需批量卸载，请联系管理员开通批量通道。</div>
   </div>
-  <div class="dlg_panel">
+  <div class="dlg_panel" style="position:fixed;right:8px;bottom:8px;z-index:1000;width:180px;background:#eee">
     <span class="dlg_close" style="display:inline-block;width:16px;height:16px;background:#999"></span>
     <div>校验码历史记录 仅保留近 10 条校验码，无可使用校验码时，可前往策略页重新申请；
       历史记录不支持导出，如需留档请自行截图保存。</div>
@@ -151,6 +151,13 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
       row.querySelector('.eui_toggle_thumb').addEventListener('click', () => setTimeout(
         () => row.querySelector('.eui_toggle_container').classList.toggle('toggled'), delay));
     }
+    // 关闭叉收掉所有弹窗层 —— 和真实应用一致（点第一层会一起关）
+    for (const x of document.querySelectorAll('.dlg_close')) {
+      if (!x.closest('.dlg_panel')) continue;
+      x.addEventListener('click', () => {
+        for (const p of document.querySelectorAll('.dlg_panel')) p.style.display = 'none';
+      });
+    }
     row_confirm.addEventListener('click', () => { confirm_btn.style.display = 'inline-block'; });
     confirm_btn.addEventListener('click', () => {
       row_confirm.querySelector('.eui_toggle_container').classList.toggle('toggled');
@@ -233,7 +240,8 @@ def drive(chrome: str | None = None) -> dict:
                     old_step.update({
                         k: v for k, v in st.items()
                         if k in ("type", "to", "via", "sel", "kind",
-                                 "ambiguous", "matches", "label", "css")
+                                 "ambiguous", "matches", "label", "css",
+                                 "dismissesOverlay")
                     })
                     seen.add(f"{st['id']}:upgrade")
                     return
