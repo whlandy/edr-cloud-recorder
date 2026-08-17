@@ -563,3 +563,37 @@ def _(rec):
 @pytest.mark.parametrize("name", list(CHECKS))
 def test_recorder(name, recording):
     CHECKS[name](recording)
+
+
+def test_duplicate_id_does_not_shortcut_css_path(recording):
+    """id 不能假定唯一。
+
+    实测一个页面上叠了两个弹窗，各自都 id="dialog_panel"。以前 cssPath 遇到
+    id 就短路返回，产出的路径命中 2 个元素 —— 录制时能跑通，回放必然
+    strict mode 报错，视觉回退又分不清那两个一模一样的图标。
+    """
+    steps = recording["steps"]
+    dlg = next((s for s in steps if "dlg_close" in (s.get("css") or "")), None)
+    assert dlg is not None, "没录到弹窗关闭图标那一步"
+    # 要么路径里不再靠那个重复 id 短路，要么被明确标成撞车
+    shortcut = (dlg.get("css") or "").startswith("div#dialog_panel")
+    assert not shortcut or dlg.get("ambiguous"), dlg.get("css")
+
+
+def test_css_fallback_collision_is_flagged(recording):
+    """CSS 兜底撞车必须标出来，别让它以「回放时点错元素」的形式暴露。
+
+    先断言 fixture 真的产出了撞车步骤 —— 否则这个测试会空转：
+    循环体一次都不执行也算通过，唯一性校验被改回旧行为都发现不了。
+    fixture 里那两个 id="dialog_panel" 的弹窗就是为这条准备的。
+    """
+    css_steps = [s for s in recording["steps"] if s.get("kind") == "css"]
+    assert css_steps, "fixture 没产出任何 CSS 兜底步骤，这条测试失去意义"
+
+    collided = [s for s in css_steps if s.get("ambiguous")]
+    assert collided, (
+        "fixture 里叠了两个同 id 的弹窗，本该产出撞车的 CSS 路径却一个都没有 —— "
+        "要么唯一性校验失效了，要么 fixture 变了"
+    )
+    for step in collided:
+        assert step.get("matches") not in (None, 0, 1), step.get("matches")

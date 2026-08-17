@@ -698,8 +698,13 @@ class _MissingThenPresentPage:
 
 
 class _MissingLocator:
+    """元素真的不在：count() 为 0。"""
+
     def __init__(self, page, selector):
         self.page, self.selector = page, selector
+
+    def count(self):
+        return 0
 
     def wait_for(self, **kwargs):
         from playwright.sync_api import TimeoutError as PWTimeoutError
@@ -712,6 +717,9 @@ class _MissingLocator:
 class _OkLocator:
     def __init__(self, page, selector):
         self.page, self.selector = page, selector
+
+    def count(self):
+        return 1
 
     def wait_for(self, **kwargs):
         pass
@@ -830,3 +838,43 @@ def test_visual_fallback_keeps_the_dom_failure_reason(monkeypatch):
     target = execution["steps"][0]["target"]
     assert target["mode"] == "visual"
     assert "TimeoutError" in target["domError"]
+
+
+class _PresentButUnclickableLocator(_OkLocator):
+    """元素在（count=1），但点不动 —— 典型是被遮罩挡住。"""
+
+    def click(self, **kwargs):
+        from playwright.sync_api import TimeoutError as PWTimeoutError
+        raise PWTimeoutError("Locator.click: Timeout 20000ms exceeded")
+
+
+class _BlockedPage(_MissingThenPresentPage):
+    def locator(self, selector, **kwargs):
+        return _PresentButUnclickableLocator(self, selector)
+
+
+def test_optional_step_present_but_unclickable_still_fails():
+    """可选 ≠ 出问题就放过。
+
+    实测栽过：首启弹窗**确实在**，只是被判为视觉歧义，于是这一步被跳过 ——
+    弹窗没关掉，遮罩把后面每一次点击都吞了，最后报的是莫名其妙的「点击超时」。
+    测试里把失败当跳过，等于把问题推到一个报错不知所云的地方。
+    """
+    trace = _optional_trace()
+    trace["steps"].pop("step-0002")
+    trace["steps"]["step-0001"]["next"] = None
+
+    execution = replay_trace(_BlockedPage(), trace)
+
+    assert execution["steps"][0]["status"] == "failed"
+    assert execution["status"] == "failed"
+
+
+def test_visual_ambiguity_is_not_absence():
+    """歧义说明目标存在，只是分不清是哪个 —— 不能当缺席跳过。"""
+    from rec_visual import VisualAbsent, VisualAmbiguous
+    from replay_trace import _target_absent
+
+    node = {"selector": {}}          # 没有 DOM 依据，只能看视觉证据
+    assert _target_absent(None, node, VisualAbsent("分数不足")) is True
+    assert _target_absent(None, node, VisualAmbiguous("不唯一")) is False

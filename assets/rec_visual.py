@@ -18,6 +18,19 @@ class VisualMatchError(RuntimeError):
     pass
 
 
+class VisualAbsent(VisualMatchError):
+    """页面上没有足够像这个模板的东西 —— 目标大概率不存在。"""
+
+
+class VisualAmbiguous(VisualMatchError):
+    """有多个同样像的候选 —— 目标**存在**，只是分不清是哪一个。
+
+    和 VisualAbsent 分开是有实际后果的：可选步骤只能因为「不存在」被跳过。
+    存在却分不清还跳过的话，那一步实际没做，而后面的步骤会以千奇百怪的方式
+    失败（最典型的是弹窗没关掉，遮罩把后续点击全吞了）。
+    """
+
+
 @dataclass(frozen=True)
 class VisualMatch:
     x: int
@@ -159,12 +172,12 @@ def locate_template(
     best = candidates[0]
     second_score = candidates[1]["score"] if len(candidates) > 1 else -1.0
     if best["score"] < threshold:
-        raise VisualMatchError(
+        raise VisualAbsent(
             f"视觉匹配分数不足：best={best['score']:.3f} < {threshold:.3f}，"
             f"template={template_path}"
         )
     if best["score"] - second_score < ambiguity_margin:
-        raise VisualMatchError(
+        raise VisualAmbiguous(
             f"视觉匹配不唯一：best={best['score']:.3f}，second={second_score:.3f}，"
             f"margin<{ambiguity_margin:.3f}，template={template_path}"
         )

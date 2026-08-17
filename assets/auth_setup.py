@@ -31,6 +31,7 @@ require_credentials() 里那个 auth 在判完之后立刻 del 掉 —— 否则
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 from playwright.sync_api import BrowserContext, Page, expect
@@ -104,6 +105,74 @@ def dismiss_dialogs(page: Page) -> None:
         pass
 
 
+
+def _first_visible(locator):
+    """返回第一个可见的匹配元素；没有就返回 None。
+
+    不能直接 .first —— 隐藏的诱饵元素往往排在真表单前面，
+    .first 会稳定地选中那个错的。
+    """
+    try:
+        total = locator.count()
+    except Exception:
+        return None
+    for index in range(min(total, 8)):
+        candidate = locator.nth(index)
+        try:
+            if candidate.is_visible():
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _visible_login_form(page: Page, *, timeout_ms: int = 30_000):
+    """在所有 frame 里找可见的登录表单，返回 (用户名框, 密码框, 所在 frame)。
+
+    以**密码框可见**为锚：一个页面上可能有好几个文本框（搜索、语言切换），
+    但可见的密码框基本只有登录表单里那一个。找到它之后，用户名框就在同一个
+    frame 里取第一个可见的文本输入框。
+
+    **把 frame 一起返回**：提交按钮也在同一个 frame 里。只返回输入框的话，
+    调用方会习惯性地写 page.get_by_role("button", ...) 去点登录 ——
+    那又回到主文档，于是表单填好了却点不到按钮，报错还只说「按钮超时」。
+    实测就是这么栽的第二次。
+
+    找不到时把每个 frame 的情况一并报出来 —— 否则只说「超时」，
+    排查的人不知道该去看主文档还是某个 iframe。
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    seen: list[str] = []
+    while True:
+        seen = []
+        for frame in page.frames:
+            pass_box = _first_visible(frame.locator("input[type=password]"))
+            if pass_box is None:
+                seen.append(f"{frame.url[:60] or '(主文档)'}: 无可见密码框")
+                continue
+            # 用户名框取**密码框之前最近的那个**，不是 frame 里的第一个。
+            # 按顺序取会踩到排在表单上方的搜索框 / 租户框：用户名被填进去，
+            # 而紧随其后的 to_have_value 断言恰好通过（填的就是它），
+            # 故障要等到 poll_until(logged_in) 超时才以无关的理由暴露。
+            user_box = _first_visible(pass_box.locator(
+                "xpath=preceding::input["
+                "@type='text' or @type='email' or not(@type)][1]"
+            )) or _first_visible(
+                frame.locator("input[type=text], input[type=email], input:not([type])")
+            )
+            if user_box is not None:
+                return user_box, pass_box, frame
+            seen.append(f"{frame.url[:60] or '(主文档)'}: 有密码框但没有可见的用户名框")
+        if time.monotonic() >= deadline:
+            detail = "\n  ".join(seen) or "(页面里一个 frame 都没有)"
+            raise TimeoutError(
+                "找不到可见的登录表单。各 frame 的情况：\n  " + detail +
+                "\n如果这个站点的登录方式特殊（验证码、扫码、多步），"
+                "改用 manual_login.py 人工登录一次并导出登录态。"
+            )
+        page.wait_for_timeout(250)
+
+
 def login(page: Page) -> None:
     """走一遍登录流程。跑完时页面应已处于登录态。"""
     user = require_credentials()
@@ -126,17 +195,17 @@ def login(page: Page) -> None:
     except Exception:
         pass
 
-    # ── 改这里：换成实际的输入框定位 ──
+    # 找到真正能输入的那个表单。不要写死 page.locator("#username")：
     #
-    # 用稳定的 id 或 label，**不要**用 .or_() 组合多种定位方式。
-    # 踩过的坑：某些登录页的密码框没有 placeholder（可访问名来自旁边的图标或标签），
-    # get_by_placeholder(/密码/).or_("#password") 会解析到用户名框，
-    # 结果用户名和密码被填进同一个输入框 —— 而失败现场里那串明文就是泄露源。
-    user_box = page.locator("#username")
-    pass_box = page.locator("#password")
-
-    user_box.wait_for(state="visible", timeout=30_000)
-    pass_box.wait_for(state="visible", timeout=30_000)
+    #   - 登录表单常在 **iframe** 里（SSO 尤其如此），主文档搜不到；
+    #   - 主文档上又常有同 id / 同 placeholder 的**隐藏诱饵**（自动填充陷阱）。
+    #
+    # 实测踩过：某站点主文档有个隐藏的 #username（name="ssoCredentials.username"），
+    # 可见的表单在 iframe 里 —— 于是 wait_for(visible) 一直等到超时，
+    # 而报错只说「元素不可见」，看不出真正的表单在别处。
+    #
+    # 判据是「密码框可见」：可见的那个才是人正在用的那个。
+    user_box, pass_box, form = _visible_login_form(page, timeout_ms=30_000)
 
     user_box.fill(user)
     # 密码不绑定到局部变量，避免进 --showlocals 的输出。
@@ -145,7 +214,19 @@ def login(page: Page) -> None:
     # 填完校验一次：填错框是静默失败，只有断言能把它变成显式失败
     expect(user_box, "用户名框内容异常，疑似把密码也填了进去").to_have_value(user)
 
-    page.get_by_role("button", name=re.compile(r"登录|登入|Sign in", re.I)).click()
+    # 在**表单所在的 frame** 里找提交按钮，不是 page —— 见 _visible_login_form 的说明。
+    # 有些登录页的提交是 <a> 或 <div>，所以 role=button 找不到时按文本兜底。
+    # 兜底**只在可点控件里**按文本找。用 get_by_text 会匹配任意含该文本的元素，
+    # 而登录页的 <h2>登录</h2> 通常排在按钮前面 —— 点中标题，表单从未提交，
+    # 最后以 poll_until(logged_in) 超时收场，报错和真实原因毫无关系。
+    submit = re.compile(r"登录|登入|Sign in|Log in", re.I)
+    clickable = "button, a, [role=button], input[type=submit], input[type=button]"
+    button = _first_visible(form.get_by_role("button", name=submit)) \
+        or _first_visible(form.locator("input[type=submit]")) \
+        or _first_visible(form.locator(clickable).filter(has_text=submit))
+    if button is None:
+        raise TimeoutError("表单找到了，但同一个 frame 里没有可见的提交按钮")
+    button.click()
 
     poll_until(
         lambda: logged_in(page), True,

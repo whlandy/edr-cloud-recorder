@@ -109,8 +109,15 @@ export const RECORDER = () => {
     let n = e;
     while (n && n.nodeType === 1 && p.length < 6) {
       let s = n.tagName.toLowerCase();
-      // 运行时自增 id（如 tip_box_10059）每次加载都变，不能用来定位
-      const stableId = n.id && !/\d{3,}/.test(n.id) ? n.id : null;
+      // 运行时自增 id（如 tip_box_10059）每次加载都变，不能用来定位。
+      //
+      // 而且**不能假定 id 唯一**：实测一个页面上叠了两个弹窗，各自都
+      // id="dialog_panel"（HTML 上不合法，现实里就这么写）。以前遇到 id 就
+      // 短路返回，产出的路径命中 2 个元素 —— 录制时能跑通，回放必然
+      // strict mode 报错，而且视觉回退同样分不清那两个一模一样的图标。
+      const stableId = n.id && !/\d{3,}/.test(n.id)
+        && document.querySelectorAll(`[id="${CSS.escape(n.id)}"]`).length === 1
+        ? n.id : null;
       if (stableId) { p.unshift(`${s}#${stableId}`); break; }
       const cls = typeof n.className === 'string'
         ? n.className.trim().split(/\s+/).filter((c) => c && !/^\d/.test(c) && !/\d{3,}/.test(c)).slice(0, 2)
@@ -334,7 +341,20 @@ export const RECORDER = () => {
       return { kind: 'id', code: `locator(${JSON.stringify('#' + anyId)})` };
     }
 
-    return { kind: 'css', code: `locator(${JSON.stringify(cssPath(e))})` };
+    // CSS 兜底同样要验唯一性。testid / placeholder / role / 文本几条路都验了，
+    // 唯独这条没验 —— 而它恰恰是最容易撞车的：路径由 tag + class + nth-of-type
+    // 拼出来，两个结构相同的组件（比如叠着的两个弹窗）会产出完全一样的路径。
+    //
+    // 撞车了也不能不给选择器，否则这一步就丢了。标出来交给生成器提示人工处理，
+    // 这和文本撞车走的是同一套处理方式。
+    const path = cssPath(e);
+    const code = `locator(${JSON.stringify(path)})`;
+    // 校验不了唯一性时按**可疑**处理，不能按干净放行 ——
+    // 静默兜底正是这份 skill 反复在批的东西，这里别自己再犯一次。
+    let count = null;                       // null = 没验成
+    try { count = document.querySelectorAll(path).length; } catch { count = null; }
+    if (count === null) return { kind: 'css', code, ambiguous: true, matches: '未知（选择器无法校验）' };
+    return count > 1 ? { kind: 'css', code, ambiguous: true, matches: count } : { kind: 'css', code };
   };
 
   // 事件 target 常是内层 span/svg/i，往上找到真正「可操作」的那个元素
