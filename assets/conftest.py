@@ -126,6 +126,20 @@ def auth_state(browser: Browser, base_url) -> Path | None:
     # 这一帧的局部变量会进 --showlocals 的输出，密码就跟着出去了。
     has_creds = all(credentials().values())
 
+    # 已有登录态且仍然有效就直接复用，**即使有凭据**。
+    #
+    # 原来是「有凭据就重新登录」，代价不只是慢：重新登录会写一份全新的
+    # state.json，把 localStorage 里的**界面状态**一起清掉 —— 展开的树、
+    # 选中的节点、关过的引导。而录制器录完导出的那份 state.json 恰恰带着
+    # 这些状态，录制时的操作正是建立在它们之上的。
+    #
+    # 实测后果：录制时资产树是展开的（前一次录制留下的），所以「展开」这一步
+    # 从来没被录进去；回放却从零登录、树是收起的，于是点完组也看不到终端，
+    # 卡在「元素不存在」—— 而那一步在录制侧根本不存在，怎么修选择器都没用。
+    if STORAGE_STATE.exists() and not _storage_state_expired(browser, base_url):
+        print(f"复用已有登录态 {STORAGE_STATE}（含录制时的界面状态）")
+        return STORAGE_STATE
+
     if not has_creds:
         if STORAGE_STATE.exists():
             # 只检查文件在不在是不够的：会话过期后这个文件照样在，

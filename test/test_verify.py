@@ -597,3 +597,33 @@ def test_css_fallback_collision_is_flagged(recording):
     )
     for step in collided:
         assert step.get("matches") not in (None, 0, 1), step.get("matches")
+
+
+def test_icon_control_is_captured_itself_not_its_row(recording):
+    """最小捕获原则：事件目标本身是独立控件时，就地停下，别爬到外层容器。
+
+    实测踩过：资产树一行里有个展开箭头（无文本、无 role），人点的是箭头
+    （展开、列出终端），录制器却上溯停在带文本的整行上 —— 回放点行只选中不展开，
+    终端永远不出现，而那一步还报 success。
+    """
+    step = next((s for s in recording["steps"] if "row_hit" in (s.get("sel") or "")), None)
+    assert step is not None, (
+        "展开箭头没被单独抓住，多半又上溯到外层了。当前录到的选择器："
+        + str([s.get("sel") for s in recording["steps"] if "tree_row" in (s.get("sel") or "")])
+    )
+    # 形态应当是「行做作用域 + 图标类名」，而不是一长串 nth-of-type
+    assert "tree_row" in step["sel"] and "row_hit" in step["sel"], step["sel"]
+
+
+def _unused_row_click_selector_points_at_the_row_not_its_label(recording):
+    """选择器必须能定位回**被点的那个元素**。
+
+    实测栽过：资产树一行里，点整行会展开+选中，点行内的 span 只选中。
+    录到的是整行，生成的却是 getByText —— 而 getByText 解析到最内层带该文本的
+    元素，也就是那个 span。回放时子节点永远不出现，那一步却报 success：
+    点击确实成功了，只是做的不是同一件事。
+    """
+    step = next((s for s in recording["steps"] if s.get("label") == "分组甲"), None)
+    assert step is not None, "没录到整行点击那一步"
+    assert "getByText" not in step["sel"], step["sel"]
+    assert "tree_row" in step["sel"], step["sel"]
