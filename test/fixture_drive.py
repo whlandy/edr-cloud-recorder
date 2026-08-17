@@ -43,6 +43,24 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
     <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
   </div>
 
+  <!-- 点在滑块上：滑块和轨道都带 toggle 字样，但状态只写在容器那一层。
+       撞到的第一层是滑块，它永远读不出状态 —— 那样整步会退化成盲点击。 -->
+  <div id="row_thumb_on" class="labelAndItem" style="padding:24px">
+    <span>已开启滑块</span>
+    <div class="eui_toggle"><div class="eui_toggle_container toggled">
+      <i class="eui_toggle_track" style="display:inline-block;width:40px;height:20px;background:#ccc"></i><i class="eui_toggle_thumb" style="display:inline-block;width:18px;height:18px;background:#888"></i>
+    </div></div>
+  </div>
+
+  <!-- 同样点滑块，但容器当前一个状态标记都没有：静态读不出「关」还是
+       「这层不带状态」，只能看拨完之后哪一层的 class 变了。 -->
+  <div id="row_thumb_off" class="labelAndItem" style="padding:24px">
+    <span>待开启滑块</span>
+    <div class="eui_toggle"><div class="eui_toggle_container">
+      <i class="eui_toggle_track" style="display:inline-block;width:40px;height:20px;background:#ccc"></i><i class="eui_toggle_thumb" style="display:inline-block;width:18px;height:18px;background:#888"></i>
+    </div></div>
+  </div>
+
   <!-- 二次确认型开关：点了先弹确认，class 要等点「确认」之后才变。
        原来只等 1.2 秒，等不到就退回盲点击 —— 回放时可能朝反方向拨。 -->
   <div id="row_confirm" class="labelAndItem" style="padding:24px">
@@ -114,6 +132,11 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
       if (ev.target.classList.contains('tree_label')) { ev.stopPropagation(); return; }
       expanded_marker.textContent = '终端甲';
     });
+    // 点滑块，状态写在容器上；「待开启」那个还要过 300ms 才写
+    for (const [row, delay] of [[row_thumb_on, 0], [row_thumb_off, 300]]) {
+      row.querySelector('.eui_toggle_thumb').addEventListener('click', () => setTimeout(
+        () => row.querySelector('.eui_toggle_container').classList.toggle('toggled'), delay));
+    }
     row_confirm.addEventListener('click', () => { confirm_btn.style.display = 'inline-block'; });
     confirm_btn.addEventListener('click', () => {
       row_confirm.querySelector('.eui_toggle_container').classList.toggle('toggled');
@@ -309,6 +332,12 @@ def drive(chrome: str | None = None) -> dict:
             # 重复 id 的弹窗：点第二个的关闭图标
             page.locator("#dialog_panel").nth(1).locator(".dlg_close").click()
             page.wait_for_timeout(300)
+
+            # 点滑块：状态在祖先容器上，不在滑块自己身上
+            page.click("#row_thumb_on .eui_toggle_thumb")
+            page.wait_for_timeout(200)
+            page.click("#row_thumb_off .eui_toggle_thumb")
+            page.wait_for_timeout(700)
 
             # 二次确认型开关：拨完要过好几秒才点确认，class 那时才变
             page.click("#row_confirm", position={"x": 5, "y": 5})

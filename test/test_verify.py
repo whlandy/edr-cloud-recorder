@@ -471,6 +471,37 @@ def _(rec):
     assert s and s.get("to") is True, s and f"to={s.get('to')}"
 
 
+# ── 点在滑块上 ──
+# 开关组件层层嵌套，滑块 / 轨道 / 容器都带 toggle 字样，但状态只写在容器上。
+# 往上撞到的第一层是滑块，它永远读不出状态 —— 真实录制里绝大多数拨开关的
+# 步骤就是这么退化成盲点击的：回放时朝哪边拨取决于当时状态，而且不报错。
+
+@check("点滑块也能拨到状态层（不是撞到的第一层）")
+def _(rec):
+    s = find(rec["steps"],
+             lambda s: s["type"] == "switch" and s.get("label") == "已开启滑块")
+    assert s, "退回成了普通 click"
+    via = s.get("via") or {}
+    assert via.get("within") == ".eui_toggle_container", via.get("within")
+
+
+@check("点滑块读到的是「要拨成什么」，不是「现在是什么」")
+def _(rec):
+    s = find(rec["steps"],
+             lambda s: s["type"] == "switch" and s.get("label") == "已开启滑块")
+    assert s and s.get("to") is False, s and f"to={s.get('to')}"
+
+
+@check("状态标记缺席时，靠拨完哪一层变了来定状态层")
+def _(rec):
+    s = find(rec["steps"],
+             lambda s: s["type"] == "switch" and s.get("label") == "待开启滑块")
+    assert s and s.get("to") is True, s and (s.get("type"), s.get("to"))
+    via = s.get("via") or {}
+    assert via.get("within") == ".eui_toggle_container", via.get("within")
+    assert via.get("gated") is False, "中间没有别的步骤，不该标成需后续交互"
+
+
 # ── 二次确认型开关 ──
 # 拨开关先弹确认框，class 要等人点了「确认」才变 —— 那可能是好几秒之后。
 # 原来只等 1.2 秒，等不到就退回盲点：回放时起始状态一变就朝反方向拨。
