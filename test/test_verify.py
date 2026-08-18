@@ -252,7 +252,9 @@ def _(rec):
 @check("右键能添加断言")
 def _(rec):
     asserts = [s for s in rec["steps"] if s["type"] == "assert"]
-    assert len(asserts) == 4, f"{len(asserts)} 条"
+    # 4 条常规 + 2 条时间断言（文本型、输入框 value 型）；
+    # canvas 那次被菜单拦住并取消，不该产生步骤
+    assert len(asserts) == 6, f"{len(asserts)} 条"
 
 
 # ── 同义反复的文本断言 ──
@@ -304,6 +306,177 @@ def _(rec):
 def _(rec):
     a = find(rec["steps"], lambda s: s.get("assertion") == "visible")
     assert a and a.get("expected") is False, a and a.get("expected")
+
+
+# ── 日期类输入：按相对天数回放，而不是钉死那一天 ──
+
+
+def _date_fill(rec):
+    # 按值找，不按选择器找：这个框有 placeholder，选择器是
+    # getByPlaceholder("开始日期")，里面并没有 id
+    return find(rec["steps"],
+                lambda s: s["type"] == "fill"
+                and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(s.get("value") or "")))
+
+
+@check("日期输入记下了相对录制当天的偏移")
+def _(rec):
+    s = _date_fill(rec)
+    assert s, "没录到日期筛选那一步"
+    vf = s.get("valueFrom") or {}
+    assert vf.get("kind") == "localtime", vf
+    assert vf.get("offsetDays") == -3, vf
+
+
+@check("日期输入仍保留录制时填的字面量")
+def _(rec):
+    # 字面量是证据，也让人能一行钉回去
+    from datetime import datetime, timedelta
+    s = _date_fill(rec)
+    want = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    assert s and s.get("value") == want, s and s.get("value")
+
+
+@check("普通文本输入不会被当成日期")
+def _(rec):
+    s = find(rec["steps"], lambda s: s["type"] == "fill" and s.get("value") == "alice")
+    assert s and not s.get("valueFrom"), s
+
+
+@check("草稿用 local_time_value 填日期并说明原因")
+def _(rec):
+    spec = spec_of(rec)
+    assert "local_time_value(" in spec and "offset_days=-3" in spec, spec[-600:]
+    assert "改为按回放当天算" in spec
+    assert "会随时间漂移" in spec
+
+
+# ── 时间断言读对地方、拦住读不出文本的元素 ──
+
+
+def _value_time_assert(rec):
+    return find(rec["steps"],
+                lambda s: s["type"] == "assert" and s.get("expectedFrom")
+                and s.get("assertion") == "value")
+
+
+@check("输入框的时间断言读 value 而不是文本")
+def _(rec):
+    # 输入框的时间在 value 上，inner_text 恒为空 —— 读错了断言永远不会通过，
+    # 而且失败信息是 actual=''，看不出是读错了地方
+    s = _value_time_assert(rec)
+    assert s, "没录到 assertion=value 的时间断言"
+    assert "today_box" in s["sel"], s["sel"]
+
+
+@check("时间格式按元素当前显示的样子推断")
+def _(rec):
+    # 纯日期用 %H:%M 去比永远不通过 —— 粒度错了
+    menu = rec.get("timeMenu") or {}
+    assert menu.get("valueFmt") == "%Y-%m-%d", menu.get("valueFmt")
+    s = _value_time_assert(rec)
+    assert (s or {}).get("expectedFrom", {}).get("format") == "%Y-%m-%d", s
+
+
+@check("时间断言的框不叫 Expected（它不是期望值）")
+def _(rec):
+    # 期望值由回放时的时钟算出；这个框显示的是录制那一刻元素的样子。
+    # 还叫 Expected 会直接误导 —— 实测有人据此以为断言比的是这个字符串。
+    menu = rec.get("timeMenu") or {}
+    assert menu.get("valueLabel") == "录制时看到", menu.get("valueLabel")
+
+
+@check("canvas 上加时间断言会被拦住")
+def _(rec):
+    # 结构上读不出文本的元素，这条断言永远不可能通过。不拦的话录制、生成、
+    # 回放四段全都显得正常，最后以 actual='' 收场，看不出是目标选错了。
+    menu = rec.get("timeMenu") or {}
+    assert menu.get("canvasBlocked") is True, menu
+    assert "canvas" in (menu.get("canvasHint") or ""), menu.get("canvasHint")
+
+
+@check("value 型时间断言生成 read=\"value\"")
+def _(rec):
+    spec = spec_of(rec)
+    assert 'read="value"' in spec, spec[-700:]
+
+
+# ── 作用域必须自证唯一 ──
+
+
+@check("作用域选择器自身在全页唯一")
+def _(rec):
+    # hasText 按子树文本匹配：锚再唯一，包含它的每一层祖先也全都命中。
+    # 实测 locator("div", { hasText: "统计" }) 撞了 8 个（整条祖先链），
+    # 回放 strict mode 直接报错 —— 而视觉回退会把它接住，于是用例照样绿，
+    # 只是每步多花约 900ms，等模板哪天也失效才以「匹配分数不足」暴露出来。
+    s = find(rec["steps"], lambda s: s.get("label") == "用量概览")
+    assert s, "没录到侧栏那一步"
+    assert s["kind"] == "scoped", s["sel"]
+    # 收紧的办法是给作用域加类名；裸 tag + hasText 是不够的
+    assert 'locator("div", { hasText:' not in s["sel"], s["sel"]
+    assert "div.nav" in s["sel"], s["sel"]
+
+
+# ── 时间断言：期望值由回放此刻的时钟决定 ──
+# 页面上显示时间的字段（「最近使用」「更新于」），断录制那一刻的字面量隔一会儿就红，
+# 而红的原因和被测功能无关 —— 那种断言守不住任何东西。
+
+
+def _time_assert(rec):
+    return find(rec["steps"],
+                lambda s: s["type"] == "assert" and s.get("expectedFrom"))
+
+
+@check("时间断言记下「期望值来自运行时时钟」")
+def _(rec):
+    s = _time_assert(rec)
+    assert s, "没录到带 expectedFrom 的断言"
+    dyn = s["expectedFrom"]
+    assert dyn.get("kind") == "localtime", dyn
+    # 格式按元素当前显示的样子推断：#last_used 是「日期 时分秒」，
+    # 所以比到分；纯日期的框会推断成 %Y-%m-%d
+    assert dyn.get("format") == "%Y-%m-%d %H:%M", dyn
+    # 秒一定对不上（页面渲染和断言求值之间必然有间隔），不该进格式
+    assert "%S" not in dyn["format"], dyn
+
+
+@check("时间断言仍保留录制当时看到的值作证据")
+def _(rec):
+    s = _time_assert(rec)
+    assert s and s.get("expected") == "2026-08-18 20:33:47", s and s.get("expected")
+
+
+@check("时间断言的选择器不锚在那段时间文本上")
+def _(rec):
+    # 锚在自己身上的话，字段一刷新元素就不存在 —— 断言会以「找不到元素」失败，
+    # 报错指不到真正的原因，而这恰恰是时间断言唯一的用途。
+    s = _time_assert(rec)
+    assert s and s["expected"] not in s["sel"], s and s["sel"]
+
+
+@check("时间断言改锚到同一行的稳定字段 + 列号")
+def _(rec):
+    s = _time_assert(rec)
+    assert s and s.get("cellAnchor") == "maa-fw", s and s.get("cellAnchor")
+    assert 'locator("td").nth(3)' in s["sel"], s["sel"]
+
+
+@check("时间断言不被当成同义反复改写掉")
+def _(rec):
+    # 同义反复的改写会把 assertion 换成 visible、expected 换成 True，
+    # 那样「期望值随时间变」这个意图就整个没了
+    s = _time_assert(rec)
+    assert s and s["assertion"] == "text", s and s["assertion"]
+    assert not s.get("_wasTextTautology"), s
+
+
+@check("菜单里时间格式有默认值且期望值不让人填")
+def _(rec):
+    menu = rec.get("timeMenu") or {}
+    # 「日期 时分秒」的单元格推断成比到分
+    assert menu.get("fmt") == "%Y-%m-%d %H:%M", menu
+    assert menu.get("expectedReadonly") is True, menu
 
 
 # ────────────────────────── 生成器侧 ──────────────────────────
@@ -684,7 +857,8 @@ def _(rec):
 @check("右键菜单录出的断言步骤仍然完整")
 def _(rec):
     kinds = {s.get("assertion") for s in rec["steps"] if s["type"] == "assert"}
-    assert kinds == {"text", "visible", "checked"}, kinds
+    # value 来自输入框上的时间断言 —— 输入框的时间在 value 上，不是文本
+    assert kinds == {"text", "visible", "checked", "value"}, kinds
 
 
 # ── placeholder 撞车 ──
@@ -724,6 +898,30 @@ def _(rec):
     assert re.search(r"def test_\w+\(authed_page: Page\):", spec)
     assert "page = authed_page" in spec
     assert "from rec_helpers import" in spec
+
+
+@check("草稿生成 expect_local_time 并说明为什么不用字面量")
+def _(rec):
+    spec = spec_of(rec)
+    assert 'expect_local_time(' in spec, spec[-800:]
+    assert '"%Y-%m-%d %H:%M"' in spec
+    assert "回放此刻的本机时间" in spec
+    # 锚换掉了就要说清锚在哪 —— 否则读的人会以为它锚在时间文本上
+    assert "选择器锚在同行的" in spec
+
+
+@check("轨迹里也带 expectedFrom（两个产物同一条规则）")
+def _(rec):
+    trace = generate_trace(rec["steps"], rec["net"],
+                           name="t", start_url="http://127.0.0.1/")
+    dyn = [n for n in trace["steps"].values()
+           if (n["action"].get("param") or {}).get("expectedFrom")]
+    # 两条：文本型（#last_used）和输入框 value 型（#today_box）
+    assert len(dyn) == 2, len(dyn)
+    for node in dyn:
+        param = node["action"]["param"]
+        assert param["expectedFrom"]["kind"] == "localtime", param
+    assert {n["action"]["param"]["assertion"] for n in dyn} == {"text", "value"}
 
 
 @check("草稿自带关弹窗前奏")

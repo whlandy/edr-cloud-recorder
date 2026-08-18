@@ -11,7 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from rec_assert import ANY_STR, assert_subset
+from rec_assert import (
+    LOCALTIME_KIND, ANY_STR, assert_subset, expect_local_time, local_time_value,
+)
 from rec_secrets import REDACTED
 from rec_visual import (
     VisualAbsent, VisualAmbiguous, VisualMatchError, locate_visual_target,
@@ -323,6 +325,18 @@ def _validate_response(response, expected: dict) -> dict:
 
 def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
     assertion, expected = param.get("assertion"), param.get("expected")
+    dynamic = param.get("expectedFrom") or {}
+    if dynamic.get("kind") == LOCALTIME_KIND:
+        # 期望值由回放此刻的时钟决定。轮询里每次重算 —— 页面可能几秒后才刷新出
+        # 新时间，拿一个固定下来的期望值去等，等到的是过时的比较基准。
+        expect_local_time(
+            locator, dynamic.get("format") or "%H:%M",
+            match=dynamic.get("match") or "contains",
+            # 输入框的时间在 value 上，inner_text 恒为空
+            read="value" if assertion == "value" else "text",
+            timeout=timeout_ms / 1000,
+        )
+        return
     readers = {
         "visible": lambda: locator.is_visible(),
         "text": lambda: locator.inner_text(),
@@ -415,10 +429,16 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
         (locator or page.keyboard).press(param.get("key", "Enter"))
     elif action_type == "InputText":
         source = param.get("valueFromEnv")
+        dynamic_value = param.get("valueFrom") or {}
         if source:
             text = env.get(source)
             if not text:
                 raise TraceReplayError(f"缺少输入所需的环境变量 {source}")
+        elif dynamic_value.get("kind") == LOCALTIME_KIND:
+            text = local_time_value(
+                dynamic_value.get("format") or "%Y-%m-%d",
+                offset_days=int(dynamic_value.get("offsetDays") or 0),
+            )
         else:
             text = param.get("text", "")
         if locator is not None:

@@ -30,7 +30,10 @@ from pathlib import Path
 
 from playwright.sync_api import Page, expect
 
-from rec_assert import ANY_NUM, ANY_STR, assert_subset, poll_until
+from rec_assert import (
+    ANY_NUM, ANY_STR, assert_subset, expect_local_time, local_time_value,
+    poll_until,
+)
 from rec_helpers import dismiss_overlays, is_present, nth_request
 from rec_visual import visual_click
 
@@ -52,6 +55,9 @@ from rec_visual import visual_click
 # 登录表单常在 iframe 里、常有同 placeholder 的诱饵输入框、密码又不该写进脚本。
 # 而它对用例的意图毫无贡献，只是让每条用例都多一个失败点。
 LOGIN_FRAME = re.compile(r"login|signin|sso", re.I)
+
+# 动态期望值的种类；与 rec_assert.LOCALTIME_KIND 同名同义
+LOCALTIME_KIND = "localtime"
 LOGIN_ACTION = re.compile(r"login|sign[ -]?in|登录|登入", re.I)
 
 
@@ -92,6 +98,10 @@ def prepare_steps(steps):
     # 确定的命题，.first() 在这里是诚实的，不是掷骰子。
     for i, step in enumerate(prepared):
         if step.get("type") != "assert" or step.get("assertion") != "text":
+            continue
+        # 期望值在回放时算出来的断言不是同义反复：它比的不是「录到的那段文字」，
+        # 而是「回放此刻的时间」。改写成存在性断言会把这个意图整个抹掉。
+        if step.get("expectedFrom"):
             continue
         expected = step.get("expected")
         sel = step.get("sel") or ""
@@ -391,7 +401,31 @@ def generate_spec(steps, net, start_url, name):
         if s["type"] == "assert":
             loc = f"{root}.{sel}"
             a, exp = s.get("assertion"), s.get("expected")
-            if a == "text":
+            dyn = s.get("expectedFrom") or {}
+            if dyn.get("kind") == LOCALTIME_KIND:
+                # 期望值由回放那一刻的本机时钟决定，不用录制时的字面量。
+                # 录制时看到的值留在注释里作证据 —— 它说明当时那个位置显示的是时间。
+                fmt = dyn.get("format") or "%H:%M"
+                match = dyn.get("match") or "contains"
+                lines.append(f"    # 录制时这里显示 {_lit(exp)}；断言改为「回放此刻的本机时间」，")
+                lines.append("    # 否则这个字段每刷新一次，钉死的字面量就红一次")
+                if s.get("cellAnchor"):
+                    lines.append(f"    # 选择器锚在同行的 {_lit(s['cellAnchor'])} 上按列取值 ——")
+                    lines.append("    # 不能锚在这段时间文本自己身上，它一刷新元素就没了")
+                elif exp and str(exp) in str(s.get("sel") or ""):
+                    # 锚换不掉时必须喊出来：这个断言回放一定失败，而且失败原因
+                    # 会显示成「找不到元素」，指不到真正的问题上。
+                    lines.append("    # ⚠ 这个选择器把录到的时间文本包在里面了，"
+                                 "回放时该元素已不存在 ——")
+                    lines.append("    #   断言会以「找不到元素」失败，而不是「时间不对」。"
+                                 "请改成锚在稳定字段上，")
+                    lines.append("    #   例如 page.locator(\"tr\", has_text=\"<稳定文本>\")"
+                                 ".locator(\"td\").nth(<列号>)")
+                read = "value" if a == "value" else "text"
+                extra = f", read={_lit(read)}" if read == "value" else ""
+                lines.append(f"    expect_local_time({loc}, {_lit(fmt)}, "
+                             f"match={_lit(match)}{extra}){warn}")
+            elif a == "text":
                 lines.append(f"    expect({loc}).to_have_text({_lit(exp)}){warn}")
             elif a == "value":
                 lines.append(f"    expect({loc}).to_have_value({_lit(exp)}){warn}")
@@ -490,6 +524,19 @@ def generate_spec(steps, net, start_url, name):
             action = f"{loc}.dblclick()"
         elif t == "fill" and s.get("secret"):
             action = f'{loc}.fill(os.environ["REC_PASSWORD"])'
+        elif t == "fill" and (s.get("valueFrom") or {}).get("kind") == LOCALTIME_KIND:
+            # 填的是日期：按「相对录制当天几天」回放，而不是钉死那一天。
+            # 死值不会报错，只会悄悄查错区间 —— 这类错最难发现。
+            vf = s["valueFrom"]
+            off = int(vf.get("offsetDays") or 0)
+            when = "当天" if off == 0 else f"{abs(off)} 天{'前' if off < 0 else '后'}"
+            lines.append(f"    # 录制时填的是 {_lit(s.get('value'))}（{when}）；"
+                         f"改为按回放当天算，")
+            lines.append("    # 否则这个筛选区间会随时间漂移，用例照样绿但查的不是同一段")
+            args = f"{_lit(vf.get('format') or '%Y-%m-%d')}"
+            if off:
+                args += f", offset_days={off}"
+            action = f"{loc}.fill(local_time_value({args}))"
         elif t == "fill":
             action = f"{loc}.fill({_lit(s.get('value') or '')})"
         elif t == "check":
