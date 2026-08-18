@@ -14,7 +14,7 @@ import re
 
 import pytest
 
-from generate_spec import generate_spec
+from generate_spec import generate_spec, prepare_steps
 from generate_trace import generate_trace
 
 CHECKS: dict[str, callable] = {}
@@ -252,7 +252,30 @@ def _(rec):
 @check("右键能添加断言")
 def _(rec):
     asserts = [s for s in rec["steps"] if s["type"] == "assert"]
-    assert len(asserts) == 3, f"{len(asserts)} 条"
+    assert len(asserts) == 4, f"{len(asserts)} 条"
+
+
+# ── 同义反复的文本断言 ──
+# expect(page.get_by_text("X")).to_have_text("X") 只有元素消失才会失败：
+# 元素本来就是按这段文本找到的。实测真实录制出来的两条断言都是这个形状 ——
+# 看着像断言，其实什么都没断。
+
+@check("按文本定位再断言同一段文本，改写成存在性断言")
+def _(rec):
+    _, prepped = prepare_steps(rec["steps"])
+    s = find(prepped, lambda s: s.get("_wasTextTautology") == "待删除的资产")
+    assert s, [x.get("sel") for x in prepped if x["type"] == "assert"]
+    assert s["assertion"] == "visible" and s["expected"] is True, (
+        s["assertion"], s["expected"])
+
+
+@check("用别的方式定位的文本断言不受影响")
+def _(rec):
+    # getByTestId 找到的元素，断言它的文本是实打实的命题，不能动
+    _, prepped = prepare_steps(rec["steps"])
+    s = find(prepped, lambda s: s.get("expected") == "用户确认过的值")
+    assert s and s["assertion"] == "text", s and s["assertion"]
+    assert not s.get("_wasTextTautology"), s
 
 
 @check("expected 保存的是用户改过的值，不是元素当前值")
@@ -295,6 +318,24 @@ def spec_of(rec):
 def trace_of(rec):
     return generate_trace(rec["steps"], rec["net"],
                           start_url=rec["startUrl"], name="gen-check")
+
+
+@check("轨迹里也是存在性断言（两个产物同一条规则）")
+def _(rec):
+    trace = trace_of(rec)
+    node = find(trace["steps"].values(),
+                lambda n: n["action"]["type"] == "Assert"
+                and "待删除的资产" in (n["selector"].get("sel") or ""))
+    param = (node or {})["action"]["param"]
+    assert param["assertion"] == "visible" and param["expected"] is True, param
+
+
+@check("草稿里生成 to_be_visible 并说明为什么改了")
+def _(rec):
+    spec = spec_of(rec)
+    assert 'get_by_text("待删除的资产", exact=True)).to_be_visible()' in spec, \
+        re.search(r'.*待删除的资产.*', spec)
+    assert "只有元素消失才会失败" in spec
 
 
 @check("写请求生成状态码断言")
