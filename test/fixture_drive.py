@@ -47,12 +47,14 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
        「出现与否取决于账号状态」的条件元素。实测就是这种形态被漏判成必经步骤。 -->
   <!-- 提示条挂在一个绝对定位的头部容器里 —— 往上撞到的第一个「浮层」是头部，
        而头部不会消失。观察错了层，就永远等不到「关掉了」。 -->
+  <div style="position:relative;height:80px">
   <div class="app_header" style="position:absolute;z-index:1000;left:0;right:0">
   <div class="eui_tipBoxStyle">
     <div class="eui_tipBoxOuterStyle">
       <span>系统检测到您未绑定手机号码和电子邮箱，为保证您的账号安全、便于在异常登录时及时通知到您，请尽快前往个人中心完成绑定</span>
       <span class="tipBox_close" style="display:inline-block;width:14px;height:14px;background:#777"></span>
     </div>
+  </div>
   </div>
   </div>
 
@@ -466,6 +468,13 @@ def drive(chrome: str | None = None) -> dict:
             sh("#t").select_option("visible")
             page.wait_for_timeout(200)
             sh("#eb").select_option("false")
+            sh("#ok").click()
+            page.wait_for_timeout(300)
+
+            # 5) 文本断言，直接用默认值 —— 元素本身就是按这段文本找到的，
+            #    「文本等于自己」是同义反复
+            page.get_by_text("待删除的资产", exact=True).click(button="right")
+            page.wait_for_timeout(300)
             sh("#ok").click()
             page.wait_for_timeout(300)
 

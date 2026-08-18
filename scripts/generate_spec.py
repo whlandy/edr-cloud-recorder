@@ -83,6 +83,25 @@ def prepare_steps(steps):
             prepared[i] = {**b, "t": a["t"]}
             prepared[i + 1] = {**a, "t": b["t"]}
 
+    # 「用文本定位元素，再断言它的文本等于那段文本」是同义反复：
+    # expect(page.get_by_text("X")).to_have_text("X") 只有元素消失才会失败。
+    # 实测录出来的两条断言都是这个形状 —— 看着像断言，其实什么都没断。
+    #
+    # 用户右键选「文本等于」的意思是「这段文字应该在」，那就如实生成存在性断言。
+    # 顺带解掉一个假问题：这种断言撞车不是缺陷 ——「至少有一个可见」本来就是
+    # 确定的命题，.first() 在这里是诚实的，不是掷骰子。
+    for i, step in enumerate(prepared):
+        if step.get("type") != "assert" or step.get("assertion") != "text":
+            continue
+        expected = step.get("expected")
+        sel = step.get("sel") or ""
+        if not expected or "getByText(" not in sel or expected not in sel:
+            continue
+        prepared[i] = {
+            **step, "assertion": "visible", "expected": True,
+            "_wasTextTautology": expected,
+        }
+
     def is_login_step(step) -> bool:
         return bool(step.get("secret") is True or (
             step.get("inFrame") and LOGIN_FRAME.search(step.get("framePath") or "")))
@@ -342,8 +361,14 @@ def generate_spec(steps, net, start_url, name):
                          f"page.goto({_lit(s['url'])})，")
             lines.append("    #     避开侧边栏菜单在小 viewport 下需要滚动才可见的问题。")
 
-        warn = (f"   # ⚠ AMBIGUOUS: {s.get('matches')} 个元素匹配，回放时可能点错"
-                if s.get("ambiguous") else "")
+        # 存在性断言撞车不是缺陷：「至少有一个可见」本来就是确定的命题，
+        # 这时候用「回放时可能点错」吓人反而误导。
+        if not s.get("ambiguous"):
+            warn = ""
+        elif s.get("_wasTextTautology"):
+            warn = f"   # {s.get('matches')} 个元素匹配 → 断言的是「至少有一个可见」"
+        else:
+            warn = f"   # ⚠ AMBIGUOUS: {s.get('matches')} 个元素匹配，回放时可能点错"
 
         # iframe 里的元素必须先进 frame。用 src 片段定位 iframe：比 nth 稳，
         # 也比整条 src 宽容（src 常带随机 query）。
@@ -371,6 +396,15 @@ def generate_spec(steps, net, start_url, name):
             elif a == "value":
                 lines.append(f"    expect({loc}).to_have_value({_lit(exp)}){warn}")
             elif a == "visible":
+                if s.get("_wasTextTautology"):
+                    lines.append(
+                        f"    # 录制时选的是「文本等于 {s['_wasTextTautology']}」，"
+                        f"而元素本身就是按这段文本找到的 ——"
+                    )
+                    lines.append(
+                        "    # 断言它的文本等于自己，只有元素消失才会失败。"
+                        "如实生成存在性断言"
+                    )
                 lines.append(f"    expect({loc}).to_be_visible(){warn}" if exp
                              else f"    expect({loc}).to_be_hidden(){warn}")
             elif a == "checked":
