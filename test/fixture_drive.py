@@ -43,6 +43,25 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
     <div class="eui_toggle"><div class="eui_toggle_container"><i class="eui_toggle_thumb"></i></div></div>
   </div>
 
+  <!-- 页内提示条：不是浮层（没有 fixed/absolute + 高 z-index），但同样是
+       「出现与否取决于账号状态」的条件元素。实测就是这种形态被漏判成必经步骤。 -->
+  <!-- 提示条挂在一个绝对定位的头部容器里 —— 往上撞到的第一个「浮层」是头部，
+       而头部不会消失。观察错了层，就永远等不到「关掉了」。 -->
+  <div class="app_header" style="position:absolute;z-index:1000;left:0;right:0">
+  <div class="eui_tipBoxStyle">
+    <div class="eui_tipBoxOuterStyle">
+      <span>系统检测到您未绑定手机号码和电子邮箱，为保证您的账号安全、便于在异常登录时及时通知到您，请尽快前往个人中心完成绑定</span>
+      <span class="tipBox_close" style="display:inline-block;width:14px;height:14px;background:#777"></span>
+    </div>
+  </div>
+  </div>
+
+  <!-- 反例：删除某一行的图标。点完那一行同样消失 —— 但这是破坏性操作，
+       绝不能因此被标成「可选」。 -->
+  <div class="list_row"><span>待删除的资产</span>
+    <span class="row_del" style="display:inline-block;width:14px;height:14px;background:#a33"></span>
+  </div>
+
   <!-- 叠着两层弹窗，各自一个关闭叉，正文都上百字。图标没文本没 role，
        只靠 CSS 绝对路径会得到一串 nth-of-type —— 弹窗层级一变就失效。
        实测同一个关闭叉两次录制分别录成 div:nth-of-type(8) 和 (9)。 -->
@@ -151,6 +170,12 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
       row.querySelector('.eui_toggle_thumb').addEventListener('click', () => setTimeout(
         () => row.querySelector('.eui_toggle_container').classList.toggle('toggled'), delay));
     }
+    document.querySelector('.tipBox_close').addEventListener('click', (ev) => {
+      ev.currentTarget.closest('.eui_tipBoxStyle').remove();
+    });
+    document.querySelector('.row_del').addEventListener('click', (ev) => {
+      ev.currentTarget.closest('.list_row').remove();      // 整行删掉
+    });
     // 关闭叉收掉所有弹窗层 —— 和真实应用一致（点第一层会一起关）
     for (const x of document.querySelectorAll('.dlg_close')) {
       if (!x.closest('.dlg_panel')) continue;
@@ -366,6 +391,14 @@ def drive(chrome: str | None = None) -> dict:
             # 重复 id 的弹窗：点第二个的关闭图标
             page.locator("#dialog_panel").nth(1).locator(".dlg_close").click()
             page.wait_for_timeout(300)
+
+            # 页内提示条的关闭图标
+            page.click(".tipBox_close")
+            page.wait_for_timeout(400)
+
+            # 反例：删掉一行 —— 行也消失了，但这不是「关提示」
+            page.click(".row_del")
+            page.wait_for_timeout(400)
 
             # 长文本弹窗里的关闭叉
             page.locator(".dlg_panel").first.locator(".dlg_close").click()

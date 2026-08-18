@@ -497,6 +497,23 @@ def _(rec):
     assert s and s.get("dismissesOverlay") is True, s and s.get("kind")
 
 
+@check("页内提示条的关闭图标也算关浮层")
+def _(rec):
+    # 提示条挂在页面流里，没有 fixed/absolute + 高 z-index，按浮层判据认不出来。
+    # 实测「系统检测到您未绑定手机号码和电子邮箱」这条横幅就是这么被漏判成
+    # 必经步骤的 —— 而下次登录它可能根本不出现，整条轨迹断在那里。
+    s = find(rec["steps"], lambda s: "tipBox" in (s.get("css") or ""))
+    assert s and s.get("dismissesOverlay") is True, s and s.get("css")
+
+
+@check("删除某一行不算关浮层")
+def _(rec):
+    # 点完那一行同样消失，但这是破坏性操作。标成可选就等于允许悄悄跳过一次删除，
+    # 而且不报错 —— 所以容器证据弱的时候要求图标类名本身是个关闭件。
+    s = find(rec["steps"], lambda s: "list_row" in (s.get("css") or ""))
+    assert s and not s.get("dismissesOverlay"), s and s.get("css")
+
+
 @check("加标记的升级不会覆盖点击时算出的好选择器")
 def _(rec):
     # 浮层在升级发生时已经消失，重算选择器只能退到路径兜底。
