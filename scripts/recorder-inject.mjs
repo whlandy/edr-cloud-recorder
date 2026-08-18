@@ -792,13 +792,48 @@ export const RECORDER = () => {
    * 也不误判：漏判只是维持原状，误判会让一步真操作被跳过而且不报错。
    * 「确定」尤其危险，它在表单弹窗里就是提交。
    */
-  const watchOverlayDismiss = (layer, stepId, sourceEvent) => {
+  // 提示条不是浮层，但同样是「出现与否取决于账号状态」的条件元素。
+  // 实测：「系统检测到您未绑定手机号码和电子邮箱」这条横幅挂在 #platform-root
+  // 里，没有 fixed/absolute + 高 z-index，floatingAncestor 认不出来 —— 于是关它
+  // 那一步成了必经步骤，而下次登录它可能根本不出现，整条轨迹就断在那里。
+  const NOTICE_CLS = /(tip|notice|toast|alert|banner|message|snackbar)/i;
+  const CLOSER_CLS = /(close|dismiss)/i;
+
+  const dismissCandidates = (el) => {
+    // 收一组候选，点完之后谁消失了算谁 —— 不能只认往上撞到的第一层。
+    // 实测：提示条挂在一个绝对定位的头部容器里，floatingAncestor 越过提示条
+    // 撞到头部，而头部不会消失，于是永远等不到「关掉了」。这和开关那个
+    // 「撞到滑块就返回、而状态写在容器上」是同一个形状的错。
+    const out = [];
+    // 容器证据弱（只是类名像提示条），就要求元素证据更强：图标本身得是个关闭件。
+    // 不能只看「祖先消失了」—— 删除某一行的图标也满足那个条件，
+    // 把一步破坏性操作标成可选是最坏的一类错。
+    if (CLOSER_CLS.test(String(el.className || ''))) {
+      let n = el.parentElement, d = 0;
+      while (n && n !== document.body && d < 6) {
+        // 提示条带着一段说明文字，这是它和「一排图标按钮」的区别
+        if (NOTICE_CLS.test(String(n.className || '')) && txt(n).length >= 8) out.push(n);
+        n = n.parentElement; d++;
+      }
+    }
+    const floating = floatingAncestor(el);
+    if (floating && !out.includes(floating.el)) out.push(floating.el);
+    return out;
+  };
+
+  const layerGone = (layer) => {
+    if (!layer.isConnected || !layer.getClientRects().length) return true;
+    const st = getComputedStyle(layer);
+    if (st.display === 'none' || st.visibility === 'hidden') return true;
+    // 收起动画常把高度压到 0 而不摘掉节点
+    const r = layer.getBoundingClientRect();
+    return r.width === 0 || r.height === 0;
+  };
+
+  const watchOverlayDismiss = (layers, stepId, sourceEvent) => {
     const deadline = Date.now() + 3000;
     const tick = () => {
-      const gone = !layer.isConnected ||
-        !layer.getClientRects().length ||
-        getComputedStyle(layer).display === 'none' ||
-        getComputedStyle(layer).visibility === 'hidden';
+      const gone = layers.some(layerGone);
       if (gone) {
         // 只加这一个标记。浮层此刻已经消失，重算选择器只能退到路径兜底，
         // 那会把点击时算出的好选择器覆盖掉 —— 实测正是这样把
@@ -875,9 +910,9 @@ export const RECORDER = () => {
     }
 
     const step = push('click', el, undefined, e);
-    // 点在浮层里的无文本图标：看这一下是不是把浮层关掉了
-    const layer = txt(el) ? null : floatingAncestor(el);
-    if (step && layer) watchOverlayDismiss(layer.el, step.id, e);
+    // 点在浮层／提示条里的无文本图标：看这一下是不是把它关掉了
+    const layers = txt(el) ? [] : dismissCandidates(el);
+    if (step && layers.length) watchOverlayDismiss(layers, step.id, e);
   }, true);
   document.addEventListener('dblclick', (e) => {
     if (!fromMenu(e)) push('dblclick', e.target, undefined, e);

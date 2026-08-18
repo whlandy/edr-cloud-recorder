@@ -81,10 +81,25 @@ Both the recovery and the retry count as `retries`, so the efficiency score pays
 The dismissal step can also sit *after* the blocked one: during recording the dialog appeared later
 than the click, on replay it appeared earlier. Replay may therefore pull one **overlay-dismissal**
 step forward. Eligibility is not a guess — the recorder marks `dismissesOverlay` only when it
-watched the click remove the floating layer, and only for a **textless icon** (a close X). Clicking
+watched the click remove the layer, and only for a **textless icon** (a close X). Clicking
 a dropdown option also removes its layer, and that is a real action; labelled confirm buttons are
 deliberately left out too, since "确定" inside a form dialog is a submit. Missing a few dismissals
 is safe; marking a real action optional is not.
+
+Two refinements came from the real console:
+
+- **In-flow notice bars count too.** A "please bind your phone number" banner sits in normal page
+  flow with no `position: absolute` and no high `z-index`, so the floating-layer test misses it —
+  yet it is just as conditional, and leaving it required breaks the trace on any account that has
+  already dismissed it. Weaker container evidence demands stronger element evidence: for a notice
+  the icon's own class must look like a closer (`close`/`dismiss`), which is what keeps a
+  row-delete icon — same "container vanished" evidence, destructive meaning — out.
+- **Watch a candidate set, not the first ancestor that looks right.** That banner lived inside an
+  absolutely positioned header, so walking up hit the header first — and a header never disappears,
+  so the watch timed out and the step was never marked. The recorder now watches every candidate
+  layer and accepts whichever one actually vanishes, the same shape of fix as picking the switch
+  layer that actually carries state. A collapse animation that flattens height to zero counts as
+  vanished.
 
 When a node is performed early, the later visit records `status: skipped` with
 `performedEarly: true` rather than pretending it ran in order.
