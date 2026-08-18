@@ -13,6 +13,31 @@ export const RECORDER = () => {
   // 结果被锚在 hasText: "2026-08-14 10:22:29" 上，当时跑三遍全绿，几小时后
   // 重跑、时间推进，整条用例就再也找不到那一行了。
   // 这类失败最坏的地方在于**延迟发作**：录完当场验证不出来。
+  /**
+   * 填进输入框的值如果是个日期，记下它相对**录制当天**的偏移
+   *
+   * 日期筛选框里填死值的脚本不会报错，只会悄悄查错区间：录制那天
+   * "2026-08-09" 是「9 天前」，下个月回放就成了「40 天前」。用例照样绿，
+   * 只是查的已经不是当初那个区间了 —— 这类错不报错，最难发现。
+   *
+   * 这里只记事实（是不是日期、差几天），要不要按相对值回放由生成器决定，
+   * 字面量也原样保留，随时能钉回去。
+   */
+  const dateValueMeta = (value) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value).trim());
+    if (!m) return {};
+    const picked = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    if (Number.isNaN(picked.getTime())) return {};
+    const today = new Date();
+    const dayMs = 86400000;
+    const floor = (d) => Math.floor(
+      new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / dayMs);
+    const offsetDays = floor(picked) - floor(today);
+    // 差得太离谱的多半不是「相对今天」的意思（生日、固定归档日）
+    if (Math.abs(offsetDays) > 366) return {};
+    return { valueFrom: { kind: 'localtime', format: '%Y-%m-%d', offsetDays } };
+  };
+
   const volatileMarker = (t) =>
     /\d{4}-\d{2}-\d{2}/.test(t) ||           // 2026-08-14
     /\d{1,2}:\d{2}(:\d{2})?/.test(t) ||      // 10:22:29
@@ -251,8 +276,35 @@ export const RECORDER = () => {
           .map((x) => txt(x))
           .find((t) => t && t !== name && t.length <= 30 && !volatileMarker(t) && countText(t) === 1);
         if (marker) {
+          // 锚文本唯一 ≠ 作用域唯一。
+          //
+          // hasText 是按**子树文本**匹配的：锚再唯一，所有包含它的祖先也全都命中。
+          // 实测 locator("div", { hasText: "统计" }) 撞了 2 个 —— 侧栏那层和
+          // 页面标题那层，回放直接 strict mode violation。
+          //
+          // 失败方式还特别隐蔽：视觉回退会把它接住，于是用例照样绿，只是每步
+          // 多花约 900ms 做全屏匹配；等哪天模板也失效了，报出来的是「视觉匹配
+          // 分数不足」，真正的原因（选择器早就废了）已经被埋了两层。
+          //
+          // 所以这里要求作用域选择器**自己**在全页只命中一个。先用类名收紧，
+          // 不行就放弃这个作用域，让外层继续往上找。
+          const scopeHits = (css) => {
+            try {
+              return [...document.querySelectorAll(css)].filter(
+                (x) => txt(x).includes(marker)).length;
+            } catch { return 0; }
+          };
           const tag = n.tagName.toLowerCase();
-          return `locator(${JSON.stringify(tag)}, { hasText: ${JSON.stringify(marker)} })`;
+          const cls = typeof n.className === 'string'
+            ? n.className.trim().split(/\s+/)
+                .filter((c) => c && !/^\d/.test(c) && !/\d{3,}/.test(c))[0]
+            : null;
+          // 越具体的排前面
+          for (const css of [cls ? `${tag}.${cls}` : null, tag]) {
+            if (css && scopeHits(css) === 1) {
+              return `locator(${JSON.stringify(css)}, { hasText: ${JSON.stringify(marker)} })`;
+            }
+          }
         }
       }
       n = n.parentElement; depth++;
@@ -620,6 +672,39 @@ export const RECORDER = () => {
     visible:   { label: '可见性',     kind: 'bool',   of: () => true },
     checked:   { label: '勾选状态',   kind: 'bool',   of: (e) => !!e.checked },
     attribute: { label: '属性等于',   kind: 'attr',   of: () => '' },
+    // 期望值不从录制里搬，而是回放那一刻按本机时钟算出来。
+    // 页面上显示时间的字段（「最近使用」「更新于」）断字面量隔一会儿就红，
+    // 而红的原因和被测功能无关 —— 那种断言守不住任何东西。
+    nowtext:   { label: '显示的是当前时间', kind: 'time',
+                 of: (e) => timeSourceOf(e) === 'value'
+                   ? String(e.value ?? '') : txt(e) },
+  };
+
+  // 时间显示在哪：输入框在 value 上，inner_text 恒为空 —— 读错了断言永远不通过。
+  const timeSourceOf = (e) =>
+    ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.tagName) ? 'value' : 'text';
+
+  // 按元素当前显示的样子推断默认格式：只有日期就比到日，带时刻就比到分。
+  // 比错粒度的后果很实际：日期框拿 %H:%M 去比永远不通过。
+  const guessTimeFormat = (sample) => {
+    const s = String(sample || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return '%Y-%m-%d';
+    if (/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s)) return '%Y-%m-%d %H:%M';
+    return TIME_FORMAT_DEFAULT;
+  };
+
+  // 只做值的比对，不解析时间、不换算时区。默认只比到分钟：
+  // 秒一定对不上（页面渲染和断言求值之间必然有间隔）。
+  const TIME_FORMAT_DEFAULT = '%H:%M';
+  const nowByFormat = (fmt) => {
+    const d = new Date(), p2 = (n) => String(n).padStart(2, '0');
+    return String(fmt)
+      .replace(/%Y/g, String(d.getFullYear()))
+      .replace(/%m/g, p2(d.getMonth() + 1))
+      .replace(/%d/g, p2(d.getDate()))
+      .replace(/%H/g, p2(d.getHours()))
+      .replace(/%M/g, p2(d.getMinutes()))
+      .replace(/%S/g, p2(d.getSeconds()));
   };
 
   const closeMenu = () => document.getElementById(MENU_ID)?.remove();
@@ -657,7 +742,11 @@ export const RECORDER = () => {
             .map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></div>
         <div class="row" id="attrRow" style="display:none"><label>属性名</label>
           <input type="text" id="attr" placeholder="如 href、data-state"></div>
-        <div class="row"><label>Expected</label>
+        <div class="row" id="fmtRow" style="display:none"><label>时间格式</label>
+          <input type="text" id="fmt" value="%H:%M" placeholder="%H:%M"></div>
+        <div class="row" id="fmtPreview" style="display:none"><label></label>
+          <span id="fmtNow" style="color:#555;font-size:12px"></span></div>
+        <div class="row"><label id="esLabel">Expected</label>
           <select id="eb" style="display:none">
             <option value="true">true</option><option value="false">false</option>
           </select>
@@ -672,20 +761,73 @@ export const RECORDER = () => {
       </div>`;
     document.documentElement.appendChild(host);
 
+    // 收进视口。菜单是 position:fixed 钉在鼠标处的，右键靠底部/右侧的元素时
+    // 「添加断言」按钮会落到视口外 —— Playwright 直接报「element is outside of
+    // the viewport」，人工操作时则是按钮根本点不到。表格行尤其容易踩：
+    // 时间字段那类单元格往往就在长表格的下半部分。
+    //
+    // 必须在**每次高度变化之后**都收一遍，不能只在插入时收一次：切换断言类型会
+    // 增减控件行（时间类型多两行），插入时量到的是切换前那个矮的形态。
+    // 实测就是这么漏的 —— 收边代码在，按钮照样落在视口外 11px。
+    const fit = () => {
+      try {
+        const box = sh.querySelector('.box').getBoundingClientRect();
+        const margin = 8;
+        let left = x, top = y;
+        if (left + box.width > innerWidth - margin) left = Math.max(margin, innerWidth - box.width - margin);
+        if (top + box.height > innerHeight - margin) top = Math.max(margin, innerHeight - box.height - margin);
+        host.style.left = `${left}px`;
+        host.style.top = `${top}px`;
+      } catch { /* 量不出来就维持原位，总比不显示好 */ }
+    };
+    fit();
+
     const $ = (id) => sh.getElementById(id);
     const sync = () => {
       const a = ASSERTIONS[$('t').value];
       $('attrRow').style.display = a.kind === 'attr' ? 'flex' : 'none';
+      $('fmtRow').style.display = a.kind === 'time' ? 'flex' : 'none';
+      $('fmtPreview').style.display = a.kind === 'time' ? 'flex' : 'none';
       $('eb').style.display = a.kind === 'bool' ? 'block' : 'none';
+      // time 类型没有要人填的期望值 —— 它由回放时的时钟决定。
+      // 仍然把录制当时看到的文本显示出来（只读），好让人确认选的是不是那个元素。
       $('es').style.display = a.kind === 'bool' ? 'none' : 'block';
+      $('es').readOnly = a.kind === 'time';
+      // 时间类型下这个框**不是**期望值 —— 期望值由回放时的时钟算出。
+      // 还叫 Expected 会直接误导人：实测有人据此以为断言比的是这个字符串。
+      $('esLabel').textContent = a.kind === 'time' ? '录制时看到' : 'Expected';
+      if (a.kind === 'time') $('fmt').value = guessTimeFormat(a.of(el));
       if (a.kind === 'bool') $('eb').value = String(a.of(el));
       else $('es').value = String(a.of(el) ?? '');
       validate();
+      fit();                     // 控件行数变了，高度跟着变，得重新收边
     };
     const validate = () => {
       const a = ASSERTIONS[$('t').value];
       let bad = '';
-      if (a.kind === 'attr' && !$('attr').value.trim()) bad = '请填写属性名';
+      if (a.kind === 'time') {
+        const fmt = $('fmt').value.trim() || TIME_FORMAT_DEFAULT;
+        const now = nowByFormat(fmt);
+        const seen = String(a.of(el) ?? '');
+        $('fmtNow').textContent = `此刻求值 → ${now}` +
+          (seen.includes(now) ? '（当前文本已含它）' : '（当前文本不含它）');
+        // 不校验元素现在是否含此刻时间：录制时这个字段本来就可能是过去的时间，
+        // 断言要守的是「回放时它会被刷新成当时的时间」。
+        //
+        // 但**结构上读不出文本**的元素要拦住：canvas / img / svg 画的图表没有
+        // 文本内容，这条断言永远不可能通过。实测有人把它加在一张折线图上，
+        // 录制、生成、回放四段全都正常，最后以「actual=''」失败 —— 机制没错，
+        // 目标从一开始就不可能对。
+        const TEXTLESS = ['CANVAS', 'IMG', 'SVG', 'VIDEO'];
+        // 输入框的 seen 已经是 value（见 timeSourceOf），不会被误判成无文本
+        if (!fmt) bad = '请填写时间格式';
+        else if (TEXTLESS.includes(el.tagName)) {
+          bad = `<${el.tagName.toLowerCase()}> 读不出文本，时间断言永远不会通过。`
+              + '请选显示时间的那段文字本身';
+        } else if (!seen.trim()) {
+          bad = '这个元素当前没有文本。确认它回放时会显示时间，否则断言必然失败';
+        }
+      } else if (a.kind === 'attr' && !$('attr').value.trim()) bad = '请填写属性名';
       // expected 不能默默为空：空字符串是合法断言，但必须是明确的选择
       else if (a.kind !== 'bool' && !$('es').value && !$('allowEmpty').checked)
         bad = 'Expected 为空。确实要断言空字符串就勾「允许空值」';
@@ -699,16 +841,66 @@ export const RECORDER = () => {
       const type = $('t').value;
       const a = ASSERTIONS[type];
       const expected = a.kind === 'bool' ? $('eb').value === 'true' : $('es').value;
-      pushAssert(el, type, expected, a.kind === 'attr' ? $('attr').value.trim() : undefined);
+      if (a.kind === 'time') {
+        // 断言类型仍然是 text —— 变的只是「期望值从哪来」。
+        // 这样回放侧读取文本的那套逻辑一行都不用改。
+        pushAssert(el, timeSourceOf(el) === 'value' ? 'value' : 'text',
+                   expected, undefined, {
+          kind: 'localtime',
+          format: $('fmt').value.trim() || TIME_FORMAT_DEFAULT,
+          match: 'contains',
+        });
+      } else {
+        pushAssert(el, type, expected, a.kind === 'attr' ? $('attr').value.trim() : undefined);
+      }
       closeMenu();
     });
     sync();
   };
 
-  const pushAssert = (el, assertion, expected, attribute) => {
+  /**
+   * 时间类断言的选择器不能锚在它自己要断言的那段文本上
+   *
+   * 右键「最近使用」那个单元格，selectorFor 会算出
+   * getByText("2026-08-18 20:33:47") —— 因为那就是它唯一的特征。可这个字段
+   * 一刷新，元素就不存在了：断言以「找不到元素」失败，而不是「时间不对」。
+   * 报错指不到真正的原因，而这恰恰是时间断言唯一的用途。
+   *
+   * 表格里的正解是人工会写的那种：**稳定的行 + 第几列**。锚取同一行里
+   * 不易变、且全页唯一的那段文本（API Key 那张表里就是 key 的名字）。
+   * 找不到这样的锚就返回 null，交给调用方降级并标出来 —— 不硬造一个。
+   */
+  const stableCellSelector = (el) => {
+    const cell = el.closest?.('td, th');
+    const row = cell?.closest?.('tr');
+    if (!cell || !row) return null;
+    const cells = [...row.children].filter((c) => /^(TD|TH)$/.test(c.tagName));
+    const index = cells.indexOf(cell);
+    if (index < 0) return null;
+    const anchor = cells
+      .filter((c) => c !== cell)
+      .map((c) => txt(c))
+      .find((s) => s && s.length <= 40 && !volatileMarker(s) && countText(s) === 1);
+    if (!anchor) return null;
+    return {
+      kind: 'scoped',
+      code: `locator("tr", { hasText: ${JSON.stringify(anchor)} })`
+            + `.locator("td").nth(${index})`,
+      anchor,
+    };
+  };
+
+  const pushAssert = (el, assertion, expected, attribute, expectedFrom) => {
     try {
       const t = meaningful(el);
-      const sel = selectorFor(t);
+      let sel = selectorFor(t);
+      // 期望值动态算的断言：选择器若把录到的那段文本包在里面，回放必然找不到元素。
+      // 换成「稳定行 + 第几列」；换不到就保留原样，让生成器把问题说出来。
+      let cellAnchor;
+      if (expectedFrom && expected && String(sel.code).includes(String(expected))) {
+        const cell = stableCellSelector(t);
+        if (cell) { sel = cell; cellAnchor = cell.anchor; }
+      }
       const step = {
         id: `${tag}-${++seq}`, t: Date.now(),
         type: 'assert', assertion, expected, sel: sel.code, kind: sel.kind,
@@ -719,6 +911,9 @@ export const RECORDER = () => {
         framePath: window !== window.top ? location.pathname : undefined,
       };
       if (attribute) step.attribute = attribute;
+      // 录下来的 expected 保留作证据（当时看到的是什么），但回放时不用它比对
+      if (expectedFrom) step.expectedFrom = expectedFrom;
+      if (cellAnchor) step.cellAnchor = cellAnchor;
       steps.push(step);
       if (typeof window.__recPush === 'function') {
         try { window.__recPush(step); } catch { /* 页面正在卸载 */ }
@@ -930,7 +1125,8 @@ export const RECORDER = () => {
       // 明文密码写进 spec 会让脚本绑死在一个账号上，而且 spec 通常是要进版本库的。
       push('fill', el, { secret: true });
     } else {
-      push('fill', el, { value: String(el.value ?? '').slice(0, 200) });
+      const filled = String(el.value ?? '').slice(0, 200);
+      push('fill', el, { value: filled, ...dateValueMeta(filled) });
     }
   }, true);
   document.addEventListener('keydown', (e) => {

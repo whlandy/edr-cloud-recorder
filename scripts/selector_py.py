@@ -31,6 +31,9 @@ METHODS = {
     "getByAltText": "get_by_alt_text",
     "getByTitle": "get_by_title",
     "locator": "locator",
+    # 按位置取第 n 个。时间类断言必须靠它 —— 那种单元格的文本每次都变，
+    # 不能拿文本当锚，只能「稳定的行 + 第几列」。
+    "nth": "nth",
 }
 
 # 录制器能产出的全部选项键

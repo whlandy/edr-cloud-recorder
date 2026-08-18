@@ -11,6 +11,7 @@ JS 版生成器靠 @playwright/test 的 expect 提供了三样东西，Python �
 """
 
 import time
+from datetime import datetime, timedelta
 from typing import Any
 
 
@@ -102,3 +103,101 @@ def poll_until(fn, expected, timeout: float = 5.0, interval: float = 0.1):
         if time.monotonic() >= deadline:
             raise AssertionError(f"等待 {timeout}s 后仍不等于 {expected!r}，最后一次是 {last!r}")
         time.sleep(interval)
+
+# ────────────────────────── 运行时计算的期望值 ──────────────────────────
+#
+# 录制下来的 expected 是**那一刻**的字面量。页面上凡是显示时间的字段（「最近使用」
+# 「更新于」），断字面量隔一会儿就红，而红的原因和被测功能无关。
+#
+# 所以这类断言的期望值要在**回放那一刻**算出来，而不是从录制里搬。
+
+LOCALTIME_KIND = "localtime"
+DEFAULT_TIME_FORMAT = "%H:%M"
+# 跨分钟边界的容差：页面在 23:24:59 渲染、断言在 23:25:00 求值，
+# 两边差一分钟却都没错。不给容差的话这种假红会随机出现，
+# 而且复现不了 —— 比它要防的问题更难查。
+DEFAULT_SLACK_SECONDS = 90
+
+
+def local_time_candidates(fmt: str = DEFAULT_TIME_FORMAT,
+                          slack_seconds: float = DEFAULT_SLACK_SECONDS) -> list[str]:
+    """此刻往前 slack_seconds 内，按 fmt 格式化出的所有**不同**取值。
+
+    只按格式化结果去重，所以 fmt 越粗（"%H:%M"）候选越少，通常就 1~2 个。
+    不解析时间、不做时区换算 —— 纯粹是值的比对。
+    """
+    now = datetime.now()
+    seen, out = set(), []
+    step = 15.0
+    offset = 0.0
+    while offset <= max(0.0, slack_seconds):
+        value = (now - timedelta(seconds=offset)).strftime(fmt)
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+        offset += step
+    return out
+
+
+def matches_local_time(actual, fmt: str = DEFAULT_TIME_FORMAT, *,
+                       match: str = "contains",
+                       slack_seconds: float = DEFAULT_SLACK_SECONDS) -> bool:
+    """actual 里是不是就是此刻的时间。
+
+    match="contains"（默认）：actual 含有该时间串。「2026-08-18 23:24:07」这种
+        整段时间戳里找 "23:24" 用它。
+    match="equals"：actual 恰好等于该时间串，两端空白按 Playwright 的规则归一化。
+    """
+    if actual is None:
+        return False
+    text = " ".join(str(actual).split())
+    for candidate in local_time_candidates(fmt, slack_seconds):
+        if (candidate in text) if match == "contains" else (text == candidate):
+            return True
+    return False
+
+
+def expect_local_time(locator, fmt: str = DEFAULT_TIME_FORMAT, *,
+                      match: str = "contains", read: str = "text",
+                      slack_seconds: float = DEFAULT_SLACK_SECONDS,
+                      timeout: float = 5.0) -> str:
+    """断言元素显示的时间就是回放此刻的本机时间。
+
+    read="text"（默认）读 inner_text；read="value" 读 input_value ——
+    输入框的时间在 value 上，inner_text 恒为空，读错了断言永远不会通过。
+
+    轮询期间**每次重算**期望值 —— 页面可能几秒后才刷新出新时间，
+    拿一个固定下来的期望值去等，等到的会是过时的比较基准。
+    """
+    deadline = time.monotonic() + timeout
+    actual = None
+    while True:
+        try:
+            actual = locator.input_value() if read == "value" else locator.inner_text()
+        except Exception as error:
+            actual = f"{type(error).__name__}: {error}"
+        else:
+            if matches_local_time(actual, fmt, match=match, slack_seconds=slack_seconds):
+                return actual
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"时间断言失败: actual={actual!r} "
+                f"期望{'含有' if match == 'contains' else '等于'}此刻时间 "
+                f"{local_time_candidates(fmt, slack_seconds)}（fmt={fmt!r}）"
+            )
+        time.sleep(0.1)
+
+
+def local_time_value(fmt: str = "%Y-%m-%d", *, offset_days: int = 0,
+                     offset_seconds: int = 0) -> str:
+    """按回放此刻的本机时钟算出一个值，用来填输入框。
+
+    这是 expect_local_time 的输入侧对偶。日期筛选框里填死值（"2026-08-09"）
+    的脚本不会报错，只会**悄悄查错区间**：录制那天它是「9 天前」，
+    下个月回放就成了「40 天前」。
+
+    offset_days 保留录制时那个日期与当天的相对关系 —— 意图是「近 N 天」
+    就该按 N 天走，而不是钉在某一天。
+    """
+    moment = datetime.now() + timedelta(days=offset_days, seconds=offset_seconds)
+    return moment.strftime(fmt)

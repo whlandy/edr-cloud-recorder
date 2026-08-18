@@ -69,6 +69,11 @@ def _action(step: dict, *, focus_before_input: bool = False) -> dict:
     elif step_type == "fill":
         if step.get("secret"):
             param["valueFromEnv"] = "REC_PASSWORD"
+        elif (step.get("valueFrom") or {}).get("kind") == "localtime":
+            # 日期类输入按回放当天算 —— 见 rec_assert.local_time_value 的说明。
+            # text 仍然带上录制时的字面量，作证据也便于人工钉回去。
+            param["valueFrom"] = step["valueFrom"]
+            param["text"] = step.get("value", "")
         else:
             param["text"] = step.get("value", "")
         if focus_before_input:
@@ -82,6 +87,9 @@ def _action(step: dict, *, focus_before_input: bool = False) -> dict:
         )
         if step.get("attribute") is not None:
             param["attribute"] = step["attribute"]
+        # 期望值在回放那一刻算，录制里的 expected 只作证据 —— 见 rec_assert 的说明
+        if step.get("expectedFrom"):
+            param["expectedFrom"] = step["expectedFrom"]
     else:
         param["recordedType"] = step_type
     return {"type": action_type, "param": param}

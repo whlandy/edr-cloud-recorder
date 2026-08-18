@@ -142,6 +142,36 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
   <div id="real_box"><input id="real_user" placeholder="账号/手机号"></div>
   <div id="decoy_box"><input placeholder="账号/手机号" autocomplete="on"></div>
 
+  <!-- 时间显示在 value 上的输入框：innerText 恒为空，读错了断言永远不通过。
+       值是页面自己按当天算的 —— 正是「可反复运行」的那种目标。 -->
+  <input id="today_box" readonly>
+  <!-- 结构上读不出文本：canvas 画的图表。时间断言加在它上面永远失败，
+       而录制、生成、回放四段都会显得正常，最后以 actual='' 收场。 -->
+  <canvas id="chart" role="img" aria-label="逐小时折线图" width="80" height="40"></canvas>
+
+  <!-- 日期筛选框：填死值的脚本不会报错，只会悄悄查错区间 ——
+       录制那天填的「N 天前」，下个月回放就成了「N+30 天前」。 -->
+  <input id="date_from" placeholder="开始日期">
+
+  <!-- 侧栏：分组标题「统计」被好几层 div 包着。锚文本本身全页唯一，
+       但 hasText 是按子树文本匹配的 —— 每一层祖先都命中。
+       只验锚唯一、不验作用域唯一的话，产出的 locator("div", {hasText:"统计"})
+       会撞一整条祖先链，回放 strict mode 直接报错。 -->
+  <div class="shell"><div class="side"><div class="nav">
+    <div class="nav-group">统计</div>
+    <div class="nav-item"><span>用量概览</span></div>
+  </div></div></div>
+  <div class="page-title">用量概览</div>
+
+  <!-- 时间字段：同一行里既有稳定的名字，也有每次都变的时间戳。
+       右键那个时间单元格时，selectorFor 只会算出 getByText("<那串时间>") ——
+       而它一刷新元素就没了，断言会以「找不到元素」失败。所以要换成
+       「稳定的行 + 第几列」。这张表就是那个形状。 -->
+  <table id="key_table">
+    <tr><td>maa-fw</td><td>sk-abc</td><td>2026-08-12 09:58:40</td>
+        <td id="last_used">2026-08-18 20:33:47</td></tr>
+  </table>
+
   <!-- 触发器显示的值，和下面浮层里的选项文本一模一样 -->
   <div id="trigger">Windows系统</div>
   <div id="pop" role="listbox" style="position:absolute;z-index:999;display:none">
@@ -156,6 +186,9 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
         a: 1, pageSize: 100, id: '39049753287328', endTime: Date.now(),
       }) });
     }
+    (() => { const d=new Date(), p2=n=>String(n).padStart(2,'0');
+      document.getElementById('today_box').value =
+        `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`; })();
     sw1.addEventListener('click', () => sw1.setAttribute('aria-checked',
       sw1.getAttribute('aria-checked') === 'true' ? 'false' : 'true'));
     sw2.addEventListener('click', () => sw2.classList.toggle('off') || sw2.classList.toggle('on'));
@@ -418,6 +451,18 @@ def drive(chrome: str | None = None) -> dict:
             page.click("#confirm_btn")
             page.wait_for_timeout(800)
 
+            # 日期筛选：填一个「3 天前」的日期，看录制器记不记得住这个相对关系
+            from datetime import datetime, timedelta
+            three_days_ago = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+            page.fill("#date_from", three_days_ago)
+            page.locator("#date_from").blur()
+            page.wait_for_timeout(300)
+
+            # 点侧栏里的 span：作用域会往上找到包着「统计」的那一层。
+            # 锚唯一但祖先链全命中 —— 作用域必须自证唯一才行。
+            page.locator("div.nav-item span", has_text="用量概览").click()
+            page.wait_for_timeout(300)
+
             # 慢开关：class 要 500ms 后才变。固定等 60ms 检测不到变化，
             # 会退回盲点击 —— 回放时方向取决于当时的初始状态，而且不报错
             page.click("#row_slow", position={"x": 5, "y": 5})
@@ -442,6 +487,37 @@ def drive(chrome: str | None = None) -> dict:
             sh("#es").fill("用户确认过的值")
             sh("#ok").click()
             page.wait_for_timeout(300)
+
+            # 1.5) 时间断言：期望值不由录制决定，由回放此刻的时钟决定
+            page.locator("#last_used").click(button="right")
+            page.wait_for_timeout(300)
+            sh("#t").select_option("nowtext")
+            page.wait_for_timeout(200)
+            time_fmt_shown = sh("#fmt").input_value()
+            time_expected_readonly = sh("#es").get_attribute("readonly") is not None
+            sh("#ok").click()
+            page.wait_for_timeout(300)
+
+            # 1.6) 时间断言加在输入框上：时间在 value 上，格式该被推断成纯日期
+            page.locator("#today_box").click(button="right")
+            page.wait_for_timeout(300)
+            sh("#t").select_option("nowtext")
+            page.wait_for_timeout(250)
+            value_fmt = sh("#fmt").input_value()
+            value_label = sh("#esLabel").inner_text()
+            value_seen = sh("#es").input_value()
+            sh("#ok").click()
+            page.wait_for_timeout(300)
+
+            # 1.7) canvas 读不出文本，必须被拦住 —— 否则这条断言永远不会通过
+            page.locator("#chart").click(button="right")
+            page.wait_for_timeout(300)
+            sh("#t").select_option("nowtext")
+            page.wait_for_timeout(250)
+            canvas_blocked = sh("#ok").is_disabled()
+            canvas_hint = sh("#hint").inner_text()
+            sh("#cancel").click()
+            page.wait_for_timeout(200)
 
             # 2) 空 expected 必须被挡住，勾了「允许空值」才能提交
             page.locator("[data-testid=save-btn]").click(button="right")
@@ -491,7 +567,13 @@ def drive(chrome: str | None = None) -> dict:
     # origin 对不上时 strip() 不会报错，只会产出 ":56964/api/ok" 这种垃圾匹配器 ——
     # 生成的代码看着正常，回放时永远等不到响应。
     return {"startUrl": base, "steps": steps, "net": net,
-            "emptyGuard": {"blocked": blocked, "unblocked": unblocked}}
+            "emptyGuard": {"blocked": blocked, "unblocked": unblocked},
+            "timeMenu": {"fmt": time_fmt_shown,
+                         "expectedReadonly": time_expected_readonly,
+                         "valueFmt": value_fmt, "valueLabel": value_label,
+                         "valueSeen": value_seen,
+                         "canvasBlocked": canvas_blocked,
+                         "canvasHint": canvas_hint}}
 
 
 def _now():
