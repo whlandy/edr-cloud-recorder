@@ -618,3 +618,107 @@ def test_capture_ui_template_captures_positioned_non_click_steps(tmp_path):
     assert step["ui"]["templates"]["element"]["width"] == 20
     assert step["ui"]["templates"]["context"]["height"] == 34
     assert asset_dir.exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 回放工程的 fixture 装配
+#
+# 「录完给你一份能跑的 pytest」这个承诺，之前一条自检都没有 —— 而它靠的是
+# 三处约定：fixture 能被第二个 conftest 导入、autouse 的没被 import * 丢掉、
+# 登录态目录按运行时规则解析。任何一处坏掉，草稿都会以「没有可用的登录态」
+# 这种指不到原因的方式失败。
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _rec_fixtures():
+    import importlib
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "assets"))
+    return importlib.import_module("rec_fixtures")
+
+
+def test_rec_fixtures_exports_every_fixture():
+    """__all__ 必须列全 —— 尤其下划线开头的那个。
+
+    `from rec_fixtures import *` 默认不带下划线开头的名字，而
+    _auth_artifact_guard 是 autouse fixture：漏了它不会报错，
+    只是登录产物再也没人清理，而且要等到某天泄露才发现。
+    """
+    mod = _rec_fixtures()
+    exported = set(mod.__all__)
+    declared = {
+        name for name in dir(mod)
+        if hasattr(getattr(mod, name), "_pytestfixturefunction")
+    }
+    missing = declared - exported
+    assert not missing, f"这些 fixture 没进 __all__，import * 会丢掉：{sorted(missing)}"
+
+
+def test_rec_fixtures_reexported_by_both_conftests():
+    """两个 conftest 都必须真的把 fixture 转发出去。"""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    for rel in ("assets/conftest.py", "recordings/conftest.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "from rec_fixtures import *" in text, f"{rel} 没有转发 fixture"
+
+
+def test_auth_dir_follows_recorder_convention(tmp_path, monkeypatch):
+    """登录态目录要和录制器同一套规则，否则草稿找不到录制器写下的登录态。
+
+    录制器用 REC_STATE_DIR（默认相对 CWD 的 .auth）。conftest 以前写死成
+    「自己同目录 / .auth」—— 用户工程里凑巧对，技能仓库里就错，
+    而报错是「没有可用的登录态」，指不到真正的原因。
+    """
+    mod = _rec_fixtures()
+    monkeypatch.setenv("REC_STATE_DIR", str(tmp_path / "custom-auth"))
+    assert mod._auth_dir() == (tmp_path / "custom-auth").resolve()
+
+    monkeypatch.delenv("REC_STATE_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".auth").mkdir()
+    assert mod._auth_dir() == (tmp_path / ".auth").resolve()
+
+
+def test_day_offset_survives_dst():
+    """日偏移必须按 UTC 日历日算，不能按「本地零点 / 86400000」。
+
+    后者在 UTC+0/+1 的时区跨夏令时会算错：BST 期间伦敦的本地零点落到
+    **前一个 UTC 日**，floor 就跨错了格。纽约（UTC−5/−4）和上海（恒定 UTC+8）
+    零点始终在同一 UTC 日内，是**运气**躲过去的 —— 所以在本机时区上跑
+    浏览器自检抓不住这个回归，必须把时区当参数直接测算法。
+
+    这里复刻注入层 dateValueMeta 里的两种编号方式，断言：
+      旧算法在伦敦确实会错（否则这个测试就没有守护对象了）
+      新算法在四个时区一整年都对
+    """
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    DAY_MS = 86_400_000
+
+    def local_day_no(d, tz):                      # 旧：本地零点 / 86400000
+        return datetime(d.year, d.month, d.day, tzinfo=tz).timestamp() * 1000 // DAY_MS
+
+    def utc_day_no(d):                            # 新：Date.UTC(y, m, d) / 86400000
+        return datetime(d.year, d.month, d.day,
+                        tzinfo=timezone.utc).timestamp() * 1000 // DAY_MS
+
+    def wrong_days(numbering, tz):
+        d, prev, bad = datetime(2026, 1, 1, tzinfo=tz), None, []
+        for _ in range(400):
+            n = numbering(d, tz) if numbering is local_day_no else numbering(d)
+            if prev is not None and n - prev != 1:
+                bad.append(d.date().isoformat())
+            prev, d = n, d + timedelta(days=1)
+        return bad
+
+    london = ZoneInfo("Europe/London")
+    assert wrong_days(local_day_no, london), \
+        "旧算法在伦敦竟然没出错 —— 这个测试失去了守护对象，检查它是否还有效"
+
+    for name in ("Europe/London", "America/New_York",
+                 "Australia/Sydney", "Asia/Shanghai"):
+        bad = wrong_days(utc_day_no, ZoneInfo(name))
+        assert not bad, f"{name} 上 UTC 编号出错：{bad[:3]}"

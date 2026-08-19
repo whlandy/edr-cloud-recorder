@@ -149,6 +149,12 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
        而录制、生成、回放四段都会显得正常，最后以 actual='' 收场。 -->
   <canvas id="chart" role="img" aria-label="逐小时折线图" width="80" height="40"></canvas>
 
+  <!-- 作用域锚点的大小写陷阱：hasText 是大小写不敏感的子串匹配，
+       两个 div.pane 都含「Data Center」，只是大小写不同。
+       用大小写敏感的方式数唯一性会少数，把有歧义的作用域判成唯一。 -->
+  <div class="pane"><span>Data Center</span><span class="pane_go">进入</span></div>
+  <div class="pane"><span>DATA CENTER</span><span class="pane_go">进入</span></div>
+
   <!-- 日期筛选框：填死值的脚本不会报错，只会悄悄查错区间 ——
        录制那天填的「N 天前」，下个月回放就成了「N+30 天前」。 -->
   <input id="date_from" placeholder="开始日期">
@@ -167,8 +173,11 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
        右键那个时间单元格时，selectorFor 只会算出 getByText("<那串时间>") ——
        而它一刷新元素就没了，断言会以「找不到元素」失败。所以要换成
        「稳定的行 + 第几列」。这张表就是那个形状。 -->
+  <!-- 96.1K 排在 maa-fw **前面**：行锚是按单元格顺序找第一个「不易变且唯一」的，
+       所以度量值判据一旦失效，锚就会选中它 —— 而那是 token 计数，
+       换个查询区间这一行就不存在了。这个顺序让它成为真正的回归测试。 -->
   <table id="key_table">
-    <tr><td>maa-fw</td><td>sk-abc</td><td>2026-08-12 09:58:40</td>
+    <tr><td>96.1K</td><td>maa-fw</td><td>sk-abc</td><td>2026-08-12 09:58:40</td>
         <td id="last_used">2026-08-18 20:33:47</td></tr>
   </table>
 
@@ -450,6 +459,10 @@ def drive(chrome: str | None = None) -> dict:
             page.wait_for_timeout(2500)          # 比原来的 1.2 秒检测窗口更久
             page.click("#confirm_btn")
             page.wait_for_timeout(800)
+
+            # 大小写变体：作用域必须自证唯一，而且要按 hasText 的规则（不敏感）数
+            page.locator("div.pane", has_text="Data Center").locator("span.pane_go").first.click()
+            page.wait_for_timeout(300)
 
             # 日期筛选：填一个「3 天前」的日期，看录制器记不记得住这个相对关系
             from datetime import datetime, timedelta
