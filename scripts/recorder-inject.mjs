@@ -29,10 +29,19 @@ export const RECORDER = () => {
     const picked = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
     if (Number.isNaN(picked.getTime())) return {};
     const today = new Date();
+    // 用 Date.UTC 给日历日编号，不要用「本地零点 / 86400000」。
+    //
+    // 后者在 UTC+0/+1 的时区跨夏令时会算错：伦敦 BST 期间本地零点落到**前一个
+    // UTC 日**，floor 就跨错了格。全年逐日扫描实测 Europe/London
+    // 2026-03-30 算出相差 0 天、2026-10-26 算出相差 2 天（都应为 1）。
+    // 纽约（UTC−5/−4）和上海（恒定 UTC+8）零点始终在同一 UTC 日内，
+    // 是**运气**躲过去的，不是算法对。
+    //
+    // Date.UTC 只取年月日，与时区和夏令时完全无关。
     const dayMs = 86400000;
-    const floor = (d) => Math.floor(
-      new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / dayMs);
-    const offsetDays = floor(picked) - floor(today);
+    const dayNo = (d) => Math.floor(
+      Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / dayMs);
+    const offsetDays = dayNo(picked) - dayNo(today);
     // 差得太离谱的多半不是「相对今天」的意思（生日、固定归档日）
     if (Math.abs(offsetDays) > 366) return {};
     return { valueFrom: { kind: 'localtime', format: '%Y-%m-%d', offsetDays } };
@@ -42,7 +51,15 @@ export const RECORDER = () => {
     /\d{4}-\d{2}-\d{2}/.test(t) ||           // 2026-08-14
     /\d{1,2}:\d{2}(:\d{2})?/.test(t) ||      // 10:22:29
     /\d{6,}/.test(t) ||                      // 雪花 id / 时间戳
-    /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t);    // UUID
+    /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(t) ||  // UUID
+    // 度量值：token 数、耗时、占比、计数。它们不含日期也不够长，
+    // 前面几条一个都拦不住 —— 实测 "96.1K" 就这么被选成了行锚，
+    // 而它是一行请求记录的 token 计数，换个查询区间这一行就不存在了。
+    //
+    // 判据是「整串就是一个数（可带 K/M/G/B、%、单位后缀或千分位）」。
+    // 只要还夹着别的字（"3 个任务"、"maa-fw"）就不算 —— 那种串里
+    // 真正起区分作用的是文字部分。
+    /^[+-]?[\d,]+(\.\d+)?\s*(%|[KMGTB]i?[Bb]?|ms|s|min|h|次|个|条|项)?$/.test(t.trim());
 
   /**
    * 开关识别
@@ -288,10 +305,19 @@ export const RECORDER = () => {
           //
           // 所以这里要求作用域选择器**自己**在全页只命中一个。先用类名收紧，
           // 不行就放弃这个作用域，让外层继续往上找。
+          // hasText 传字符串时是**大小写不敏感的子串匹配**（实测：
+          // locator('div.a', {hasText:'data center'}) 命中 'DATA CENTER'）。
+          // 这里用大小写敏感的 includes 会少数，于是把实际有歧义的作用域
+          // 判成唯一 —— 回放照样 strict mode 报错，和这段代码本来要防的
+          // 是同一个毛病。
+          //
+          // 注意 countText 那边**不能**跟着改：它对应的是
+          // getByText(exact:true)，而 exact 匹配是大小写敏感的。
+          const needle = marker.toLowerCase();
           const scopeHits = (css) => {
             try {
               return [...document.querySelectorAll(css)].filter(
-                (x) => txt(x).includes(marker)).length;
+                (x) => txt(x).toLowerCase().includes(needle)).length;
             } catch { return 0; }
           };
           const tag = n.tagName.toLowerCase();

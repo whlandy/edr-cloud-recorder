@@ -9,6 +9,13 @@ recordings/*.spec.ts
 recordings/test_*.py
 recordings/**/*.json
 recordings/**/test_*.py
+# 模板 PNG 是被测控制台的真实截图。这个仓库是公开的，而录制产物是
+# 会话副产品 —— 默认不进版本库。要留作参考用例的话逐张看过再 git add -f。
+recordings/**/assets/*.png
+recordings/**/execution*.json
+recordings/**/report.json
+# 端侧操作证据：含机器运行态信息，README 里明说不提交
+recordings/**/endpoint-*.png
 
 node_modules/
 test-results/

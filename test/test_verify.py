@@ -401,6 +401,32 @@ def _(rec):
     assert 'read="value"' in spec, spec[-700:]
 
 
+# ── 这三条守的是同一类错：判据和 Playwright 的真实语义对不上 ──
+
+
+@check("作用域唯一性按 hasText 的规则数（大小写不敏感）")
+def _(rec):
+    # hasText 传字符串是**大小写不敏感**的子串匹配，实测
+    # locator('div.a', {hasText:'data center'}) 命中 'DATA CENTER'。
+    # 用大小写敏感的方式数，会把有歧义的作用域判成唯一 —— 回放照样
+    # strict mode 报错，和这段代码本来要防的是同一个毛病。
+    s = find(rec["steps"], lambda s: s.get("label") == "进入")
+    assert s, "没录到大小写变体那一步"
+    # div.pane 有两个都含 Data Center（只是大小写不同），所以它不该被当作唯一作用域
+    assert 'locator("div.pane", { hasText: "Data Center" })' not in s["sel"], s["sel"]
+
+
+@check("日期偏移在录制机的时区上是对的")
+def _(rec):
+    from datetime import date, timedelta
+    s = _date_fill(rec)
+    assert s, "没录到日期筛选那一步"
+    off = (s.get("valueFrom") or {}).get("offsetDays")
+    filled = date.fromisoformat(s["value"])
+    assert filled - date.today() == timedelta(days=off), \
+        f"填的是 {filled}，今天是 {date.today()}，却记成 offsetDays={off}"
+
+
 # ── 作用域必须自证唯一 ──
 
 
@@ -458,8 +484,12 @@ def _(rec):
 @check("时间断言改锚到同一行的稳定字段 + 列号")
 def _(rec):
     s = _time_assert(rec)
-    assert s and s.get("cellAnchor") == "maa-fw", s and s.get("cellAnchor")
-    assert 'locator("td").nth(3)' in s["sel"], s["sel"]
+    # 这一行里 96.1K 排在 maa-fw **前面**。锚按单元格顺序找第一个「不易变且
+    # 唯一」的 —— 度量值判据一旦失效就会选中 96.1K，而那是 token 计数，
+    # 换个查询区间这一行就不存在了。
+    assert s and s.get("cellAnchor") == "maa-fw", \
+        f"锚选成了 {s and s.get('cellAnchor')!r}（96.1K 是度量值，不能当锚）"
+    assert 'locator("td").nth(4)' in s["sel"], s["sel"]
 
 
 @check("时间断言不被当成同义反复改写掉")
