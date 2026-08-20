@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 from generate_spec import generate_spec, prepare_steps
-from generate_trace import TRACE_SCHEMA, generate_trace
+from generate_trace import generate_trace
+import trace_schema as ts
 from rec_assert import ANY_NUM
 from rec_config import load_config
 from record import (
@@ -205,28 +206,33 @@ def test_generate_trace_creates_one_trace_with_template_click_steps():
 
     trace = generate_trace(steps, name="flow", start_url="https://app.example")
 
-    assert trace["schema"] == TRACE_SCHEMA
-    assert trace["entry"] == "step-0001"
-    assert [step["sourceStepId"] for step in trace["steps"].values()] == [
+    meta = ts.meta(trace)
+    assert meta["schema"] == ts.SCHEMA
+    assert meta["entry"] == "step_0001"
+    assert [ts.provenance(node)["sourceStepId"] for _, node in ts.nodes(trace)] == [
         "input", "check", "assert", "missing-click",
     ]
-    fill, check, assertion, missing = trace["steps"].values()
+    fill, check, assertion, missing = (node for _, node in ts.nodes(trace))
     assert fill["recognition"]["type"] == "TemplateMatch"
-    assert fill["recognition"]["templateOrder"] == ["context", "element"]
-    assert fill["recognition"]["templates"] == input_templates
-    assert fill["sourceStepIds"] == ["focus-input", "input"]
+    # recognition.param.template 只放一个（maa-fw 的形状），完整回退顺序在 provenance
+    assert fill["recognition"]["param"]["template"] == input_templates["context"]
+    assert ts.template_order(fill) == ["context", "element"]
+    assert ts.templates_of(fill) == input_templates
+    assert ts.provenance(fill)["sourceStepIds"] == ["focus-input", "input"]
     assert fill["action"] == {
         "type": "InputText",
         "param": {"text": "alice", "focusBeforeInput": True},
     }
-    assert fill["status"] == "ready"
-    assert fill["next"] == "step-0002"
+    assert ts.node_status(fill) == "ready"
+    assert fill["next"] == ["step_0002"]
     assert check["recognition"]["type"] == "TemplateMatch"
     assert check["action"]["type"] == "Check"
-    assert assertion["action"]["type"] == "Assert"
-    assert missing["status"] == "missing_template"
-    assert missing["next"] is None
-    assert trace["status"] == "incomplete"
+    # 断言不再是一种动作类型 —— 动作是 DoNothing，规格在 attach.verification
+    assert assertion["action"]["type"] == "DoNothing"
+    assert ts.assertion_of(assertion)["assertion"] == "visible"
+    assert ts.node_status(missing) == "missing_template"
+    assert missing["next"] == []
+    assert meta["status"] == "incomplete"
 
 
 def test_double_click_is_one_visual_step_in_script_and_trace():
@@ -267,10 +273,10 @@ def test_double_click_is_one_visual_step_in_script_and_trace():
     ]
     assert "click_count=2" in spec
     assert "/api/open" in spec
-    assert len(trace["steps"]) == 2
-    double_click = trace["steps"]["step-0001"]
+    assert len(ts.node_ids(trace)) == 2
+    double_click = trace["step_0001"]
     assert double_click["action"]["type"] == "DoubleClick"
-    assert double_click["expect"] == {
+    assert ts.verification(double_click) == {
         "responses": [{
             "method": "POST",
             "url": "https://app.example/api/open",
@@ -278,10 +284,12 @@ def test_double_click_is_one_visual_step_in_script_and_trace():
             # 写请求必发：它是这一步真正的副作用，没发出去就是没做成。
             # 读请求会标 required=False —— 页面已处于目标状态时本来就不会重发。
             "required": True,
+            # HTTP 层的事实桌面侧看不到，显式标出来免得 maa-fw 以为验过了
+            "scope": ts.VERIFY_SCOPE_WEB,
             "request": {"body": {}},
         }],
     }
-    assert double_click["next"] == "step-0002"
+    assert double_click["next"] == ["step_0002"]
 
 
 def test_trace_attaches_slow_response_to_action_that_started_request():
@@ -304,10 +312,10 @@ def test_trace_attaches_slow_response_to_action_that_started_request():
 
     trace = generate_trace(steps, net, name="flow", start_url="https://app.example")
 
-    assert trace["steps"]["step-0001"]["expect"]["responses"][0]["url"].endswith(
+    assert ts.expected_responses(trace["step_0001"])[0]["url"].endswith(
         "/api/save"
     )
-    assert "expect" not in trace["steps"]["step-0002"]
+    assert not ts.expected_responses(trace["step_0002"])
 
 
 def test_binary_request_body_is_stored_as_base64():
@@ -343,7 +351,7 @@ def test_binary_request_trace_does_not_add_null_text_body():
         steps, net, start_url="https://app.example", name="upload"
     )
 
-    request = trace["steps"]["step-0001"]["expect"]["responses"][0]["request"]
+    request = ts.expected_responses(trace["step_0001"])[0]["request"]
     assert request == {"bodyBase64": "H4sIAA==", "bodyEncoding": "base64"}
 
 
@@ -407,7 +415,7 @@ def test_generated_request_assertion_never_contains_old_recording_password():
 
     assert "private" not in spec
     assert '"password": ANY_STR' in spec
-    request = trace["steps"]["step-0001"]["expect"]["responses"][0]["request"]
+    request = ts.expected_responses(trace["step_0001"])[0]["request"]
     assert request["body"]["password"] == REDACTED
 
 
@@ -722,3 +730,236 @@ def test_day_offset_survives_dst():
                  "Australia/Sydney", "Asia/Shanghai"):
         bad = wrong_days(utc_day_no, ZoneInfo(name))
         assert not bad, f"{name} 上 UTC 编号出错：{bad[:3]}"
+
+
+# ─────────────────────────── v2 轨迹形状：maa-fw 那一侧的契约 ───────────────────────────
+#
+# 这些判据守的是「maa-fw 能不能加载我们的产物」。这件事在我们自己的回放里
+# **看不出来** —— 我们的回放器不碰 confidence_policy / gui_target，也不会去
+# coerce 节点。所以坏了只有 maa-fw 那边会炸，而那时候已经太晚了。
+
+def _v2_trace():
+    steps = [
+        {"id": "c1", "t": 100, "type": "click", "sel": 'locator("#go")',
+         "kind": "id", "label": "去", "url": "https://app.example/list",
+         "ui": {
+             "click": {"rx": 0.2, "ry": 0.8},
+             "pageRect": {"x": 10, "y": 20, "width": 40, "height": 16},
+             "templates": {
+                 "context": {"path": "f.assets/step_0001.context.png",
+                             "width": 80, "height": 40},
+                 "element": {"path": "f.assets/step_0001.element.png",
+                             "width": 40, "height": 16},
+             },
+         }},
+        {"id": "a1", "t": 200, "type": "assert", "assertion": "text",
+         "expected": "已保存", "sel": 'locator("#msg")', "kind": "id"},
+        {"id": "a2", "t": 300, "type": "assert", "assertion": "text",
+         "expected": "12:30", "sel": 'locator("#clock")', "kind": "id",
+         "expectedFrom": {"kind": "localtime", "format": "%H:%M",
+                          "match": "contains"}},
+    ]
+    return generate_trace(steps, [], name="flow", start_url="https://app.example/list")
+
+
+def test_every_node_carries_recognition_and_action():
+    """MaaFramework 的节点必须同时有 recognition 和 action。
+
+    映射不到图像识别的步骤用 DirectHit（无条件命中）+ DoNothing，而不是
+    把键省掉 —— 省掉的话 _coerce_node 会填出一个 DirectHit/DoNothing，
+    结果一样，但我们就失去了「这一步是有意不靠视觉」的记录。
+    """
+    trace = _v2_trace()
+    for node_id, node in ts.nodes(trace):
+        assert node["recognition"].get("type"), node_id
+        assert node["action"].get("type"), node_id
+        assert isinstance(node["next"], list), node_id
+
+
+def test_node_names_use_the_charset_maa_fw_normalises_to():
+    """maa-fw 的 node_name() 把名字规范到 [0-9A-Za-z_]。
+
+    我们主动对齐，否则同一个节点在两边有两个名字，日志和统计对不上号。
+    """
+    import re
+    for node_id, _ in ts.nodes(_v2_trace()):
+        assert re.fullmatch(r"[0-9A-Za-z_]+", node_id), node_id
+
+
+def test_strict_attach_dicts_only_carry_keys_maa_fw_accepts():
+    """confidence_policy / gui_target 是用 `**` 反序列化的，多一个键就炸。
+
+    对应 maa-fw 的 MaaNodeRunner._coerce_node：
+        ConfidencePolicy(**attach["confidence_policy"])
+        GuiTarget(**attach["gui_target"])
+    所以我们自己的额外参数（尺度列表、歧义边界、多模板顺序）必须进 provenance。
+    """
+    trace = _v2_trace()
+    click = trace["step_0001"]
+    assert set(ts.attach(click)["confidence_policy"]) <= ts.STRICT_CONFIDENCE_KEYS
+    assert set(ts.attach(click)["gui_target"]) <= ts.STRICT_GUI_TARGET_KEYS
+    # 那些额外参数确实还在，只是搬到了 provenance
+    prov = ts.provenance(click)
+    assert prov["scaleFactors"] and prov["ambiguityMargin"]
+    assert prov["templateOrder"] == ["context", "element"]
+
+
+def test_validate_trace_catches_a_key_maa_fw_would_choke_on():
+    """守护上一条判据本身。
+
+    没有这个反向检查，`strict_attach_errors` 可以退化成永远返回空列表，
+    上面那条断言照样绿 —— 它只看我们此刻恰好没多写键。
+    """
+    from replay_trace import TraceReplayError, validate_trace
+
+    trace = _v2_trace()
+    validate_trace(trace)                       # 先证明它本来是好的
+    ts.attach(trace["step_0001"])["confidence_policy"]["scale_factors"] = [1.0]
+    with pytest.raises(TraceReplayError, match="maa-fw 不认的键"):
+        validate_trace(trace)
+
+
+def test_meta_node_is_inert_under_maa_fw_skip_rule():
+    """$meta 不能被当成一步执行。
+
+    MaaNodeRunner.run 不传 start_nodes 时会把**整张节点表**塞进队列，
+    $meta 也在里面。它的 recognition 是 DirectHit（无条件命中），真被执行
+    就会凭空多出一步。靠 max_hit=1 配 stats.hit_count=1 让 _should_skip_node
+    无条件跳过它 —— 这里复刻那条规则：
+
+        if node.max_hit and hit_count >= node.max_hit: return True
+    """
+    meta_node = _v2_trace()[ts.META_KEY]
+    max_hit = meta_node.get("max_hit", 0)
+    hit_count = ts.attach(meta_node)["stats"]["hit_count"]
+    assert max_hit and hit_count >= max_hit, (max_hit, hit_count)
+    # 也不能有出边，否则它会把真步骤拉进自己的分支
+    assert meta_node["next"] == []
+
+
+def test_meta_is_neither_entry_nor_anyones_next():
+    trace = _v2_trace()
+    assert ts.meta(trace)["entry"] != ts.META_KEY
+    for _, node in ts.nodes(trace):
+        assert ts.META_KEY not in node["next"]
+
+
+def test_has_template_does_not_count_direct_hit_as_visual_fallback():
+    """v2 里每个节点都有 recognition —— 「有没有视觉兜底」不能再看它是否存在。
+
+    照旧那么写会把所有无模板步骤都当成有视觉兜底：DOM 失败时不再原样抛出
+    真正的原因，而是去做一次注定失败的视觉匹配，最后报「视觉匹配分数不足」。
+    那正是这套东西以前最难查的一类误导性报错。
+    """
+    trace = _v2_trace()
+    assert ts.has_template(trace["step_0001"]) is True
+    assert trace["step_0002"]["recognition"]["type"] != "TemplateMatch"
+    assert ts.has_template(trace["step_0002"]) is False
+    # 有 TemplateMatch 的名头但模板丢了，也不算有
+    faked = {"recognition": {"type": "TemplateMatch", "param": {}}, "attach": {}}
+    assert ts.has_template(faked) is False
+
+
+def test_click_point_travels_as_a_ratio_not_pixels():
+    """落点用 target_ratio（比例），不用 target_offset（像素）。
+
+    匹配框会按尺度缩放，导出时算出的像素偏移在尺度≠1 时就偏了 —— 跨分辨率
+    复用模板正是这套东西的全部意义。maa-fw 自己也是这么想的，它的
+    _observed_target_ratio 就是比例。
+    """
+    param = _v2_trace()["step_0001"]["action"]["param"]
+    assert param["target"] is True
+    assert param["target_offset"] == [0, 0, 0, 0]
+    assert param["target_ratio"] == [0.2, 0.8]      # 录制时那一下的真实落点
+    # 回放器读回来的必须是同一个点，不能退化成框中心
+    assert ts.relative_point(_v2_trace()["step_0001"]) == {"x": 0.2, "y": 0.8}
+
+
+def test_static_text_assertion_becomes_an_ocr_node_maa_fw_can_verify():
+    """能映射的断言要变成真节点，不是一律标 web-only 了事。
+
+    maa-fw 的 SKILL.md 把验证当一等公民（wait_text / OCR expected），
+    所以「页面上有这段文字」这类断言在桌面侧是**验得了**的。
+    """
+    node = _v2_trace()["step_0002"]
+    assert node["recognition"]["type"] == "OCR"
+    assert node["recognition"]["param"]["expected"] == ["已保存"]
+    assert node["action"]["type"] == "DoNothing"
+    # 断言规格照旧留着，我们自己的回放走 DOM 断言那条路
+    spec = ts.assertion_of(node)
+    assert spec == {"assertion": "text", "expected": "已保存"}
+    assert "scope" not in spec, "映射成 OCR 了就不该再标 web-only"
+
+
+def test_runtime_computed_expectation_is_marked_web_only():
+    """运行时才算的期望值写不成静态 OCR expected。
+
+    「显示的是当前时间」的期望值由回放此刻的时钟决定 —— 硬塞一个录制时的
+    字面量进 OCR，等于把这条断言变成一颗定时炸弹：当场绿、隔天必挂。
+    标成 web-only 让桌面侧显式跳过，比假装验过要好。
+    """
+    node = _v2_trace()["step_0003"]
+    assert node["recognition"]["type"] == "DirectHit"
+    spec = ts.assertion_of(node)
+    assert spec["scope"] == ts.VERIFY_SCOPE_WEB
+    assert spec["expectedFrom"]["kind"] == "localtime"
+
+
+def test_network_expectations_are_marked_web_only():
+    """HTTP 状态码和请求体桌面侧根本看不到。"""
+    steps = [{"id": "c1", "t": 100, "type": "click", "sel": 'locator("#save")',
+              "kind": "id", "ui": {"click": {"rx": 0.5, "ry": 0.5},
+                                   "pageRect": {"width": 10, "height": 10},
+                                   "templates": {"element": {"path": "a.png",
+                                                             "width": 10,
+                                                             "height": 10}}}}]
+    net = [
+        {"id": 1, "t": 101, "phase": "req", "method": "POST",
+         "url": "https://app.example/api/save", "body": "{}"},
+        {"requestId": 1, "t": 102, "phase": "res", "method": "POST",
+         "url": "https://app.example/api/save", "status": 200},
+    ]
+    trace = generate_trace(steps, net, name="flow", start_url="https://app.example/")
+    responses = ts.expected_responses(trace["step_0001"])
+    assert responses and all(r["scope"] == ts.VERIFY_SCOPE_WEB for r in responses)
+
+
+def test_rewritten_existence_assertion_still_maps_to_ocr():
+    """「文本同义反复」改写过的断言不能因为形状变了就退成 web-only。
+
+    prepare_steps 会把「用文本定位元素、再断言它的文本等于那段文本」改写成
+    存在性断言 —— 那只是换了个更诚实的 **web 断言写法**，用户的意思没变，
+    还是「这段文字应该在」，照样是 OCR 的主场。
+
+    这条判据很关键：实测录出来的断言**绝大多数**都会走那条改写路径。漏掉它，
+    maa-fw 侧几乎一条断言都验不了，「统一轨迹」就只剩个形状。
+    """
+    steps = [
+        {"id": "a1", "t": 100, "type": "assert", "assertion": "text",
+         "expected": "maa-fw", "kind": "text",
+         "sel": 'getByText("maa-fw", { exact: true })'},
+    ]
+    trace = generate_trace(steps, [], name="flow", start_url="https://app.example/")
+    node = trace["step_0001"]
+    # 先证明改写真的发生了，否则这条判据在验一件没发生的事
+    spec = ts.assertion_of(node)
+    assert spec["assertion"] == "visible" and spec["expected"] is True, spec
+    assert node["recognition"]["type"] == "OCR", node["recognition"]
+    assert node["recognition"]["param"]["expected"] == ["maa-fw"]
+    assert "scope" not in spec, "改写过的断言 maa-fw 照样验得了，不该标 web-only"
+
+
+def test_existence_assertion_without_a_text_anchor_stays_web_only():
+    """断言对象不是文字时才该退成 web-only。
+
+    守护上一条：没有这个反向检查，「一律映射成 OCR」也能让上面那条绿 ——
+    而那会给桌面侧一个 expected 为空的 OCR 节点，永远匹配不上。
+    """
+    steps = [
+        {"id": "a1", "t": 100, "type": "assert", "assertion": "visible",
+         "expected": True, "kind": "id", "sel": 'locator("#chart")'},
+    ]
+    trace = generate_trace(steps, [], name="flow", start_url="https://app.example/")
+    node = trace["step_0001"]
+    assert node["recognition"]["type"] == "DirectHit"
+    assert ts.assertion_of(node)["scope"] == ts.VERIFY_SCOPE_WEB
