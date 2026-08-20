@@ -97,10 +97,23 @@ def browser_type_launch_args(browser_type_launch_args):
     return args
 
 
+# 录制器用的同一份配置。ENTRY_PATH 已经从这里取了，站点地址也该从这里取 ——
+# 否则同一个配置文件只有一半生效：草稿知道要去哪个路径，却不知道是哪个站点。
+try:
+    CONFIG_BASE_URL = (load_config(None) or {}).get("baseUrl") or None
+except Exception:                     # 配置坏了不该拖垮整个 session
+    CONFIG_BASE_URL = None
+
+
 @pytest.fixture(scope="session")
 def base_url(base_url):
-    """命令行 --base-url 优先，其次 REC_BASE_URL。"""
-    return base_url or os.environ.get("REC_BASE_URL")
+    """命令行 --base-url 优先，其次 REC_BASE_URL，最后回落到录制器配置。
+
+    回落到配置这一步很要紧：没有它，`pytest recordings/<flow>/` 会以
+    `Page.goto: Cannot navigate to invalid URL`（在导航到 "/"）失败 ——
+    报错完全指不到「你没告诉我站点地址」这个真实原因。
+    """
+    return base_url or os.environ.get("REC_BASE_URL") or CONFIG_BASE_URL
 
 
 # ────────────────────────── 登录一次 ──────────────────────────
