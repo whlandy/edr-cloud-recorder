@@ -59,7 +59,8 @@ The recording produces:
 | `recordings/<flow>/recording.json` | Raw steps, network events, and UI metadata |
 | `recordings/<flow>/assets/*.png` | Pre-action element and context templates |
 | `recordings/<flow>/test_<flow>.py` | Playwright pytest draft |
-| `recordings/<flow>/trace.json` | One complete golden path for the test case |
+| `recordings/<flow>/trace.json` | One complete golden path, in the MaaFramework node-table shape
+  (`edr.success-trace/v2`) that maa-fw's `MaaNodeRunner` loads directly |
 
 Configuration, regeneration, and artifact rules are in
 [recording-and-generation.md](references/recording-and-generation.md).
@@ -161,6 +162,7 @@ scripts/record.py           Browser recording driver
 scripts/recorder-inject.mjs In-page recorder
 scripts/generate_spec.py    Pytest generator
 scripts/generate_trace.py   Golden trace compiler
+scripts/trace_schema.py     The one definition of the trace shape
 scripts/replay_trace.py     Trace runner and evaluator
 assets/                     Runtime files copied into target projects
 orchestrate/                Cloud and endpoint coordination

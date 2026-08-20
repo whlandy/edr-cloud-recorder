@@ -6,18 +6,97 @@ evaluation. Template matching internals are documented in
 
 ## Artifact Roles
 
-`edr.success-trace/v1` is the immutable golden path compiled from one recorded test case.
+`edr.success-trace/v2` is the immutable golden path compiled from one recorded test case.
 `edr.execution-trace/v1` is evidence from one replay or Agent attempt. Never overwrite the golden
 trace with execution results.
 
 The golden trace is a linked path:
 
 ```text
-entry -> step-0001 -> step-0002 -> ... -> null
+$meta.entry -> step_0001 -> step_0002 -> ... -> []
 ```
 
 Validation rejects cycles, missing targets, unsupported actions, and unreachable nodes. A trace
 with a required template missing is `incomplete` and must not run as a ready visual path.
+
+## Why v2 Looks The Way It Does
+
+The trace feeds two runtimes: this repo's `replay_trace.py`, and maa-fw's `MaaNodeRunner`. The
+latter loads a MaaFramework-style node table. v1 wrapped the nodes in an envelope
+(`{schema, name, entry, steps:{...}}`) that maa-fw cannot load, even though the **node bodies** on
+both sides were already nearly identical.
+
+So v2 drops the envelope. The top level *is* the node table, and trace-level metadata moves into a
+reserved `$meta` node. The layout is not invented here — it is exactly what maa-fw's
+`MaaNodeRunner._coerce_node` reads, i.e. `LearnedNode.to_pipeline_node()`:
+
+```text
+<node_name>:
+  recognition: {type, param}          TemplateMatch | OCR | DirectHit
+  action:      {type, param}          Click | InputText | PressKey | DoNothing | ...
+  next:        [node_name, ...]
+  max_hit, rate_limit, timeout, pre_delay, post_delay, on_error
+  attach:
+    app / task_key / scene_key
+    confidence_policy                 our thresholds
+    gui_target                        element box, label, crop path
+    verification                      network expectations, manual assertions
+    provenance                        everything web-specific
+    stats
+```
+
+`scripts/trace_schema.py` is the single definition of this shape. Both the generator and the tests
+build nodes through `build_node` / `build_trace` there — never by writing the nested literal twice,
+because a second copy of the layout is a second thing that can drift.
+
+### Field placement rules that are not negotiable
+
+**`attach.confidence_policy` and `attach.gui_target` are deserialised with `**`.** maa-fw does
+`ConfidencePolicy(**attach["confidence_policy"])` and `GuiTarget(**attach["gui_target"])`, so one
+extra key raises `TypeError` and the **whole trace fails to load**. Our own extra parameters —
+`scaleFactors`, `ambiguityMargin`, `templateOrder`, the full template set — therefore live in
+`attach.provenance`. `validate_trace` enforces this, because nothing on our side would otherwise
+notice: our replay never touches those two dicts, so a violation is invisible here and fatal there.
+
+**`recognition.param.template` is a single path string**, matching what maa-fw's own compiler
+emits. The ordered `context -> element` fallback is our capability, so it stays in
+`provenance.templates` / `provenance.templateOrder`.
+
+**The click point travels as a ratio, not pixels.** It goes in `action.param.target_ratio`, a field
+maa-fw already has for exactly this reason ("survive a rescaled match at replay time"). Using
+`target_offset` would be wrong: it is a pixel offset, and the match box is scaled, so an exported
+pixel value is off whenever the scale is not 1 — which is the entire point of reusing templates
+across resolutions.
+
+**Every node has a `recognition`.** Steps with no image recognition get `DirectHit`. This means
+`node.get("recognition")` is **no longer** a test for "does this step have a visual fallback" —
+use `trace_schema.has_template()`. Getting this wrong makes every template-less step look like it
+has a visual fallback: DOM failures stop re-raising the real cause and instead run a doomed match,
+reporting "visual match score too low" — the single most misleading failure this system produces.
+
+### `$meta` must stay inert
+
+`MaaNodeRunner.run` with no `start_nodes` queues the **entire** table, `$meta` included, and
+`$meta`'s `DirectHit` recognition matches unconditionally. It is kept inert by `max_hit: 1` plus
+`attach.stats.hit_count: 1`, which makes `_should_skip_node` skip it every time. It also has no
+`next`, is never anyone's `next`, and is never the `entry`.
+
+### Which assertions maa-fw can actually verify
+
+maa-fw's SKILL.md makes verification first-class, so assertions are mapped to real nodes where
+possible rather than being dropped:
+
+| Recorded assertion | v2 node | Why |
+|---|---|---|
+| text / value with a static expected string | `recognition: OCR`, `param.expected: [text]` | OCR's home turf |
+| existence rewritten from a text tautology | `recognition: OCR` on the anchor text | the rewrite changed the *web* wording, not the intent — and this is the majority of real recordings |
+| existence with no text anchor (canvas, chart) | `DirectHit`, assertion marked `web-only` | recorder crops templates only for positional steps |
+| `expectedFrom` (runtime-computed expected value) | `DirectHit`, marked `web-only` | OCR `expected` is static; freezing a recorded literal into it is a time bomb — green today, red tomorrow |
+| `checked` / `attribute` | `DirectHit`, marked `web-only` | no desktop equivalent |
+| HTTP status / request body expectations | kept in `attach.verification.responses`, marked `web-only` | invisible from the desktop side |
+
+`web-only` is `trace_schema.VERIFY_SCOPE_WEB`. Marking is not decoration: an unmarked expectation
+that maa-fw cannot check would be silently treated as verified.
 
 ## Replay Modes
 
@@ -29,7 +108,7 @@ pre-action template and acts at the recorded relative point. `PressKey` reuses k
 when a successful preceding visual action targeted the same recorded selector; otherwise replay
 fails rather than pressing an unproven active element.
 
-Manual `Assert` nodes are different: they are runner-owned `verifier` nodes and use the recorded
+Manual assertion nodes are different: they are runner-owned `verifier` nodes and use the recorded
 DOM selector in both modes. This prevents the Agent from grading its own pixels while still
 allowing the Agent's actions to be fully visual.
 
@@ -60,7 +139,7 @@ already have changed server state; visual fallback at that point would double-su
 | `Check` / `Uncheck` | use Playwright state-aware methods in DOM mode |
 | `SetSwitch` | read recorded state carrier, click only if needed, poll desired state unless gated |
 | `PressKey` | locator press in DOM mode; current keyboard focus in visual mode |
-| `Assert` | DOM verifier with polling and explicit expected value |
+| `DoNothing` | assertion node: DOM verifier with polling and explicit expected value (spec in `attach.verification.assertion`) |
 
 An environment-backed input such as `REC_PASSWORD` fails if the variable is absent or empty. It
 must never silently input an empty string and report success.

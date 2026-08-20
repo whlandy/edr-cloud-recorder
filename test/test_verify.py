@@ -16,6 +16,7 @@ import pytest
 
 from generate_spec import generate_spec, prepare_steps
 from generate_trace import generate_trace
+import trace_schema as ts
 
 CHECKS: dict[str, callable] = {}
 
@@ -523,14 +524,23 @@ def trace_of(rec):
                           start_url=rec["startUrl"], name="gen-check")
 
 
+def trace_nodes(trace):
+    return [node for _, node in ts.nodes(trace)]
+
+
 @check("轨迹里也是存在性断言（两个产物同一条规则）")
 def _(rec):
     trace = trace_of(rec)
-    node = find(trace["steps"].values(),
-                lambda n: n["action"]["type"] == "Assert"
-                and "待删除的资产" in (n["selector"].get("sel") or ""))
-    param = (node or {})["action"]["param"]
-    assert param["assertion"] == "visible" and param["expected"] is True, param
+    node = find(trace_nodes(trace),
+                lambda n: ts.assertion_of(n)
+                and "待删除的资产" in (ts.selector_of(n).get("sel") or ""))
+    spec = ts.assertion_of(node or {})
+    assert spec["assertion"] == "visible" and spec["expected"] is True, spec
+    # 改写只是换了个更诚实的 web 断言写法，断的东西没变（「这段文字应该在」）
+    # —— 所以 maa-fw 侧照样验得了，映射成 OCR 而不是标 web-only
+    assert node["recognition"]["type"] == "OCR", node["recognition"]
+    assert "待删除的资产" in node["recognition"]["param"]["expected"][0]
+    assert "scope" not in spec, spec
 
 
 @check("草稿里生成 to_be_visible 并说明为什么改了")
@@ -770,10 +780,10 @@ def _(rec):
 @check("关浮层的步骤在轨迹里是可选的，并带着「可提前做」的标记")
 def _(rec):
     trace = trace_of(rec)
-    node = find(trace["steps"].values(),
-                lambda n: "dlg_panel" in ((n["selector"].get("css")) or ""))
-    assert node and node.get("optional") is True, node
-    assert node.get("dismissesOverlay") is True, node
+    node = find(trace_nodes(trace),
+                lambda n: "dlg_panel" in (ts.selector_of(n).get("css") or ""))
+    assert node and ts.is_optional(node) is True, node
+    assert ts.dismisses_overlay(node) is True, node
 
 
 @check("选中下拉选项不算关浮层")
@@ -855,14 +865,14 @@ def _(rec):
 @check("确认框里的步骤在轨迹里是可选的")
 def _(rec):
     trace = trace_of(rec)
-    sw = find(trace["steps"].values(),
+    sw = find(trace_nodes(trace),
               lambda n: n["action"]["type"] == "SetSwitch"
-              and n["selector"].get("label") == "需确认自保护")
+              and ts.selector_of(n).get("label") == "需确认自保护")
     gated = ((sw or {})["action"]["param"].get("via") or {}).get("gatedSteps") or []
     assert gated, sw
-    for node in trace["steps"].values():
-        if node.get("sourceStepId") in gated:
-            assert node.get("optional") is True, node["selector"]
+    for node in trace_nodes(trace):
+        if ts.provenance(node).get("sourceStepId") in gated:
+            assert ts.is_optional(node) is True, ts.selector_of(node)
 
 
 @check("升级不会弄丢点击那一刻抓的模板")
@@ -944,14 +954,17 @@ def _(rec):
 def _(rec):
     trace = generate_trace(rec["steps"], rec["net"],
                            name="t", start_url="http://127.0.0.1/")
-    dyn = [n for n in trace["steps"].values()
-           if (n["action"].get("param") or {}).get("expectedFrom")]
+    dyn = [n for _, n in ts.nodes(trace) if ts.assertion_of(n).get("expectedFrom")]
     # 两条：文本型（#last_used）和输入框 value 型（#today_box）
     assert len(dyn) == 2, len(dyn)
     for node in dyn:
-        param = node["action"]["param"]
-        assert param["expectedFrom"]["kind"] == "localtime", param
-    assert {n["action"]["param"]["assertion"] for n in dyn} == {"text", "value"}
+        spec = ts.assertion_of(node)
+        assert spec["expectedFrom"]["kind"] == "localtime", spec
+        # 运行时才算的期望值写不成静态 OCR expected —— 必须标成 web-only，
+        # 否则 maa-fw 会以为这一条它验得了
+        assert spec["scope"] == ts.VERIFY_SCOPE_WEB, spec
+        assert node["recognition"]["type"] == "DirectHit", node["recognition"]
+    assert {ts.assertion_of(n)["assertion"] for n in dyn} == {"text", "value"}
 
 
 @check("草稿自带关弹窗前奏")

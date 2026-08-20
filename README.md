@@ -36,7 +36,8 @@ python <此仓库>/scripts/record.py --url https://app.example.com --name login-
 | 文件 | 内容 |
 |---|---|
 | `recording.json` | 原始记录：步骤、点击元素的渲染特征、网络事件，都带毫秒时间戳 |
-| `trace.json` | 与脚本一一对应的完整成功轨迹；包含模板匹配和网络成功条件 |
+| `trace.json` | 与脚本一一对应的完整成功轨迹；包含模板匹配和网络成功条件。
+  节点表用 MaaFramework 形状（`edr.success-trace/v2`），maa-fw 的 `MaaNodeRunner` 可直接加载 |
 | `assets/step-*.png` | 点击元素的黑盒 UI 模板，可供模板、SSIM 或特征匹配使用 |
 | `test_<name>.py` | 可跑的脚本草稿，接口调用作为注释挂在对应步骤下 |
 
@@ -78,6 +79,7 @@ scripts/
   recorder-inject.mjs 页面内录制器（唯一的 JS —— 它在浏览器里跑）
   generate_spec.py    从录制数据生成 pytest 草稿
   generate_trace.py   把一次完整录制编译成一条黄金成功轨迹
+  trace_schema.py     轨迹形状的唯一定义处（生成、回放、测试都走它）
   replay_trace.py     回放黄金轨迹，产出执行轨迹并计算 Agent 指标
   selector_py.py      把 JS 语法的选择器转成 Python 语法
   recorder_loader.py  把注入层原样喂给 add_init_script

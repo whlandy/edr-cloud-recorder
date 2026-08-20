@@ -40,6 +40,7 @@ def main() -> int:
             "py_compile",
             "assets/rec_visual.py",
             "scripts/generate_trace.py",
+            "scripts/trace_schema.py",
             "scripts/replay_trace.py",
             "scripts/rec_secrets.py",
             "scripts/record.py",

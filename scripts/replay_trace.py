@@ -19,13 +19,16 @@ from rec_visual import (
     VisualAbsent, VisualAmbiguous, VisualMatchError, locate_visual_target,
 )
 from selector_py import to_python
+import trace_schema as ts
 
 
-TRACE_SCHEMA = "edr.success-trace/v1"
+TRACE_SCHEMA = ts.SCHEMA
 EXECUTION_SCHEMA = "edr.execution-trace/v1"
+# 断言步骤的动作类型是 DoNothing —— 断言不产生动作，识别/校验本身就是结论。
+# 「这一步是不是断言」改看 attach.verification.assertion 有没有东西。
 SUPPORTED_ACTIONS = {
     "Click", "DoubleClick", "InputText", "Check", "Uncheck",
-    "SetSwitch", "PressKey", "Assert",
+    "SetSwitch", "PressKey", "DoNothing",
 }
 
 
@@ -40,34 +43,43 @@ def load_trace(path: str | Path) -> dict:
 
 
 def validate_trace(trace: dict) -> list[str]:
-    if trace.get("schema") != TRACE_SCHEMA:
-        raise TraceReplayError(f"不支持的 trace schema: {trace.get('schema')!r}")
-    steps = trace.get("steps")
-    if not isinstance(steps, dict):
-        raise TraceReplayError("trace.steps 必须是对象")
-    entry = trace.get("entry")
-    if not steps:
+    try:
+        meta = ts.check_schema(trace)
+    except ts.TraceFormatError as error:
+        raise TraceReplayError(str(error)) from error
+    ids = ts.node_ids(trace)
+    entry = meta.get("entry")
+    if not ids:
         if entry is not None:
             raise TraceReplayError("空 trace 的 entry 必须是 null")
         return []
-    if entry not in steps:
-        raise TraceReplayError(f"trace.entry 不存在: {entry!r}")
+    if entry not in ids:
+        raise TraceReplayError(f"$meta.entry 不存在: {entry!r}")
 
     order, seen, current = [], set(), entry
     while current is not None:
         if current in seen:
             raise TraceReplayError(f"trace 存在环: {current}")
-        if current not in steps:
+        if current not in ids:
             raise TraceReplayError(f"next 指向不存在的步骤: {current}")
         seen.add(current)
         order.append(current)
-        action = (steps[current].get("action") or {}).get("type")
+        action = (trace[current].get("action") or {}).get("type")
         if action not in SUPPORTED_ACTIONS:
             raise TraceReplayError(f"{current} 使用不支持的动作: {action!r}")
-        current = steps[current].get("next")
-    unreachable = set(steps) - seen
+        current = ts.next_of(trace[current])
+    unreachable = ids - seen
     if unreachable:
         raise TraceReplayError(f"trace 包含不可达步骤: {sorted(unreachable)}")
+    # maa-fw 那两个用 ** 反序列化的字典也在这里守 —— 见 strict_attach_errors。
+    # 它们坏了只有 maa-fw 会炸，我们自己的回放跑得通，所以必须主动查。
+    problems = [
+        problem
+        for node_id in order
+        for problem in ts.strict_attach_errors(node_id, trace[node_id])
+    ]
+    if problems:
+        raise TraceReplayError("轨迹不符合 maa-fw 的节点约定：\n  " + "\n  ".join(problems))
     return order
 
 
@@ -84,25 +96,24 @@ def _locator(page, selector: dict):
 
 
 def _visual_ui(node: dict) -> dict:
-    recognition = node.get("recognition") or {}
-    relative = (node.get("action") or {}).get("param", {}).get("relativePoint") or {}
+    relative = ts.relative_point(node)
     return {
-        **(node.get("geometry") or {}),
-        "templates": recognition.get("templates") or {},
-        "click": {"rx": relative.get("x", 0.5), "ry": relative.get("y", 0.5)},
+        **ts.geometry_of(node),
+        "templates": ts.templates_of(node),
+        "click": {"rx": relative["x"], "ry": relative["y"]},
     }
 
 
 def _target(page, node: dict, template_root: Path, targeting: str, timeout_ms: int,
             focused_selector: str | None):
     action_type = (node.get("action") or {}).get("type")
-    if action_type == "Assert":
-        locator = _locator(page, node.get("selector") or {})
+    if ts.assertion_of(node):
+        locator = _locator(page, ts.selector_of(node))
         if locator is None:
             raise TraceReplayError("断言步骤缺少 DOM 选择器")
         return "verifier", locator, None, None
     if action_type == "PressKey" and targeting == "visual_only":
-        selector = (node.get("selector") or {}).get("sel")
+        selector = ts.selector_of(node).get("sel")
         if not selector or selector != focused_selector:
             raise TraceReplayError("视觉按键步骤没有同目标动作建立的可信焦点")
         return "keyboard", None, None, None
@@ -110,7 +121,7 @@ def _target(page, node: dict, template_root: Path, targeting: str, timeout_ms: i
     locator = None
     dom_error = None
     if targeting != "visual_only":
-        locator = _locator(page, node.get("selector") or {})
+        locator = _locator(page, ts.selector_of(node))
     if locator is not None:
         try:
             locator.wait_for(state="visible", timeout=timeout_ms)
@@ -120,9 +131,9 @@ def _target(page, node: dict, template_root: Path, targeting: str, timeout_ms: i
             # 于是执行记录里只剩「视觉匹配分数不足」—— 分不清是选择器写错了、
             # 元素本来就不该出现、还是整个页面根本不对（会话超时最典型）。
             dom_error = f"{type(error).__name__}: {error}"
-            if not node.get("recognition"):
+            if not ts.has_template(node):
                 raise
-    if not node.get("recognition"):
+    if not ts.has_template(node):
         raise TraceReplayError("DOM 定位失败且步骤没有视觉模板")
     deadline = time.monotonic() + timeout_ms / 1000
     while True:
@@ -174,7 +185,7 @@ def _target_absent(page, node: dict, error: Exception, targeting: str = "dom_fir
     if isinstance(error, VisualAmbiguous):
         return False
 
-    selector = node.get("selector") or {}
+    selector = ts.selector_of(node)
     if targeting != "visual_only" and selector.get("sel"):
         try:
             locator = _locator(page, selector)
@@ -423,8 +434,9 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
             point={"x": visual.x, "y": visual.y},
         )
 
-    if action_type == "Assert":
-        _assert_locator(locator, param, timeout_ms)
+    assertion = ts.assertion_of(node)
+    if assertion:
+        _assert_locator(locator, assertion, timeout_ms)
     elif action_type == "PressKey":
         (locator or page.keyboard).press(param.get("key", "Enter"))
     elif action_type == "InputText":
@@ -478,7 +490,7 @@ def _perform(page, node: dict, root: Path, targeting: str, timeout_ms: int,
     responses: list = []
     optional_waiters = []
     try:
-        expected_responses = (node.get("expect") or {}).get("responses") or []
+        expected_responses = ts.expected_responses(node)
         occurrences: dict[tuple[str, str], int] = {}
         # 必发的（写请求）用 ExitStack 等到底；非必发的（读请求）单独接住超时。
         #
@@ -535,26 +547,28 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
     trace_path = Path(trace) if isinstance(trace, (str, Path)) else None
     golden = load_trace(trace_path) if trace_path else trace
     order = validate_trace(golden)
-    if golden.get("status") != "ready":
+    meta = ts.meta(golden)
+    if meta.get("status") != "ready":
         raise TraceReplayError("trace 尚未 ready，存在缺失模板的定位步骤")
     root = Path(template_root) if template_root else (
         trace_path.parent if trace_path else Path.cwd()
     )
     execution = {
         "schema": EXECUTION_SCHEMA,
-        "goldenSchema": golden["schema"],
-        "name": golden.get("name"),
+        "goldenSchema": meta["schema"],
+        "name": meta.get("name"),
         "startedAt": datetime.now().isoformat(),
         "status": "running",
         "steps": [],
     }
     runtime_env = os.environ if env is None else env
-    if navigate and golden.get("startUrl"):
+    start_url = meta.get("startUrl")
+    if navigate and start_url:
         try:
-            page.goto(golden["startUrl"])
+            page.goto(start_url)
         except Exception as error:
             raise TraceReplayError(f"无法进入 trace 起始页面: {error}") from error
-        _assert_landed(page, golden["startUrl"], execution)
+        _assert_landed(page, start_url, execution)
     first_error = None
     focused_selector = None
     # 被跳过的 optional 步骤：目标当时不在，但可能只是还没出现
@@ -562,7 +576,7 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
     # 因为挡路而被提前做掉的关浮层步骤：轨迹走到它时会发现已经没得关
     performed_early: set[str] = set()
     for node_id in order:
-        node = golden["steps"][node_id]
+        node = golden[node_id]
         started = time.perf_counter()
         result = {
             "nodeId": node_id,
@@ -578,7 +592,7 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             )
             result["status"] = "success"
             if targeting == "visual_only" and result["target"]["mode"] == "visual":
-                focused_selector = (node.get("selector") or {}).get("sel")
+                focused_selector = ts.selector_of(node).get("sel")
         except Exception as error:
             # 「找到了但点不动」是单独一类：有东西挡在上面。
             #
@@ -595,7 +609,7 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                 while pending_optional:
                     skipped_id, skipped_result = pending_optional.pop(0)
                     try:
-                        _perform(page, golden["steps"][skipped_id], root, targeting,
+                        _perform(page, golden[skipped_id], root, targeting,
                                  timeout_ms, runtime_env, focused_selector)
                     except Exception:
                         continue                    # 补做也不成，按原样报错
@@ -608,10 +622,10 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                 for later_id in order[order.index(node_id) + 1:]:
                     if later_id in performed_early:
                         continue
-                    if not golden["steps"][later_id].get("dismissesOverlay"):
+                    if not ts.dismisses_overlay(golden[later_id]):
                         continue
                     try:
-                        _perform(page, golden["steps"][later_id], root, targeting,
+                        _perform(page, golden[later_id], root, targeting,
                                  timeout_ms, runtime_env, focused_selector)
                     except Exception:
                         continue
@@ -642,7 +656,7 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             # 测试里把失败当跳过，等于把问题往后推，而且推到一个报错不知所云的地方。
             if result["status"] == "success":
                 pass                                # 补做浮层之后重试成功了
-            elif node.get("optional") and _target_absent(page, node, error, targeting):
+            elif ts.is_optional(node) and _target_absent(page, node, error, targeting):
                 result["status"] = "skipped"
                 result["error"] = f"{type(error).__name__}: {error}"
                 result["skippedReason"] = (
@@ -680,7 +694,7 @@ def evaluate_trace(golden: dict, execution: dict) -> dict:
         raise TraceReplayError(
             f"不支持的 execution schema: {execution.get('schema')!r}"
         )
-    if execution.get("goldenSchema") != golden["schema"]:
+    if execution.get("goldenSchema") != ts.meta(golden)["schema"]:
         raise TraceReplayError("execution trace 与黄金 trace schema 不一致")
     execution_steps = execution.get("steps")
     if not isinstance(execution_steps, list):
@@ -708,20 +722,22 @@ def evaluate_trace(golden: dict, execution: dict) -> dict:
             return True
         return (
             step.get("status") == "skipped"
-            and bool(golden["steps"][node_id].get("optional"))
+            and ts.is_optional(golden[node_id])
         )
 
     completed = sum(_satisfied(node) for node in order)
     action_hits = sum(
-        actual.get(node, {}).get("actualAction") == golden["steps"][node]["action"]["type"]
+        actual.get(node, {}).get("actualAction") == golden[node]["action"]["type"]
         for node in order if node in actual
     )
     # 只把**必发**的响应计入分母。非必发的（读请求）在页面已处于目标状态时
     # 本来就不会重发，把它算进分母等于为一件正常的事扣分；
     # 但它真的出现时仍然会被校验，出错照样算失败。
     def _required(node_id: str) -> list:
-        expects = (golden["steps"][node_id].get("expect") or {}).get("responses") or []
-        return [e for e in expects if e.get("required", True)]
+        return [
+            e for e in ts.expected_responses(golden[node_id])
+            if e.get("required", True)
+        ]
 
     expected_network = sum(len(_required(node)) for node in order)
     network_hits = 0
@@ -736,10 +752,11 @@ def evaluate_trace(golden: dict, execution: dict) -> dict:
         if step.get("target", {}).get("mode") == "visual"
     ]
     total = len(order)
+    reachable = set(order)
     observed_path = [
         step["nodeId"]
         for step in execution_steps
-        if step["nodeId"] in golden["steps"]
+        if step["nodeId"] in reachable
     ]
     order_hits = sum(
         expected == observed for expected, observed in zip(order, observed_path)

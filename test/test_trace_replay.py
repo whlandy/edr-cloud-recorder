@@ -4,13 +4,30 @@ import cv2
 import numpy as np
 import pytest
 
-from replay_trace import TraceReplayError, evaluate_trace, replay_trace, validate_trace
+from replay_trace import TraceReplayError
+from replay_trace import evaluate_trace as _evaluate_trace
+from replay_trace import replay_trace as _replay_trace
+from replay_trace import validate_trace as _validate_trace
 from rec_secrets import REDACTED
+from trace_v1 import node_to_v2, to_v2
+
+
+# 测试用平铺节点表达意图，进回放器之前统一翻成 v2 —— 翻译逻辑见 trace_v1.py
+def replay_trace(page, trace, **kwargs):
+    return _replay_trace(page, to_v2(trace) if isinstance(trace, dict) else trace, **kwargs)
+
+
+def evaluate_trace(golden, execution):
+    return _evaluate_trace(to_v2(golden), execution)
+
+
+def validate_trace(trace):
+    return _validate_trace(to_v2(trace))
 
 
 def _trace(node, *, status="ready"):
     return {
-        "schema": "edr.success-trace/v1",
+        "schema": "edr.success-trace/v2",
         "name": "save-flow",
         "startUrl": "https://app.example/form",
         "status": status,
@@ -168,7 +185,7 @@ def test_replay_accepts_redacted_request_and_response_credentials(monkeypatch):
 def test_network_score_cannot_be_inflated_by_extra_responses():
     execution = {
         "schema": "edr.execution-trace/v1",
-        "goldenSchema": "edr.success-trace/v1",
+        "goldenSchema": "edr.success-trace/v2",
         "status": "success",
         "steps": [{
             "nodeId": "step-0001",
@@ -595,7 +612,7 @@ def test_evaluation_rejects_reversed_golden_path():
     }
     execution = {
         "schema": "edr.execution-trace/v1",
-        "goldenSchema": "edr.success-trace/v1",
+        "goldenSchema": "edr.success-trace/v2",
         "status": "success",
         "steps": [
             {"nodeId": "step-0002", "status": "success", "actualAction": "Assert"},
@@ -614,7 +631,7 @@ def test_evaluation_rejects_reversed_golden_path():
 def test_evaluation_penalizes_extra_actions_and_retries():
     execution = {
         "schema": "edr.execution-trace/v1",
-        "goldenSchema": "edr.success-trace/v1",
+        "goldenSchema": "edr.success-trace/v2",
         "status": "success",
         "steps": [
             {"nodeId": "unplanned", "status": "success", "actualAction": "Click"},
@@ -876,7 +893,7 @@ def test_input_text_fails_when_required_secret_is_missing(monkeypatch):
 def test_evaluation_rejects_wrong_execution_schema():
     execution = {
         "schema": "unknown/v1",
-        "goldenSchema": "edr.success-trace/v1",
+        "goldenSchema": "edr.success-trace/v2",
         "status": "success",
         "steps": [],
     }
@@ -888,7 +905,7 @@ def test_evaluation_rejects_wrong_execution_schema():
 def test_evaluation_rejects_negative_retry_count():
     execution = {
         "schema": "edr.execution-trace/v1",
-        "goldenSchema": "edr.success-trace/v1",
+        "goldenSchema": "edr.success-trace/v2",
         "status": "success",
         "steps": [{
             "nodeId": "step-0001",
@@ -905,7 +922,7 @@ def test_evaluation_rejects_negative_retry_count():
 
 def test_empty_golden_trace_rejects_extra_execution_actions():
     golden = {
-        "schema": "edr.success-trace/v1",
+        "schema": "edr.success-trace/v2",
         "name": "empty",
         "status": "ready",
         "entry": None,
@@ -913,7 +930,7 @@ def test_empty_golden_trace_rejects_extra_execution_actions():
     }
     execution = {
         "schema": "edr.execution-trace/v1",
-        "goldenSchema": "edr.success-trace/v1",
+        "goldenSchema": "edr.success-trace/v2",
         "status": "success",
         "steps": [{
             "nodeId": "unplanned",
@@ -1049,8 +1066,9 @@ def test_generate_trace_marks_css_fallback_clicks_optional():
     ]
     trace = generate_trace(steps, [], name="t", start_url="https://app.example/")
 
-    assert trace["steps"]["step-0001"].get("optional") is True
-    assert "optional" not in trace["steps"]["step-0002"]
+    import trace_schema as ts
+    assert ts.is_optional(trace["step_0001"]) is True
+    assert "optional" not in ts.provenance(trace["step_0002"])
 
 
 # ── 起点校验 ──────────────────────────────────────────────────────────
@@ -1161,8 +1179,8 @@ def test_visual_ambiguity_is_not_absence():
     from replay_trace import _target_absent
 
     node = {"selector": {}}          # 没有 DOM 依据，只能看视觉证据
-    assert _target_absent(None, node, VisualAbsent("分数不足")) is True
-    assert _target_absent(None, node, VisualAmbiguous("不唯一")) is False
+    assert _target_absent(None, node_to_v2(node), VisualAbsent("分数不足")) is True
+    assert _target_absent(None, node_to_v2(node), VisualAmbiguous("不唯一")) is False
 
 
 # ── 读请求不必发 ──────────────────────────────────────────────────────
@@ -1254,5 +1272,5 @@ def test_ambiguity_beats_a_stale_dom_selector():
             return _ZeroHit()
 
     node = {"selector": {"kind": "css", "sel": 'locator("div.stale")'}}
-    assert _target_absent(_Page(), node, VisualAmbiguous("不唯一")) is False
-    assert _target_absent(_Page(), node, VisualAbsent("分数不足")) is True
+    assert _target_absent(_Page(), node_to_v2(node), VisualAmbiguous("不唯一")) is False
+    assert _target_absent(_Page(), node_to_v2(node), VisualAbsent("分数不足")) is True
