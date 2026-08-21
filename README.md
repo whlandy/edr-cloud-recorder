@@ -158,10 +158,18 @@ origin 创建临时页面再关闭，导致有界面录制时窗口持续闪烁�
 **编排（可选）**：[edr-wd](references/endpoint-orchestration.md) —— 只有需要到终端上
 验证效果时才用得上，录制器本身不依赖它。
 
-## 历史
+## 分支
 
-`js-format-v1.0` 分支保留了迁移到 Python 之前的纯 JavaScript 实现
-（`js-format-v1.0-codex` 是当时并行的一条分叉）。两者的注入层与本版本同源。
+| 分支 | 内容 |
+|---|---|
+| `main` | 默认分支 |
+| `py-format` | Python 实现的稳定线。黄金轨迹相关的成果都落在这里 |
+| `maa-dp` | 最新开发代码 |
+| `js-format` | 迁移到 Python 之前的纯 JavaScript 实现 |
+
+`js-format-codex` 是 **tag** 不是分支，指向 JS 时代并行的那条分叉
+（它只有一个提交不在 `js-format` 里，所以用 tag 留住，不占一条分支）。
+两条线的注入层与本版本同源。
 
 ## 许可
 
