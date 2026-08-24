@@ -38,6 +38,7 @@ python <此仓库>/scripts/record.py --url https://app.example.com --name login-
 | `recording.json` | 原始记录：步骤、点击元素的渲染特征、网络事件，都带毫秒时间戳 |
 | `trace.json` | 与脚本一一对应的完整成功轨迹；包含模板匹配和网络成功条件。
   节点表用 MaaFramework 形状（`edr.success-trace/v2`），maa-fw 的 `MaaNodeRunner` 可直接加载 |
+| `.auth/` | 本次录制的 cookies、localStorage 和 sessionStorage；仅供本机回放，权限为 `0600` 且默认忽略提交 |
 | `assets/step-*.png` | 点击元素的黑盒 UI 模板，可供模板、SSIM 或特征匹配使用 |
 | `test_<name>.py` | 可跑的脚本草稿，接口调用作为注释挂在对应步骤下 |
 
@@ -53,20 +54,21 @@ pytest recordings/login-flow/test_login_flow.py
 from replay_trace import evaluate_trace, load_trace, replay_trace
 
 case_dir = "recordings/login-flow"
-golden = load_trace(f"{case_dir}/trace.json")
 execution = replay_trace(
-    authed_page,
-    golden,
+    recorded_page,
+    f"{case_dir}/trace.json",  # 自动加载同目录 .auth 中的录制会话
     template_root=case_dir,
     targeting="visual_only",  # 或 dom_first
     execution_path=f"{case_dir}/execution.json",
 )
+golden = load_trace(f"{case_dir}/trace.json")
 report = evaluate_trace(golden, execution)
 assert report["taskSuccess"]
 ```
 
 `replay_trace.py` 运行时需要 `assets/` 和 `scripts/` 都在 Python import path 中。runner 会先
-进入 `startUrl`，并在动作之前建立网络监听；任何模板定位、动作或响应断言失败都会终止路径，
+恢复 `trace.json` 同目录 `.auth` 中的录制会话，再进入 `startUrl`，并在动作之前建立网络监听；
+任何模板定位、动作或响应断言失败都会终止路径，
 不会把只执行了一部分的轨迹记成成功。
 
 ## 结构
@@ -84,7 +86,7 @@ scripts/
   selector_py.py      把 JS 语法的选择器转成 Python 语法
   recorder_loader.py  把注入层原样喂给 add_init_script
 assets/               可直接复制到目标项目的模板
-  conftest.py         登录一次 + authed_page + 超时 + 产物清理
+  conftest.py         录制会话/登录态 page + 超时 + 产物清理
   auth_setup.py       登录流程（要改的地方都在这里）
   rec_helpers.py      dismiss_overlays / confirm_and_capture / is_present / nth_request …
   rec_assert.py       assert_subset / ANY_STR / ANY_NUM / poll_until

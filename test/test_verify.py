@@ -615,7 +615,7 @@ def _(rec):
     assert "resp1_2.status == 202" in spec, spec
 
 
-@check("CSS 兜底的写请求也生成断言")
+@check("CSS 定位的写请求仍是必经动作")
 def _(rec):
     spec = generate_spec(
         [{"t": 100, "type": "click", "kind": "css", "sel": 'locator(".icon-save")'}],
@@ -625,10 +625,11 @@ def _(rec):
             {"t": 120, "phase": "res", "method": "PATCH",
              "url": "https://example.test/api/item/1", "status": 200},
         ],
-        start_url="https://example.test/", name="optional css write",
+        start_url="https://example.test/", name="required css write",
     )
-    # 等待必须建立在「元素确实存在」之后，否则可选弹窗没出现时会空等到超时
-    assert re.search(r"if is_present\(_el\d+\):[\s\S]*page\.expect_request[\s\S]*\.click\(\)",
+    # CSS 只是定位手段；写操作不能因为元素一时找不到就静默跳过。
+    assert "if is_present(" not in spec
+    assert re.search(r"page\.expect_request[\s\S]*locator\(\"\.icon-save\"\)\.click\(\)",
                      spec), spec
     assert "is not None and resp1.status == 200" in spec, spec
     assert re.search(r"assert_subset\(req1\.post_data_json", spec), spec
@@ -932,11 +933,11 @@ def _(rec):
 
 # ── 回放稳定性：生成的草稿必须自带三件事 ──
 
-@check("草稿走 authedPage 而不是裸 page")
+@check("草稿走录制会话 page 而不是裸 page")
 def _(rec):
     spec = spec_of(rec)
-    assert re.search(r"def test_\w+\(authed_page: Page\):", spec)
-    assert "page = authed_page" in spec
+    assert re.search(r"def test_\w+\(recorded_page: Page\):", spec)
+    assert "page = recorded_page" in spec
     assert "from rec_helpers import" in spec
 
 

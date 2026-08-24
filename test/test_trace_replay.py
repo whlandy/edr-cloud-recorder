@@ -4,11 +4,12 @@ import cv2
 import numpy as np
 import pytest
 
-from replay_trace import TraceReplayError
+from replay_trace import TraceReplayError, _assert_node_page, _locator, _page_for_node
 from replay_trace import evaluate_trace as _evaluate_trace
 from replay_trace import replay_trace as _replay_trace
 from replay_trace import validate_trace as _validate_trace
 from rec_secrets import REDACTED
+from rec_session import write_session_snapshot
 from trace_v1 import node_to_v2, to_v2
 
 
@@ -135,6 +136,49 @@ def test_replay_navigates_and_arms_response_before_click(tmp_path):
     assert execution["steps"][0]["responses"][0]["ok"] is True
     assert json.loads(output.read_text(encoding="utf-8")) == execution
     assert evaluate_trace(_network_trace(), execution)["score"] == 100
+
+
+def test_trace_path_restores_its_recorded_session_before_navigation(tmp_path):
+    events = []
+
+    class Context:
+        def clear_cookies(self):
+            events.append("clear_cookies")
+
+        def add_cookies(self, cookies):
+            events.append(("add_cookies", cookies[0]["value"]))
+
+        def add_init_script(self, *, script):
+            assert "session-token" in script
+            events.append("add_init_script")
+
+    page = _NetworkPage()
+    page.context = Context()
+    page.events = events
+    trace_path = tmp_path / "trace.json"
+    trace_path.write_text(json.dumps(to_v2(_network_trace())), encoding="utf-8")
+    write_session_snapshot(
+        tmp_path / ".auth",
+        {
+            "cookies": [{
+                "name": "sid", "value": "recorded-cookie",
+                "domain": "app.example", "path": "/",
+            }],
+            "origins": [],
+        },
+        {"token": "session-token"},
+        session_origin="https://app.example",
+    )
+
+    execution = _replay_trace(page, trace_path)
+
+    assert execution["status"] == "success"
+    assert events[:4] == [
+        "clear_cookies",
+        ("add_cookies", "recorded-cookie"),
+        "add_init_script",
+        ("goto", "https://app.example/form"),
+    ]
 
 
 def test_replay_response_failure_is_not_scored_as_success():
@@ -1050,25 +1094,100 @@ def test_missing_step_without_optional_still_fails():
     assert execution["status"] == "failed"
 
 
-def test_generate_trace_marks_css_fallback_clicks_optional():
-    """CSS 兜底的点击几乎都是关弹窗/提示条，编译进轨迹时必须标可选。
-
-    不标的话，重新生成轨迹就会把回放器那条修复抹掉 —— 同一份录制，
-    pytest 草稿跳过它、轨迹判整条失败。
-    """
+def test_generate_trace_keeps_css_business_clicks_required():
+    """CSS 是定位手段，不是「这一步可以不做」的语义证据。"""
     from generate_trace import generate_trace
 
     steps = [
         {"id": "s1", "t": 1, "type": "click", "kind": "css",
-         "sel": 'locator("div.tip > span.close")', "css": "div.tip > span.close"},
+         "sel": 'locator("canvas.editor")', "css": "canvas.editor"},
         {"id": "s2", "t": 2, "type": "click", "kind": "text",
          "sel": 'getByText("提交", { exact: true })', "label": "提交"},
     ]
     trace = generate_trace(steps, [], name="t", start_url="https://app.example/")
 
     import trace_schema as ts
-    assert ts.is_optional(trace["step_0001"]) is True
+    assert ts.is_optional(trace["step_0001"]) is False
     assert "optional" not in ts.provenance(trace["step_0002"])
+
+
+def test_generate_trace_marks_only_proven_overlay_dismissal_optional():
+    from generate_trace import generate_trace
+
+    steps = [{
+        "id": "s1", "t": 1, "type": "click", "kind": "css",
+        "sel": 'locator("div.tip > span.close")', "dismissesOverlay": True,
+    }]
+
+    trace = generate_trace(steps, [], name="t", start_url="https://app.example/")
+
+    import trace_schema as ts
+    assert ts.is_optional(trace["step_0001"]) is True
+
+
+def test_locator_walks_the_complete_nested_frame_chain():
+    calls = []
+
+    class Root:
+        def frame_locator(self, selector):
+            calls.append(selector)
+            return self
+
+        def locator(self, selector):
+            calls.append(("target", selector))
+            return "target"
+
+    selector = {
+        "sel": 'locator("#save")',
+        "inFrame": True,
+        "frameChain": [
+            {"id": "outer", "src": "/shell.html", "index": 0},
+            {"name": "editor", "src": "/editor.html", "index": 1},
+        ],
+    }
+
+    assert _locator(Root(), selector) == "target"
+    assert calls == [
+        'iframe[id="outer"], frame[id="outer"]',
+        'iframe[name="editor"], frame[name="editor"]',
+        ("target", "#save"),
+    ]
+
+
+def test_node_page_guard_rejects_replay_on_the_wrong_route():
+    class Page:
+        url = "https://app.example/settings#users"
+
+    node = node_to_v2({
+        "selector": {"sel": 'locator("#save")'},
+        "action": {"type": "Click", "param": {}},
+        "pageUrl": "/policies#edit",
+    })
+
+    with pytest.raises(TraceReplayError, match="页面路径不符"):
+        _assert_node_page(Page(), node)
+
+
+def test_replay_selects_the_popup_that_matches_the_recorded_route():
+    class Context:
+        pages = []
+
+    class Page:
+        context = Context()
+
+        def __init__(self, url):
+            self.url = url
+
+    opener = Page("https://app.example/home")
+    popup = Page("https://app.example/editor?draft=1#canvas")
+    Context.pages = [opener, popup]
+    node = node_to_v2({
+        "selector": {"sel": 'locator("#save")'},
+        "action": {"type": "Click", "param": {}},
+        "pageUrl": "/editor?draft=1#canvas",
+    })
+
+    assert _page_for_node(opener, node) is popup
 
 
 # ── 起点校验 ──────────────────────────────────────────────────────────

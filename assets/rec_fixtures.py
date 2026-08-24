@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from auth_setup import credentials, export_state, login  # noqa: E402
 from chrome_path import resolve_chrome      # noqa: E402
 from rec_config import load_config          # noqa: E402
+from rec_session import restore_context_session  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 
@@ -280,6 +281,35 @@ def authed_page(page: Page) -> Page:
     return page
 
 
+@pytest.fixture
+def recorded_page(browser: Browser, base_url, playwright, request) -> Page:
+    """Create a page from the session captured beside this recorded test."""
+    auth_dir = Path(str(request.node.path)).resolve().parent / ".auth"
+    if not (auth_dir / "state.json").exists():
+        pytest.fail(
+            f"录制用例缺少会话快照 {auth_dir}。请重新录制，或继续使用 authed_page。",
+            pytrace=False,
+        )
+    args = {"ignore_https_errors": True}
+    device = playwright.devices.get("Desktop Chrome")
+    if device:
+        args.update({key: value for key, value in device.items()
+                     if key != "default_browser_type"})
+    args["viewport"] = {"width": 1440, "height": 900}
+    if base_url:
+        args["base_url"] = base_url
+    context = browser.new_context(**args)
+    try:
+        if not restore_context_session(context, auth_dir):
+            pytest.fail(f"无法读取录制会话 {auth_dir}", pytrace=False)
+        context.set_default_timeout(20_000)
+        context.set_default_navigation_timeout(60_000)
+        page = context.new_page()
+        yield page
+    finally:
+        context.close()
+
+
 # ────────────────────────── 收尾 ──────────────────────────
 
 def _scrub_auth_artifacts() -> None:
@@ -322,5 +352,6 @@ def _auth_artifact_guard(pytestconfig):
 __all__ = [
     "browser_type_launch_args", "base_url", "auth_state",
     "browser_context_args", "context", "authed_page",
+    "recorded_page",
     "_auth_artifact_guard",
 ]

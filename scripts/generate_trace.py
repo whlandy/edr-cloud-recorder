@@ -54,7 +54,9 @@ def node_id(index: int) -> str:
 def _selector(step: dict) -> dict:
     return {
         key: step[key]
-        for key in ("kind", "sel", "css", "label", "inFrame", "framePath")
+        for key in (
+            "kind", "sel", "css", "label", "inFrame", "framePath", "frameChain",
+        )
         if step.get(key) is not None
     }
 
@@ -331,6 +333,8 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
             "status": status,
             "selector": _selector(step),
         }
+        if not step.get("inFrame") and step.get("url"):
+            provenance["pageUrl"] = step["url"]
         if step.get("_sourceStepIds"):
             provenance["sourceStepIds"] = step["_sourceStepIds"]
         if order:
@@ -346,17 +350,8 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
                     if visual_ui.get(key) is not None
                 },
             )
-        # 可选步骤要标出来，否则轨迹回放会把它当必经节点。
-        #
-        # 落到 CSS 兜底的点击，绝大多数是关首启弹窗、提示条 —— 它们出现与否
-        # 取决于账号状态和历史操作，录制时出现过，回放时往往已经不再出现
-        # （第一次关掉后应用记住了）。
-        #
-        # generate_spec 早就把这类步骤生成为「存在则点」，轨迹这边如果不标，
-        # 同一份录制就有了两套语义：pytest 草稿跳过它，轨迹却判整条失败。
-        # 实测正是这样断在第 2 步，完成率 1/9。
-        if step.get("kind") == "css" and step.get("type") == "click":
-            provenance["optional"] = True
+        # 选择器形态不是可选语义。自研控件、canvas 热区和无文字业务图标
+        # 都可能只能用 CSS 定位；把它们一律跳过会让轨迹少做一步仍报成功。
         # 关浮层的那一步天生是条件步骤：弹窗出现与否取决于账号状态和历史操作。
         # 原来靠「选择器落到 CSS 兜底」当代理信号 —— 那只是因为这类图标以前
         # 只能产出绝对路径。选择器变好之后代理就不成立了，弹窗步骤反而变成

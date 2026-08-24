@@ -33,24 +33,25 @@ JSON.stringify({
 时机是关键。`add_init_script` 在页面任何脚本运行**之前**执行，所以 SPA 启动时能读到。
 换成 `page.evaluate()` 就晚了 —— 那时应用已经判定未登录并开始跳转。
 
-导出（登录之后）：
+导出与恢复统一走安全会话模块。它会使用 `0600` 权限原子写入，并兼容旧版纯
+sessionStorage 字典：
 
 ```python
-(auth_dir / "session-storage.json").write_text(
-    page.evaluate("() => JSON.stringify(sessionStorage)"), encoding="utf-8")
+from rec_session import restore_context_session, write_session_snapshot
+
+write_session_snapshot(
+    auth_dir,
+    context.storage_state(),
+    page.evaluate("() => JSON.stringify(sessionStorage)"),
+    session_origin="https://app.example.com",
+)
 ```
 
-注入（每个测试之前）：
+恢复必须发生在创建/导航回放页面之前：
 
 ```python
-raw = (auth_dir / "session-storage.json").read_text(encoding="utf-8")
-page.add_init_script(script="""(() => {
-  try {
-    for (const [k, v] of Object.entries(JSON.parse(%s))) {
-      try { sessionStorage.setItem(k, v); } catch { /* 只读键或超配额 */ }
-    }
-  } catch { /* 文件损坏时不要拖垮整个用例 */ }
-})()""" % json.dumps(raw))
+restore_context_session(context, auth_dir)
+page = context.new_page()
 ```
 
 > **Python 的 `add_init_script` 没有 `arg` 参数。** JS 的
