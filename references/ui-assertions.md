@@ -115,6 +115,11 @@ expect(page.get_by_text("WannaCry.exe", exact=True).first).to_be_visible()
 
 实测一次真实录制里加的两条断言**全是**这个形状 —— 看着像断言，其实什么都没断。
 右键选「文本等于」的意思通常是「这段文字应该在」，那就该生成存在性断言。
+
+The recorder renders its assertion menu inside a dedicated same-origin iframe. Shadow DOM alone
+is insufficient because page-level capture listeners still receive menu events and can stop
+`mousedown`, `click`, `input`, or `change` before controls handle them. The iframe also prevents
+host-page CSS resets from changing menu visibility or pointer behavior.
 录制器现在自动改写这一种，并在草稿里说明为什么改了。
 
 改写只在 expected **没被改过**时发生。用户把默认值改成别的（比如断言这一格

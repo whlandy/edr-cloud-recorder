@@ -57,6 +57,7 @@ from chrome_path import resolve_chrome                      # noqa: E402
 from generate_spec import _ident, generate_spec             # noqa: E402
 from generate_trace import POSITIONAL_STEP_TYPES, generate_trace  # noqa: E402
 from rec_config import ConfigError, load_config, with_defaults  # noqa: E402
+from rec_session import restore_context_session, write_session_snapshot  # noqa: E402
 from rec_secrets import redact_text                            # noqa: E402
 from recorder_loader import recorder_source                 # noqa: E402
 
@@ -207,6 +208,37 @@ def _select_pre_frame(history: list[dict], action_t: int) -> dict | None:
     return dict(max(candidates, key=lambda frame: frame["t"])) if candidates else None
 
 
+def _select_source_pre_frame(histories: dict, source: dict | None,
+                             action_t: int) -> dict | None:
+    """Only use a viewport captured from the page that produced the action."""
+    page = (source or {}).get("page")
+    if page is None:
+        return None
+    return _select_pre_frame(histories.get(page, []), action_t)
+
+
+def _describe_frame_chain(frame) -> list[dict]:
+    """Describe nested iframe elements from the top page down to ``frame``."""
+    chain = []
+    current = frame
+    while current is not None and current.parent_frame is not None:
+        element = current.frame_element()
+        item = {"url": current.url}
+        for attr in ("src", "id", "name"):
+            value = element.get_attribute(attr)
+            if value:
+                item[attr] = value
+        index = element.evaluate(
+            "el => Array.from(el.ownerDocument.querySelectorAll('iframe, frame')).indexOf(el)"
+        )
+        if isinstance(index, int) and index >= 0:
+            item["index"] = index
+        chain.append(item)
+        current = current.parent_frame
+    chain.reverse()
+    return chain
+
+
 def _capture_ui_template(source: dict, step: dict, asset_dir: Path,
                          index: int, pre_frame: dict | None = None) -> None:
     """保存定位型动作的渲染模板；任何失败都降级为仅保留 ui 元数据。"""
@@ -273,6 +305,7 @@ def _artifact_paths(out_dir: str | Path, name: str) -> dict[str, Path]:
     return {
         "case_dir": case_dir,
         "asset_dir": case_dir / "assets",
+        "auth_dir": case_dir / ".auth",
         "raw_file": case_dir / "recording.json",
         "trace_file": case_dir / "trace.json",
         "spec_file": case_dir / f"test_{_ident(name)}.py",
@@ -329,8 +362,8 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     state_dir = Path(state_dir).resolve()
     origin = "{0.scheme}://{0.netloc}".format(urlsplit(start_url))
 
-    steps, seen, net, pending_visual = [], set(), [], []
-    frame_history: list[dict] = []
+    steps, seen, net, pending_visual, pending_context = [], set(), [], [], []
+    frame_histories: dict[object, list[dict]] = {}
 
     def accept(step, source=None):
         if not step or not step.get("id"):
@@ -371,9 +404,13 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
             return                                  # 双通道上报，按 id 去重
         seen.add(step["id"])
         steps.append(step)
+        if source and step.get("inFrame"):
+            # Binding callbacks cannot call sync Playwright APIs. Resolve the frame
+            # element chain later from pump(), while keeping the same step object.
+            pending_context.append((source, step))
         if source and step.get("type") in VISUAL_STEP_TYPES:
             action_t = step.get("actionT", step.get("t", 0))
-            pre_frame = _select_pre_frame(frame_history, action_t)
+            pre_frame = _select_source_pre_frame(frame_histories, source, action_t)
             pending_visual.append((source, step, len(steps), pre_frame))
         if step.get("secret"):
             val = " = <密码，未记录>"
@@ -385,6 +422,14 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
 
     def capture_pending():
         # binding 回调内不能调用同步 Playwright API，否则会重入死锁。
+        while pending_context:
+            source, step = pending_context.pop(0)
+            try:
+                chain = _describe_frame_chain(source.get("frame"))
+                if chain:
+                    step["frameChain"] = chain
+            except Exception:
+                pass
         while pending_visual:
             source, step, index, pre_frame = pending_visual.pop(0)
             _capture_ui_template(source, step, asset_dir, index, pre_frame)
@@ -396,7 +441,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     state_file = state_dir / "state.json"
     ss_file = state_dir / "session-storage.json"
 
-    snapshot = {"state": None, "session": None}
+    snapshot = {"state": None, "session": None, "session_origin": None}
     saved_origins = {}
     if state_file.exists():
         try:
@@ -436,17 +481,8 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         # 注意 Python 的 add_init_script **没有 arg 参数**（JS 的 addInitScript(fn, arg)
         # 有），数据只能内联进脚本字符串，用 json.dumps 转义。
         if ss_file.exists():
-            raw = ss_file.read_text(encoding="utf-8")
-            context.add_init_script(script="""(() => {
-              try {
-                for (const [k, v] of Object.entries(JSON.parse(%s))) {
-                  try { sessionStorage.setItem(k, v); } catch { /* 只读键或超配额 */ }
-                }
-              } catch { /* 文件损坏就算了 */ }
-            })()""" % json.dumps(raw))
+            restore_context_session(context, state_dir)
             print("已载入 sessionStorage")
-
-        page = context.new_page()
 
         def wanted(req) -> bool:
             if req.resource_type not in ("xhr", "fetch"):
@@ -485,8 +521,30 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
                     e["body"] = None
             net.append(e)
 
-        page.on("request", on_request)
-        page.on("response", on_response)
+        closed = {"v": False}
+        listened_pages = set()
+
+        def on_page_closed(_):
+            try:
+                closed["v"] = not any(not item.is_closed() for item in context.pages)
+            except Exception:
+                pass
+
+        def listen_page(target):
+            if target in listened_pages:
+                return
+            listened_pages.add(target)
+            frame_histories.setdefault(target, [])
+            target.on("request", on_request)
+            target.on("response", on_response)
+            target.on("close", on_page_closed)
+
+        # Popups and target=_blank pages are part of the same recording session.
+        # Their traffic and screenshots must stay attached to that page.
+        context.on("page", listen_page)
+        page = context.new_page()
+        listen_page(page)
+        browser.on("disconnected", lambda _: closed.update(v=True))
 
         print(f"\n打开 {start_url}")
         if on_ready is None:
@@ -498,34 +556,52 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         except Exception as e:
             print(f"打开失败: {str(e).splitlines()[0]}")
 
-        closed = {"v": False}
-        page.on("close", lambda _: closed.update(v=True))
-        browser.on("disconnected", lambda _: closed.update(v=True))
-
         def take_snapshot():
             """趁页面还活着，把登录态抓进内存。"""
+            alive = [item for item in context.pages if not item.is_closed()]
+            if not alive:
+                return
+            active = alive[-1]
             try:
-                snapshot["state"] = _capture_storage(context, page, saved_origins)
+                snapshot["state"] = _capture_storage(context, active, saved_origins)
             except Exception:
                 return
             try:
-                ss = page.evaluate("() => JSON.stringify(sessionStorage)")
-                if ss and ss != "{}":
-                    snapshot["session"] = ss
+                ss = active.evaluate("() => JSON.stringify(sessionStorage)")
+                snapshot["session"] = ss if ss and ss != "{}" else None
+                parsed_active = urlsplit(active.url)
+                snapshot["session_origin"] = (
+                    f"{parsed_active.scheme}://{parsed_active.netloc}"
+                    if parsed_active.scheme and parsed_active.netloc else None
+                )
             except Exception:
                 pass
 
-        def refresh_pre_frame():
-            """保留短时 viewport 历史，供延迟上报动作选择真正的前帧。"""
-            try:
-                frame = {"data": page.screenshot(), "t": _now()}
-                frame_history.append(frame)
-                cutoff = frame["t"] - PRE_FRAME_MAX_AGE_MS
-                frame_history[:] = [item for item in frame_history if item["t"] >= cutoff]
-            except Exception:
-                pass
+        def alive_pages():
+            return [item for item in context.pages if not item.is_closed()]
 
-        refresh_pre_frame()
+        def drain_all_pages():
+            for target in alive_pages():
+                for frame in target.frames:
+                    try:
+                        for item in frame.evaluate(DRAIN):
+                            accept(item, {"page": target, "frame": frame})
+                    except Exception:
+                        pass
+
+        def refresh_pre_frames():
+            """按 page 保留短时 viewport 历史，popup 不能借用 opener 的帧。"""
+            for target in alive_pages():
+                try:
+                    frame = {"data": target.screenshot(), "t": _now()}
+                    history = frame_histories.setdefault(target, [])
+                    history.append(frame)
+                    cutoff = frame["t"] - PRE_FRAME_MAX_AGE_MS
+                    history[:] = [item for item in history if item["t"] >= cutoff]
+                except Exception:
+                    pass
+
+        refresh_pre_frames()
 
         # 兜底轮询：捞走 binding 未能送达的步骤（去重由 accept 负责）。
         # JS 版用 setInterval 与 waitForEvent 并发；Python sync API 是单线程的，
@@ -540,13 +616,9 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
             于是脚本录出来的轨迹里每个开关都缺模板、整条轨迹 incomplete。
             驱动方在每次操作前调一下，两条路径的行为就一致了。
             """
-            try:
-                for item in page.evaluate(DRAIN):
-                    accept(item)
-            except Exception:
-                pass                                # 导航中，下次再取
+            drain_all_pages()
             capture_pending()
-            refresh_pre_frame()
+            refresh_pre_frames()
 
         if on_ready is not None:
             # 测试路径：回调驱动页面，返回即视为「操作完毕」，由这里收尾 ——
@@ -561,30 +633,24 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
                 print(f"on_ready 抛出: {e}")
             capture_pending()
             take_snapshot()
-            if not page.is_closed():
-                page.close()
+            for target in alive_pages():
+                target.close()
 
         while not closed["v"]:
-            try:
-                for s in page.evaluate(DRAIN):
-                    accept(s)
-            except Exception:
-                pass                                # 导航中，下次再取
-
+            drain_all_pages()
             capture_pending()
             take_snapshot()
-            refresh_pre_frame()
+            refresh_pre_frames()
 
             try:
-                page.wait_for_timeout(PUMP_MS)
+                current = alive_pages()
+                if not current:
+                    break
+                current[0].wait_for_timeout(PUMP_MS)
             except Exception:
                 break                               # 浏览器已关
 
-        try:
-            for s in page.evaluate(DRAIN):
-                accept(s)
-        except Exception:
-            pass                                    # 页面已关
+        drain_all_pages()
 
         capture_pending()
         take_snapshot()                             # 还开着就抓最新的一份
@@ -598,11 +664,14 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
 
     # 落盘登录态，下次录制免登录
     if snapshot["state"]:
-        state_dir.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(
-            json.dumps(snapshot["state"], ensure_ascii=False, indent=1), encoding="utf-8")
-        if snapshot["session"]:
-            ss_file.write_text(snapshot["session"], encoding="utf-8")
+        write_session_snapshot(
+            state_dir, snapshot["state"], snapshot["session"],
+            session_origin=snapshot["session_origin"],
+        )
+        write_session_snapshot(
+            artifacts["auth_dir"], snapshot["state"], snapshot["session"],
+            session_origin=snapshot["session_origin"],
+        )
 
     # ---------- 输出 ----------
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -639,6 +708,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     print(f"  脚本草稿  {spec_file}")
     if snapshot["state"]:
         print(f"  登录态    {state_file}")
+        print(f"  回放会话  {artifacts['auth_dir']}")
     if failed:
         print(f"\n  ⚠ {len(failed)} 个请求失败：")
         for f in failed[:5]:

@@ -491,8 +491,16 @@ def drive(chrome: str | None = None) -> dict:
             page.goto(base)
             page.wait_for_timeout(500)
 
+            # 业务页不仅禁用原生右键，还可能在 window 捕获阶段吞掉菜单的全部
+            # 鼠标/表单事件。Shadow DOM 隔离不了事件，独立 iframe 才能继续交互。
+            page.evaluate("""() => {
+              for (const type of ['contextmenu', 'mousedown', 'click', 'input', 'change']) {
+                window.addEventListener(type, event => event.stopImmediatePropagation(), true);
+              }
+            }""")
+
             def sh(sel):
-                return page.locator("#__rec_assert_menu__").locator(sel)
+                return page.frame_locator("#__rec_assert_menu__").locator(sel)
 
             # 1) 文本断言，用户把默认值改掉
             page.locator("[data-testid=save-btn]").click(button="right")

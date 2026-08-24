@@ -15,7 +15,9 @@ from __future__ import annotations
 from rec_visual import AMBIGUITY_MARGIN, MATCH_THRESHOLD, SCALE_FACTORS, VERIFY_THRESHOLD
 import trace_schema as ts
 
-PROVENANCE_FLAGS = ("optional", "dismissesOverlay", "sourceStepId", "sourceStepIds")
+PROVENANCE_FLAGS = (
+    "optional", "dismissesOverlay", "sourceStepId", "sourceStepIds", "pageUrl",
+)
 
 
 def node_to_v2(flat: dict) -> dict:

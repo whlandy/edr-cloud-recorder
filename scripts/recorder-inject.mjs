@@ -5,6 +5,9 @@
  * 不用把逻辑复制一份去测（复制出来的测试只能证明副本是对的）。
  */
 export const RECORDER = () => {
+  // 断言菜单运行在独立 iframe 中。Playwright 的 init script 也会进入这个
+  // about:blank frame；不提前退出就会在菜单里再装一套录制器和右键菜单。
+  if (window.frameElement?.id === '__rec_assert_menu__') return;
   if (window.__rec) return;
   const steps = [];
   const txt = (e) => ((e && e.textContent) || '').replace(/\s+/g, ' ').trim();
@@ -655,7 +658,7 @@ export const RECORDER = () => {
         t: now, actionT: extra?.actionT ?? now, type, sel: sel.code, kind: sel.kind,
         ambiguous: !!sel.ambiguous, matches: sel.matches,
         label: txt(t).slice(0, 60), css: cssPath(t),
-        url: location.pathname + location.hash,
+        url: location.pathname + location.search + location.hash,
         // 元素在 iframe 里时，回放必须先 frameLocator 进去 —— 直接 page.getByX()
         // 只搜主文档，一定找不到。登录表单放在 iframe 里是很常见的做法。
         inFrame: window !== window.top,
@@ -737,19 +740,32 @@ export const RECORDER = () => {
 
   const openMenu = (el, x, y) => {
     closeMenu();
-    const host = document.createElement('div');
+    // 用 iframe 而不是普通 div + Shadow DOM。Shadow DOM 只能隔离 CSS，事件仍会
+    // 经过业务页的 window 捕获监听；页面一旦 stopImmediatePropagation，菜单
+    // 就会出现但按钮、下拉框全都失灵。iframe 的事件树与业务页彻底分离。
+    const host = document.createElement('iframe');
     host.id = MENU_ID;
-    Object.assign(host.style, {
-      position: 'fixed', left: `${x}px`, top: `${y}px`, zIndex: 2147483647,
-    });
-    // Shadow DOM 隔离：页面自己的 CSS 五花八门，不隔离的话菜单会被改得没法用
-    const sh = host.attachShadow({ mode: 'open' });
-    sh.innerHTML = `
+    host.title = '录制器断言菜单';
+    const criticalStyle = {
+      display: 'block', position: 'fixed', left: `${x}px`, top: `${y}px`,
+      width: '360px', height: '320px', zIndex: '2147483647', border: '0',
+      margin: '0', padding: '0', opacity: '1', visibility: 'visible',
+      pointerEvents: 'auto', transform: 'none', filter: 'none',
+      clip: 'auto', clipPath: 'none', background: 'transparent',
+    };
+    for (const [name, value] of Object.entries(criticalStyle))
+      host.style.setProperty(name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`), value, 'important');
+    document.documentElement.appendChild(host);
+
+    const sh = host.contentDocument;
+    if (!sh) { host.remove(); return; }
+    sh.documentElement.style.cssText = 'margin:0;padding:0;background:transparent;overflow:hidden';
+    sh.body.style.cssText = 'margin:0;padding:0;background:transparent;overflow:hidden';
+    sh.body.innerHTML = `
       <style>
-        :host { all: initial; }
         .box { font: 13px/1.5 system-ui, sans-serif; background:#fff; color:#222;
                border:1px solid #bbb; border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,.18);
-               padding:10px; min-width:260px; }
+               box-sizing:border-box; padding:10px; width:340px; }
         .row { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
         label { flex:0 0 68px; color:#555; }
         select, input[type=text] { flex:1; padding:3px 5px; border:1px solid #ccc;
@@ -785,7 +801,7 @@ export const RECORDER = () => {
           <button id="ok" class="primary">添加断言</button>
         </div>
       </div>`;
-    document.documentElement.appendChild(host);
+    sh.addEventListener('contextmenu', (event) => event.preventDefault(), true);
 
     // 收进视口。菜单是 position:fixed 钉在鼠标处的，右键靠底部/右侧的元素时
     // 「添加断言」按钮会落到视口外 —— Playwright 直接报「element is outside of
@@ -802,8 +818,10 @@ export const RECORDER = () => {
         let left = x, top = y;
         if (left + box.width > innerWidth - margin) left = Math.max(margin, innerWidth - box.width - margin);
         if (top + box.height > innerHeight - margin) top = Math.max(margin, innerHeight - box.height - margin);
-        host.style.left = `${left}px`;
-        host.style.top = `${top}px`;
+        host.style.setProperty('width', `${Math.ceil(box.width)}px`, 'important');
+        host.style.setProperty('height', `${Math.ceil(box.height)}px`, 'important');
+        host.style.setProperty('left', `${left}px`, 'important');
+        host.style.setProperty('top', `${top}px`, 'important');
       } catch { /* 量不出来就维持原位，总比不显示好 */ }
     };
     fit();
@@ -932,7 +950,7 @@ export const RECORDER = () => {
         type: 'assert', assertion, expected, sel: sel.code, kind: sel.kind,
         ambiguous: !!sel.ambiguous, matches: sel.matches,
         label: txt(t).slice(0, 60), css: cssPath(t),
-        url: location.pathname + location.hash,
+        url: location.pathname + location.search + location.hash,
         inFrame: window !== window.top,
         framePath: window !== window.top ? location.pathname : undefined,
       };
@@ -1070,11 +1088,13 @@ export const RECORDER = () => {
     setTimeout(tick, 150);
   };
 
-  // 右键打开断言菜单。菜单自身的交互不能被当成被录的操作，
-  // 所以下面所有监听都先检查事件是否来自菜单内部（composedPath 才能穿透 Shadow DOM）。
+  // 右键打开断言菜单。旧版 Shadow DOM 的事件会穿回业务页，所以这里仍保留
+  // fromMenu 兼容检查；iframe 版的内部事件不会离开自己的 window。
   const fromMenu = (e) => e.composedPath?.().some((n) => n?.id === MENU_ID);
 
-  document.addEventListener('contextmenu', (e) => {
+  // window 是事件捕获链的最上游。录制器由 init script 先于页面脚本
+  // 注册在这里，所以即使业务页后续在 window 禁用右键，菜单也能先打开。
+  window.addEventListener('contextmenu', (e) => {
     if (fromMenu(e)) return;
     e.preventDefault();
     openMenu(e.target, e.clientX, e.clientY);

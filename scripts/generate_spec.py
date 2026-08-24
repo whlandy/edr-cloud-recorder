@@ -41,7 +41,7 @@ from rec_visual import visual_click
 # 写请求已自动生成断言（状态码 + 请求体形态）；GET 保留为注释。
 # 请求体里的 UUID / 长数字 ID / 时间戳已放宽，避免每次运行都失效。
 #
-# 用 authed_page 而不是裸 page：登录态由 conftest.py 存一次、这里复用。
+# 用 recorded_page 而不是裸 page：它加载本次录制随附的 cookies 和 web storage。
 # 首启弹窗由 dismiss_overlays 统一关掉 —— 它们的遮罩会静默吞掉后续点击，
 # 而失败会报在后面某个 expect_response 上，看着像「接口没发」。
 #
@@ -271,6 +271,11 @@ def generate_spec(steps, net, start_url, name):
 
     # 修正 change/keydown 的事件顺序、折叠双击，并丢掉开头登录段。
     dropped, steps = prepare_steps(steps)
+    gated_ids = {
+        step_id
+        for step in steps
+        for step_id in ((step.get("via") or {}).get("gatedSteps") or [])
+    }
 
     head = [HEADER.format(name=name).rstrip("\n")]
     if dropped:
@@ -281,8 +286,8 @@ def generate_spec(steps, net, start_url, name):
             head.append(f"#   {s['type']} {s['sel']}{tail}")
 
     lines = [*head, "",
-             f"def test_{_ident(name)}(authed_page: Page):",
-             "    page = authed_page",
+             f"def test_{_ident(name)}(recorded_page: Page):",
+             "    page = recorded_page",
              f"    page.goto({_lit(strip(start_url) or '/')})",
              "    dismiss_overlays(page)"]
 
@@ -380,13 +385,24 @@ def generate_spec(steps, net, start_url, name):
         else:
             warn = f"   # ⚠ AMBIGUOUS: {s.get('matches')} 个元素匹配，回放时可能点错"
 
-        # iframe 里的元素必须先进 frame。用 src 片段定位 iframe：比 nth 稳，
-        # 也比整条 src 宽容（src 常带随机 query）。
-        if s.get("inFrame") and s.get("framePath"):
+        # 嵌套 iframe 按录制时的完整链逐层进入。旧录制仍用 framePath 兼容。
+        root = "page"
+        for frame in s.get("frameChain") or []:
+            attr = next((key for key in ("id", "name") if frame.get(key)), None)
+            if attr:
+                value = str(frame[attr]).replace("\\", "\\\\").replace('"', '\\"')
+                frame_sel = f'iframe[{attr}="{value}"], frame[{attr}="{value}"]'
+                root += f".frame_locator({_lit(frame_sel)})"
+            elif isinstance(frame.get("index"), int):
+                root += f'.frame_locator("iframe, frame").nth({frame["index"]})'
+            else:
+                path = urlsplit(frame.get("src") or frame.get("url") or "").path
+                value = path.replace("\\", "\\\\").replace('"', '\\"')
+                frame_sel = f'iframe[src*="{value}"], frame[src*="{value}"]'
+                root += f".frame_locator({_lit(frame_sel)})"
+        if root == "page" and s.get("inFrame") and s.get("framePath"):
             tail = s["framePath"].split("/")[-1]
             root = f'page.frame_locator({_lit(f"iframe[src*=\x22{tail}\x22]")})'
-        else:
-            root = "page"
 
         try:
             sel = to_python(s["sel"])
@@ -453,12 +469,14 @@ def generate_spec(steps, net, start_url, name):
                 lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
             continue
 
-        # CSS 兜底基本都是关弹窗/提示条这类「有就点、没有就跳过」的动作。
-        # 生成成必经步骤会让脚本在弹窗不出现时直接失败。
-        if s.get("kind") == "css" and s["type"] == "click":
+        # 只有录制时观察到的条件步骤才「有就点」。CSS 只是定位手段。
+        if (
+            s["type"] == "click"
+            and (s.get("dismissesOverlay") or s.get("id") in gated_ids)
+        ):
             el_seq += 1
             el = f"_el{el_seq}"
-            lines.append("    # ⚠ CSS 兜底（元素没有 role/label/稳定文本），建议改用语义定位")
+            lines.append("    # 条件步骤：录制时证实它用于关浮层或完成门控交互")
             lines.append(f"    {el} = {root}.{sel}")
             lines.append(f"    if is_present({el}):")
             # 等确认元素存在后再建立响应等待，避免可选弹窗未出现时空等到超时

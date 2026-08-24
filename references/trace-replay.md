@@ -100,6 +100,11 @@ that maa-fw cannot check would be silently treated as verified.
 
 ## Replay Modes
 
+When replay receives a `trace.json` path, it restores the case-scoped `.auth` snapshot before the
+first navigation. The snapshot includes context cookies, origin-scoped localStorage, and the active
+page's origin-scoped sessionStorage. Passing an already loaded trace dictionary requires an explicit
+`session_state_dir`; credentials are never embedded in the golden or execution trace.
+
 `dom_first` waits for a visible DOM locator and falls back to the recorded template only when DOM
 targeting fails before the action begins.
 
@@ -185,6 +190,15 @@ When a node is performed early, the later visit records `status: skipped` with
 
 If nothing is pending, an intercepted click is still a failure. Interception is never itself a
 reason to pass a step.
+
+Selector shape is never optionality evidence. In particular, a CSS fallback can be a canvas hot
+spot, custom control, or destructive icon. Only recorder-observed overlay dismissal and explicitly
+gated follow-up steps become optional.
+
+Before each web replay node, the runner checks the recorded top-level path/query/fragment. A route
+mismatch fails before the action instead of clicking a coincidentally similar element on the wrong
+page. Nested frame targets are resolved through the recorded outer-to-inner frame chain; `framePath`
+remains a compatibility fallback for older recordings.
 
 ### Switches Behind A Confirmation Dialog
 

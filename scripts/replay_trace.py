@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from rec_assert import (
     LOCALTIME_KIND, ANY_STR, assert_subset, expect_local_time, local_time_value,
 )
+from rec_session import restore_context_session
 from rec_secrets import REDACTED
 from rec_visual import (
     VisualAbsent, VisualAmbiguous, VisualMatchError, locate_visual_target,
@@ -88,11 +89,75 @@ def _locator(page, selector: dict):
     if not source:
         return None
     root = page
-    if selector.get("inFrame") and selector.get("framePath"):
+    frame_chain = selector.get("frameChain") or []
+    for frame in frame_chain:
+        attr = next((key for key in ("id", "name") if frame.get(key)), None)
+        if attr:
+            value = str(frame[attr]).replace("\\", "\\\\").replace('"', '\\"')
+            root = root.frame_locator(
+                f'iframe[{attr}="{value}"], frame[{attr}="{value}"]'
+            )
+        elif isinstance(frame.get("index"), int):
+            root = root.frame_locator("iframe, frame").nth(frame["index"])
+        else:
+            path = urlsplit(frame.get("src") or frame.get("url") or "").path
+            value = path.replace("\\", "\\\\").replace('"', '\\"')
+            root = root.frame_locator(f'iframe[src*="{value}"], frame[src*="{value}"]')
+    if not frame_chain and selector.get("inFrame") and selector.get("framePath"):
         tail = selector["framePath"].split("/")[-1]
         root = page.frame_locator(f'iframe[src*="{tail}"]')
     expression = "root." + to_python(source)
     return eval(expression, {"__builtins__": {}}, {"root": root})
+
+
+def _node_route(node: dict) -> tuple[str, str, str] | None:
+    expected = ts.provenance(node).get("pageUrl")
+    if not expected:
+        return None
+    parsed = urlsplit(expected)
+    return parsed.path or "/", parsed.query, parsed.fragment
+
+
+def _page_route(page) -> tuple[str, str, str] | None:
+    actual = getattr(page, "url", None)
+    if not isinstance(actual, str) or not actual:
+        return None
+    parsed = urlsplit(actual)
+    return parsed.path or "/", parsed.query, parsed.fragment
+
+
+def _page_for_node(page, node: dict):
+    """Select an opener or popup by the route recorded for this node."""
+    want_route = _node_route(node)
+    if want_route is None or _page_route(page) == want_route:
+        return page
+    context = getattr(page, "context", None)
+    candidates = [
+        candidate for candidate in (getattr(context, "pages", None) or [])
+        if _page_route(candidate) == want_route
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    return page
+
+
+def _assert_node_page(page, node: dict) -> None:
+    """Fail before acting when no unique page is on the recorded route."""
+    want_route = _node_route(node)
+    got_route = _page_route(page)
+    if want_route is None or got_route is None:
+        return
+    if want_route != got_route:
+        expected_text = want_route[0]
+        if want_route[1]:
+            expected_text += f"?{want_route[1]}"
+        if want_route[2]:
+            expected_text += f"#{want_route[2]}"
+        raise TraceReplayError(
+            f"页面路径不符: 当前 {getattr(page, 'url', None)}，"
+            f"轨迹此步应在 {expected_text}。"
+            "前一步导航可能未发生，或录制中使用了浏览器返回/地址栏操作。"
+        )
 
 
 def _visual_ui(node: dict) -> dict:
@@ -541,7 +606,8 @@ def _perform(page, node: dict, root: Path, targeting: str, timeout_ms: int,
 def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | None = None,
                  targeting: str = "dom_first", timeout_ms: int = 5_000,
                  env: dict | None = None, execution_path: str | Path | None = None,
-                 navigate: bool = True, raise_on_error: bool = False) -> dict:
+                 navigate: bool = True, raise_on_error: bool = False,
+                 session_state_dir: str | Path | None = None) -> dict:
     if targeting not in {"dom_first", "visual_only"}:
         raise ValueError("targeting 必须是 dom_first 或 visual_only")
     trace_path = Path(trace) if isinstance(trace, (str, Path)) else None
@@ -563,6 +629,17 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
     }
     runtime_env = os.environ if env is None else env
     start_url = meta.get("startUrl")
+    session_root = (
+        Path(session_state_dir)
+        if session_state_dir is not None
+        else (trace_path.parent / ".auth" if trace_path else None)
+    )
+    if session_root is not None and session_root.exists():
+        context = getattr(page, "context", None)
+        if context is None or not restore_context_session(context, session_root):
+            raise TraceReplayError(f"无法恢复录制会话: {session_root}")
+    elif session_state_dir is not None:
+        raise TraceReplayError(f"录制会话目录不存在: {session_root}")
     if navigate and start_url:
         try:
             page.goto(start_url)
@@ -571,6 +648,7 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
         _assert_landed(page, start_url, execution)
     first_error = None
     focused_selector = None
+    focused_page = None
     # 被跳过的 optional 步骤：目标当时不在，但可能只是还没出现
     pending_optional: list[tuple[str, dict]] = []
     # 因为挡路而被提前做掉的关浮层步骤：轨迹走到它时会发现已经没得关
@@ -586,13 +664,18 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             "responses": [],
             "retries": 0,
         }
+        node_page = page
         try:
+            node_page = _page_for_node(page, node)
+            _assert_node_page(node_page, node)
+            node_focus = focused_selector if node_page is focused_page else None
             result["target"], result["responses"] = _perform(
-                page, node, root, targeting, timeout_ms, runtime_env, focused_selector,
+                node_page, node, root, targeting, timeout_ms, runtime_env, node_focus,
             )
             result["status"] = "success"
             if targeting == "visual_only" and result["target"]["mode"] == "visual":
                 focused_selector = ts.selector_of(node).get("sel")
+                focused_page = node_page
         except Exception as error:
             # 「找到了但点不动」是单独一类：有东西挡在上面。
             #
@@ -609,8 +692,12 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                 while pending_optional:
                     skipped_id, skipped_result = pending_optional.pop(0)
                     try:
-                        _perform(page, golden[skipped_id], root, targeting,
-                                 timeout_ms, runtime_env, focused_selector)
+                        skipped_page = _page_for_node(page, golden[skipped_id])
+                        skipped_focus = (
+                            focused_selector if skipped_page is focused_page else None
+                        )
+                        _perform(skipped_page, golden[skipped_id], root, targeting,
+                                 timeout_ms, runtime_env, skipped_focus)
                     except Exception:
                         continue                    # 补做也不成，按原样报错
                     skipped_result["laterPerformed"] = True
@@ -625,8 +712,10 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                     if not ts.dismisses_overlay(golden[later_id]):
                         continue
                     try:
-                        _perform(page, golden[later_id], root, targeting,
-                                 timeout_ms, runtime_env, focused_selector)
+                        later_page = _page_for_node(page, golden[later_id])
+                        later_focus = focused_selector if later_page is focused_page else None
+                        _perform(later_page, golden[later_id], root, targeting,
+                                 timeout_ms, runtime_env, later_focus)
                     except Exception:
                         continue
                     performed_early.add(later_id)
@@ -636,9 +725,12 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                     result["retries"] += 1
                     result["recoveredOptional"] = recovered
                     try:
+                        node_page = _page_for_node(page, node)
+                        _assert_node_page(node_page, node)
+                        node_focus = focused_selector if node_page is focused_page else None
                         result["target"], result["responses"] = _perform(
-                            page, node, root, targeting, timeout_ms, runtime_env,
-                            focused_selector,
+                            node_page, node, root, targeting, timeout_ms, runtime_env,
+                            node_focus,
                         )
                         result["status"] = "success"
                     except Exception as retry_error:
@@ -656,7 +748,9 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             # 测试里把失败当跳过，等于把问题往后推，而且推到一个报错不知所云的地方。
             if result["status"] == "success":
                 pass                                # 补做浮层之后重试成功了
-            elif ts.is_optional(node) and _target_absent(page, node, error, targeting):
+            elif ts.is_optional(node) and _target_absent(
+                node_page, node, error, targeting
+            ):
                 result["status"] = "skipped"
                 result["error"] = f"{type(error).__name__}: {error}"
                 result["skippedReason"] = (

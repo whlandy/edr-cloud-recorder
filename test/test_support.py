@@ -13,9 +13,11 @@ from record import (
     _capture_storage,
     _capture_ui_template,
     _crop_pre_frame,
+    _describe_frame_chain,
     _now,
     _request_body_fields,
     _select_pre_frame,
+    _select_source_pre_frame,
     _visible_clip,
 )
 from selector_py import to_python
@@ -39,6 +41,7 @@ def test_artifact_paths_keep_one_case_in_one_directory(tmp_path):
     assert paths == {
         "case_dir": (tmp_path / "recordings/login-flow").resolve(),
         "asset_dir": (tmp_path / "recordings/login-flow/assets").resolve(),
+        "auth_dir": (tmp_path / "recordings/login-flow/.auth").resolve(),
         "raw_file": (tmp_path / "recordings/login-flow/recording.json").resolve(),
         "trace_file": (tmp_path / "recordings/login-flow/trace.json").resolve(),
         "spec_file": (tmp_path / "recordings/login-flow/test_login_flow.py").resolve(),
@@ -584,6 +587,64 @@ def test_select_pre_frame_uses_latest_frame_before_delayed_action():
     selected = _select_pre_frame(history, action_t=1500)
 
     assert selected == {"data": b"before-near", "t": 1400}
+
+
+def test_select_source_pre_frame_never_borrows_another_pages_screenshot():
+    page_a, page_b = object(), object()
+    histories = {
+        page_a: [{"data": b"opener", "t": 1400}],
+        page_b: [{"data": b"popup", "t": 1450}],
+    }
+
+    selected = _select_source_pre_frame(
+        histories, {"page": page_b}, action_t=1500,
+    )
+
+    assert selected == {"data": b"popup", "t": 1450}
+    assert _select_source_pre_frame(histories, {}, action_t=1500) is None
+
+
+def test_describe_frame_chain_keeps_each_nested_frame_identity():
+    class Element:
+        def __init__(self, attrs, index):
+            self.attrs, self.index = attrs, index
+
+        def get_attribute(self, name):
+            return self.attrs.get(name)
+
+        def evaluate(self, expression):
+            assert "querySelectorAll" in expression
+            return self.index
+
+    class Frame:
+        def __init__(self, url, parent=None, element=None):
+            self.url, self.parent_frame = url, parent
+            self._element = element
+
+        def frame_element(self):
+            return self._element
+
+    top = Frame("https://app.example/")
+    outer = Frame(
+        "https://app.example/frames/shell.html?tenant=1", top,
+        Element({"id": "outer", "src": "/frames/shell.html?tenant=1"}, 0),
+    )
+    inner = Frame(
+        "https://widgets.example/editor.html?session=abc", outer,
+        Element({"name": "editor", "src": "https://widgets.example/editor.html?session=abc"}, 2),
+    )
+
+    assert _describe_frame_chain(inner) == [
+        {
+            "url": "https://app.example/frames/shell.html?tenant=1",
+            "src": "/frames/shell.html?tenant=1", "id": "outer", "index": 0,
+        },
+        {
+            "url": "https://widgets.example/editor.html?session=abc",
+            "src": "https://widgets.example/editor.html?session=abc",
+            "name": "editor", "index": 2,
+        },
+    ]
 
 
 def test_stateful_action_never_falls_back_to_post_action_screenshot(tmp_path):

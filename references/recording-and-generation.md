@@ -60,7 +60,7 @@ that the field exists without persisting or comparing its credential value.
 
 The pytest generator:
 
-- removes only the leading login segment and uses `authed_page`
+- removes only the leading login segment and uses the case-scoped `recorded_page`
 - starts with `dismiss_overlays(page)`
 - corrects adjacent `press` then `fill` event-order inversions
 - converts write requests into pre-armed request waits plus status/body assertions
@@ -68,6 +68,9 @@ The pytest generator:
 - widens volatile strings and large timestamp-like numbers without dropping structure
 - preserves unsupported selectors as visible warnings instead of aborting the whole draft
 - rejects a `start_url` origin that does not match any recorded absolute URL
+- keeps popup/new-tab screenshots and network events attached to the page that produced them
+- records the complete nested frame chain (id/name/src/index) instead of only a frame URL tail
+- treats CSS as a locator strategy, never as evidence that a business action is optional
 
 Network calls belong to the action that started the request. Use request timestamps when available;
 a slow response may finish after the next UI action and must not be reassigned.
