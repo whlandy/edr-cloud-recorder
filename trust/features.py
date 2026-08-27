@@ -22,6 +22,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# 形状只认 trace_schema 这一处。自己按字段路径去读 attach.provenance.xxx
+# 就是在这里再写一份格式定义 —— 轨迹刚从 v1 换到 v2，正好证明了那会漂移。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "assets"))
+import trace_schema as ts                                    # noqa: E402
+
 # 会变的字面量。锚在它们上面的选择器**延迟发作**：录完当场三遍全绿，
 # 几小时后时间推进就再也找不到那一行。录制器里有同一份判断（volatileMarker）。
 VOLATILE = re.compile(
@@ -43,7 +49,7 @@ TEXT_ARGS = re.compile(r'(?:getByText\(|hasText:\s*)"((?:[^"\\]|\\.)*)"')
 
 
 def _sel(node: dict) -> str:
-    return (node.get("selector") or {}).get("sel") or ""
+    return ts.selector_of(node).get("sel") or ""
 
 
 def _param(node: dict) -> dict:
@@ -57,17 +63,19 @@ def _anchors(sel: str) -> list[str]:
 def node_features(node_id: str, node: dict) -> dict[str, Any]:
     """一个节点的事实。字段名以 replay_/evidence_/observe_ 分组。"""
     action = (node.get("action") or {}).get("type")
+    # v2 里断言不产生动作（action 是 DoNothing），规格在 attach.verification
+    spec = ts.assertion_of(node)
     sel = _sel(node)
     param = _param(node)
     via = param.get("via") or {}
-    responses = ((node.get("expect") or {}).get("responses")) or []
+    responses = ts.expected_responses(node)
     required = [r for r in responses if r.get("required", True)]
     anchors = _anchors(sel)
 
     features: dict[str, Any] = {
         "nodeId": node_id,
         "action": action,
-        "selectorKind": (node.get("selector") or {}).get("kind"),
+        "selectorKind": ts.selector_of(node).get("kind"),
 
         # ── 可回放性 ──
         "replay_positionalSelector": bool(POSITIONAL.search(sel)),
@@ -78,39 +86,38 @@ def node_features(node_id: str, node: dict) -> dict[str, Any]:
         "replay_blindToggle": bool(action == "Click" and SWITCHY.search(sel)),
         "replay_switchStateCarrier": via.get("type") if action == "SetSwitch" else None,
         "replay_switchGated": bool(via.get("gated")) if action == "SetSwitch" else None,
-        "replay_optional": bool(node.get("optional")),
-        "replay_dismissesOverlay": bool(node.get("dismissesOverlay")),
+        "replay_optional": ts.is_optional(node),
+        "replay_dismissesOverlay": ts.dismisses_overlay(node),
         # 写请求是这一步真正的副作用，也意味着**下一次回放的起点不同**
         "replay_writeRequests": sum(1 for r in required if r.get("method") != "GET"),
         "replay_runtimeInput": bool(param.get("valueFrom")),
 
         # ── 证据力 ──
-        "evidence_isAssert": action == "Assert",
+        "evidence_isAssert": bool(spec),
         "evidence_requiredResponses": len(required),
         "evidence_responsesWithBody": sum(
             1 for r in required if r.get("expectedBody") is not None),
 
         # ── 观测充分性 ──
-        "observe_templates": sorted(
-            ((node.get("recognition") or {}).get("templates") or {}).keys()),
-        "observe_status": node.get("status"),
+        "observe_templates": sorted(ts.templates_of(node)),
+        "observe_status": ts.node_status(node),
     }
 
-    if action == "Assert":
-        expected = param.get("expected")
+    if spec:
+        expected = spec.get("expected")
         features.update({
-            "evidence_assertion": param.get("assertion"),
-            "evidence_runtimeExpected": bool(param.get("expectedFrom")),
+            "evidence_assertion": spec.get("assertion"),
+            "evidence_runtimeExpected": bool(spec.get("expectedFrom")),
             # 用文本定位元素、再断言那段文本，只有元素消失才会失败 —— 等于没断言。
             # 录制器现在会自动改写，但**已经生成的轨迹里仍然有**，所以这里必须认得出来。
             "evidence_tautology": bool(
-                param.get("assertion") == "text"
+                spec.get("assertion") == "text"
                 and isinstance(expected, str)
                 and expected in anchors
             ),
             # 存在性断言是真命题，但它只能证明「这段文字还在」
             "evidence_existenceOnly": (
-                param.get("assertion") == "visible" and param.get("expected") is True
+                spec.get("assertion") == "visible" and spec.get("expected") is True
             ),
         })
     return features
@@ -119,13 +126,13 @@ def node_features(node_id: str, node: dict) -> dict[str, Any]:
 def trace_features(trace: dict) -> dict[str, Any]:
     """整条轨迹的事实：逐节点 + 汇总计数。"""
     nodes = []
-    current = trace.get("entry")
+    current = ts.meta(trace).get("entry")
     seen = set()
     while current and current not in seen:
         seen.add(current)
-        node = trace["steps"][current]
+        node = trace[current]
         nodes.append(node_features(current, node))
-        current = node.get("next")
+        current = ts.next_of(node)
 
     asserts = [n for n in nodes if n["evidence_isAssert"]]
     positional_actions = {"Click", "DoubleClick", "Check", "Uncheck", "SetSwitch"}
@@ -157,13 +164,13 @@ def trace_features(trace: dict) -> dict[str, Any]:
         "evidence_requiredResponses": sum(n["evidence_requiredResponses"] for n in nodes),
         "evidence_responsesWithBody": sum(n["evidence_responsesWithBody"] for n in nodes),
 
-        "observe_status": trace.get("status"),
+        "observe_status": ts.meta(trace).get("status"),
         "observe_templateCoverage": (
             round(sum(bool(n["observe_templates"]) for n in needs_template)
                   / len(needs_template), 4) if needs_template else None
         ),
     }
-    return {"name": trace.get("name"), "totals": totals, "nodes": nodes}
+    return {"name": ts.meta(trace).get("name"), "totals": totals, "nodes": nodes}
 
 
 def load_trace(path: str | Path) -> tuple[str, dict]:
