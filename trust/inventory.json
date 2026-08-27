@@ -15,7 +15,7 @@
       "replay_volatileAnchors": 0,
       "replay_blindToggles": 0,
       "replay_switches": 0,
-      "replay_optional": 2,
+      "replay_optional": 0,
       "replay_dismissesOverlay": 0,
       "replay_writeRequests": 1,
       "replay_runtimeInputs": 0,
@@ -23,14 +23,14 @@
       "evidence_tautologies": 0,
       "evidence_existenceOnly": 0,
       "evidence_runtimeExpected": 0,
-      "evidence_requiredResponses": 13,
+      "evidence_requiredResponses": 1,
       "evidence_responsesWithBody": 1,
       "observe_status": "ready",
       "observe_templateCoverage": 1.0
     },
     "nodes": [
       {
-        "nodeId": "step-0001",
+        "nodeId": "step_0001",
         "action": "Click",
         "selectorKind": "css",
         "replay_positionalSelector": false,
@@ -39,7 +39,7 @@
         "replay_blindToggle": false,
         "replay_switchStateCarrier": null,
         "replay_switchGated": null,
-        "replay_optional": true,
+        "replay_optional": false,
         "replay_dismissesOverlay": false,
         "replay_writeRequests": 0,
         "replay_runtimeInput": false,
@@ -53,7 +53,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0002",
+        "nodeId": "step_0002",
         "action": "Click",
         "selectorKind": "css",
         "replay_positionalSelector": true,
@@ -62,7 +62,7 @@
         "replay_blindToggle": false,
         "replay_switchStateCarrier": null,
         "replay_switchGated": null,
-        "replay_optional": true,
+        "replay_optional": false,
         "replay_dismissesOverlay": false,
         "replay_writeRequests": 0,
         "replay_runtimeInput": false,
@@ -76,7 +76,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0003",
+        "nodeId": "step_0003",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -90,7 +90,7 @@
         "replay_writeRequests": 0,
         "replay_runtimeInput": false,
         "evidence_isAssert": false,
-        "evidence_requiredResponses": 5,
+        "evidence_requiredResponses": 0,
         "evidence_responsesWithBody": 0,
         "observe_templates": [
           "context",
@@ -99,7 +99,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0004",
+        "nodeId": "step_0004",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -113,7 +113,7 @@
         "replay_writeRequests": 0,
         "replay_runtimeInput": false,
         "evidence_isAssert": false,
-        "evidence_requiredResponses": 1,
+        "evidence_requiredResponses": 0,
         "evidence_responsesWithBody": 0,
         "observe_templates": [
           "context",
@@ -122,7 +122,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0005",
+        "nodeId": "step_0005",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -136,7 +136,7 @@
         "replay_writeRequests": 0,
         "replay_runtimeInput": false,
         "evidence_isAssert": false,
-        "evidence_requiredResponses": 3,
+        "evidence_requiredResponses": 0,
         "evidence_responsesWithBody": 0,
         "observe_templates": [
           "context",
@@ -145,7 +145,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0006",
+        "nodeId": "step_0006",
         "action": "Click",
         "selectorKind": "placeholder",
         "replay_positionalSelector": false,
@@ -168,7 +168,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0007",
+        "nodeId": "step_0007",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -191,7 +191,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0008",
+        "nodeId": "step_0008",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -214,7 +214,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0009",
+        "nodeId": "step_0009",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -228,7 +228,7 @@
         "replay_writeRequests": 1,
         "replay_runtimeInput": false,
         "evidence_isAssert": false,
-        "evidence_requiredResponses": 4,
+        "evidence_requiredResponses": 1,
         "evidence_responsesWithBody": 1,
         "observe_templates": [
           "context",
@@ -254,7 +254,7 @@
       "replay_volatileAnchors": 0,
       "replay_blindToggles": 0,
       "replay_switches": 0,
-      "replay_optional": 1,
+      "replay_optional": 0,
       "replay_dismissesOverlay": 0,
       "replay_writeRequests": 1,
       "replay_runtimeInputs": 0,
@@ -269,7 +269,7 @@
     },
     "nodes": [
       {
-        "nodeId": "step-0001",
+        "nodeId": "step_0001",
         "action": "Click",
         "selectorKind": "css",
         "replay_positionalSelector": true,
@@ -278,7 +278,7 @@
         "replay_blindToggle": false,
         "replay_switchStateCarrier": null,
         "replay_switchGated": null,
-        "replay_optional": true,
+        "replay_optional": false,
         "replay_dismissesOverlay": false,
         "replay_writeRequests": 0,
         "replay_runtimeInput": false,
@@ -292,7 +292,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0002",
+        "nodeId": "step_0002",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -315,7 +315,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0003",
+        "nodeId": "step_0003",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -338,7 +338,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0004",
+        "nodeId": "step_0004",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -361,7 +361,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0005",
+        "nodeId": "step_0005",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -384,7 +384,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0006",
+        "nodeId": "step_0006",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -424,7 +424,7 @@
       "replay_volatileAnchors": 0,
       "replay_blindToggles": 0,
       "replay_switches": 0,
-      "replay_optional": 3,
+      "replay_optional": 0,
       "replay_dismissesOverlay": 0,
       "replay_writeRequests": 2,
       "replay_runtimeInputs": 0,
@@ -439,7 +439,7 @@
     },
     "nodes": [
       {
-        "nodeId": "step-0001",
+        "nodeId": "step_0001",
         "action": "Click",
         "selectorKind": "css",
         "replay_positionalSelector": true,
@@ -448,7 +448,7 @@
         "replay_blindToggle": false,
         "replay_switchStateCarrier": null,
         "replay_switchGated": null,
-        "replay_optional": true,
+        "replay_optional": false,
         "replay_dismissesOverlay": false,
         "replay_writeRequests": 0,
         "replay_runtimeInput": false,
@@ -462,7 +462,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0002",
+        "nodeId": "step_0002",
         "action": "Click",
         "selectorKind": "css",
         "replay_positionalSelector": true,
@@ -471,7 +471,7 @@
         "replay_blindToggle": false,
         "replay_switchStateCarrier": null,
         "replay_switchGated": null,
-        "replay_optional": true,
+        "replay_optional": false,
         "replay_dismissesOverlay": false,
         "replay_writeRequests": 0,
         "replay_runtimeInput": false,
@@ -485,7 +485,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0003",
+        "nodeId": "step_0003",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -508,7 +508,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0004",
+        "nodeId": "step_0004",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -531,7 +531,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0005",
+        "nodeId": "step_0005",
         "action": "Click",
         "selectorKind": "css",
         "replay_positionalSelector": true,
@@ -540,7 +540,7 @@
         "replay_blindToggle": false,
         "replay_switchStateCarrier": null,
         "replay_switchGated": null,
-        "replay_optional": true,
+        "replay_optional": false,
         "replay_dismissesOverlay": false,
         "replay_writeRequests": 0,
         "replay_runtimeInput": false,
@@ -554,7 +554,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0006",
+        "nodeId": "step_0006",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -577,7 +577,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0007",
+        "nodeId": "step_0007",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -600,7 +600,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0008",
+        "nodeId": "step_0008",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -623,7 +623,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0009",
+        "nodeId": "step_0009",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -646,7 +646,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0010",
+        "nodeId": "step_0010",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -669,7 +669,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0011",
+        "nodeId": "step_0011",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -692,7 +692,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0012",
+        "nodeId": "step_0012",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -715,7 +715,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0013",
+        "nodeId": "step_0013",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -757,7 +757,7 @@
       "replay_volatileAnchors": 0,
       "replay_blindToggles": 0,
       "replay_switches": 0,
-      "replay_optional": 1,
+      "replay_optional": 0,
       "replay_dismissesOverlay": 0,
       "replay_writeRequests": 3,
       "replay_runtimeInputs": 0,
@@ -772,7 +772,7 @@
     },
     "nodes": [
       {
-        "nodeId": "step-0001",
+        "nodeId": "step_0001",
         "action": "Click",
         "selectorKind": "css",
         "replay_positionalSelector": true,
@@ -781,7 +781,7 @@
         "replay_blindToggle": false,
         "replay_switchStateCarrier": null,
         "replay_switchGated": null,
-        "replay_optional": true,
+        "replay_optional": false,
         "replay_dismissesOverlay": false,
         "replay_writeRequests": 0,
         "replay_runtimeInput": false,
@@ -795,7 +795,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0002",
+        "nodeId": "step_0002",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -818,7 +818,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0003",
+        "nodeId": "step_0003",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -841,7 +841,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0004",
+        "nodeId": "step_0004",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -864,7 +864,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0005",
+        "nodeId": "step_0005",
         "action": "Click",
         "selectorKind": "placeholder",
         "replay_positionalSelector": false,
@@ -887,7 +887,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0006",
+        "nodeId": "step_0006",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -910,7 +910,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0007",
+        "nodeId": "step_0007",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -933,7 +933,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0008",
+        "nodeId": "step_0008",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -956,7 +956,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0009",
+        "nodeId": "step_0009",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -979,7 +979,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0010",
+        "nodeId": "step_0010",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1002,7 +1002,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0011",
+        "nodeId": "step_0011",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -1025,7 +1025,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0012",
+        "nodeId": "step_0012",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1048,7 +1048,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0013",
+        "nodeId": "step_0013",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1071,7 +1071,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0014",
+        "nodeId": "step_0014",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -1094,7 +1094,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0015",
+        "nodeId": "step_0015",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1136,7 +1136,7 @@
       "replay_volatileAnchors": 0,
       "replay_blindToggles": 4,
       "replay_switches": 1,
-      "replay_optional": 1,
+      "replay_optional": 0,
       "replay_dismissesOverlay": 0,
       "replay_writeRequests": 2,
       "replay_runtimeInputs": 0,
@@ -1151,7 +1151,7 @@
     },
     "nodes": [
       {
-        "nodeId": "step-0001",
+        "nodeId": "step_0001",
         "action": "Click",
         "selectorKind": "css",
         "replay_positionalSelector": true,
@@ -1160,7 +1160,7 @@
         "replay_blindToggle": false,
         "replay_switchStateCarrier": null,
         "replay_switchGated": null,
-        "replay_optional": true,
+        "replay_optional": false,
         "replay_dismissesOverlay": false,
         "replay_writeRequests": 0,
         "replay_runtimeInput": false,
@@ -1174,7 +1174,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0002",
+        "nodeId": "step_0002",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -1197,7 +1197,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0003",
+        "nodeId": "step_0003",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1220,7 +1220,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0004",
+        "nodeId": "step_0004",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1243,7 +1243,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0005",
+        "nodeId": "step_0005",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1266,7 +1266,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0006",
+        "nodeId": "step_0006",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -1289,7 +1289,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0007",
+        "nodeId": "step_0007",
         "action": "Click",
         "selectorKind": "placeholder",
         "replay_positionalSelector": false,
@@ -1312,7 +1312,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0008",
+        "nodeId": "step_0008",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1335,7 +1335,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0009",
+        "nodeId": "step_0009",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1358,7 +1358,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0010",
+        "nodeId": "step_0010",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1381,7 +1381,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0011",
+        "nodeId": "step_0011",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1404,7 +1404,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0012",
+        "nodeId": "step_0012",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -1427,7 +1427,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0013",
+        "nodeId": "step_0013",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -1450,7 +1450,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0014",
+        "nodeId": "step_0014",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1473,7 +1473,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0015",
+        "nodeId": "step_0015",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -1496,7 +1496,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0016",
+        "nodeId": "step_0016",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -1519,7 +1519,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0017",
+        "nodeId": "step_0017",
         "action": "SetSwitch",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1573,7 +1573,7 @@
     },
     "nodes": [
       {
-        "nodeId": "step-0001",
+        "nodeId": "step_0001",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1596,7 +1596,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0002",
+        "nodeId": "step_0002",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -1619,7 +1619,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0003",
+        "nodeId": "step_0003",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1642,7 +1642,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0004",
+        "nodeId": "step_0004",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -1665,7 +1665,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0005",
+        "nodeId": "step_0005",
         "action": "SetSwitch",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1688,7 +1688,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0006",
+        "nodeId": "step_0006",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -1711,7 +1711,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0007",
+        "nodeId": "step_0007",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1734,7 +1734,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0008",
+        "nodeId": "step_0008",
         "action": "SetSwitch",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1757,7 +1757,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0009",
+        "nodeId": "step_0009",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -1802,8 +1802,8 @@
       "replay_writeRequests": 12,
       "replay_runtimeInputs": 0,
       "evidence_assertions": 2,
-      "evidence_tautologies": 2,
-      "evidence_existenceOnly": 0,
+      "evidence_tautologies": 0,
+      "evidence_existenceOnly": 2,
       "evidence_runtimeExpected": 0,
       "evidence_requiredResponses": 12,
       "evidence_responsesWithBody": 12,
@@ -1812,7 +1812,7 @@
     },
     "nodes": [
       {
-        "nodeId": "step-0001",
+        "nodeId": "step_0001",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1835,7 +1835,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0002",
+        "nodeId": "step_0002",
         "action": "Click",
         "selectorKind": "scoped",
         "replay_positionalSelector": false,
@@ -1858,7 +1858,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0003",
+        "nodeId": "step_0003",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -1881,8 +1881,8 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0004",
-        "action": "Assert",
+        "nodeId": "step_0004",
+        "action": "DoNothing",
         "selectorKind": "text",
         "replay_positionalSelector": false,
         "replay_firstOfMany": true,
@@ -1899,13 +1899,13 @@
         "evidence_responsesWithBody": 1,
         "observe_templates": [],
         "observe_status": "ready",
-        "evidence_assertion": "text",
+        "evidence_assertion": "visible",
         "evidence_runtimeExpected": false,
-        "evidence_tautology": true,
-        "evidence_existenceOnly": false
+        "evidence_tautology": false,
+        "evidence_existenceOnly": true
       },
       {
-        "nodeId": "step-0005",
+        "nodeId": "step_0005",
         "action": "Click",
         "selectorKind": "role",
         "replay_positionalSelector": false,
@@ -1928,7 +1928,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0006",
+        "nodeId": "step_0006",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -1951,7 +1951,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0007",
+        "nodeId": "step_0007",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -1974,7 +1974,7 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0008",
+        "nodeId": "step_0008",
         "action": "Click",
         "selectorKind": "text",
         "replay_positionalSelector": false,
@@ -1997,8 +1997,8 @@
         "observe_status": "ready"
       },
       {
-        "nodeId": "step-0009",
-        "action": "Assert",
+        "nodeId": "step_0009",
+        "action": "DoNothing",
         "selectorKind": "text",
         "replay_positionalSelector": false,
         "replay_firstOfMany": false,
@@ -2015,215 +2015,13 @@
         "evidence_responsesWithBody": 0,
         "observe_templates": [],
         "observe_status": "ready",
-        "evidence_assertion": "text",
+        "evidence_assertion": "visible",
         "evidence_runtimeExpected": false,
-        "evidence_tautology": true,
-        "evidence_existenceOnly": false
+        "evidence_tautology": false,
+        "evidence_existenceOnly": true
       }
     ],
     "path": "/Users/edr-test/work/maa-dp-record/recordings/maa-flow7/trace.json",
     "case": "maa-flow7"
-  },
-  {
-    "name": "tiangonglab-8000-recording",
-    "totals": {
-      "steps": 3,
-      "selectorKinds": {
-        "role": 2,
-        "scoped": 1
-      },
-      "replay_positionalSelectors": 0,
-      "replay_firstOfMany": 0,
-      "replay_volatileAnchors": 0,
-      "replay_blindToggles": 0,
-      "replay_switches": 0,
-      "replay_optional": 0,
-      "replay_dismissesOverlay": 0,
-      "replay_writeRequests": 0,
-      "replay_runtimeInputs": 0,
-      "evidence_assertions": 1,
-      "evidence_tautologies": 1,
-      "evidence_existenceOnly": 0,
-      "evidence_runtimeExpected": 0,
-      "evidence_requiredResponses": 6,
-      "evidence_responsesWithBody": 0,
-      "observe_status": "ready",
-      "observe_templateCoverage": 1.0
-    },
-    "nodes": [
-      {
-        "nodeId": "step-0001",
-        "action": "Click",
-        "selectorKind": "role",
-        "replay_positionalSelector": false,
-        "replay_firstOfMany": false,
-        "replay_volatileAnchor": [],
-        "replay_blindToggle": false,
-        "replay_switchStateCarrier": null,
-        "replay_switchGated": null,
-        "replay_optional": false,
-        "replay_dismissesOverlay": false,
-        "replay_writeRequests": 0,
-        "replay_runtimeInput": false,
-        "evidence_isAssert": false,
-        "evidence_requiredResponses": 3,
-        "evidence_responsesWithBody": 0,
-        "observe_templates": [
-          "context",
-          "element"
-        ],
-        "observe_status": "ready"
-      },
-      {
-        "nodeId": "step-0002",
-        "action": "Click",
-        "selectorKind": "role",
-        "replay_positionalSelector": false,
-        "replay_firstOfMany": false,
-        "replay_volatileAnchor": [],
-        "replay_blindToggle": false,
-        "replay_switchStateCarrier": null,
-        "replay_switchGated": null,
-        "replay_optional": false,
-        "replay_dismissesOverlay": false,
-        "replay_writeRequests": 0,
-        "replay_runtimeInput": false,
-        "evidence_isAssert": false,
-        "evidence_requiredResponses": 3,
-        "evidence_responsesWithBody": 0,
-        "observe_templates": [
-          "context",
-          "element"
-        ],
-        "observe_status": "ready"
-      },
-      {
-        "nodeId": "step-0003",
-        "action": "Assert",
-        "selectorKind": "scoped",
-        "replay_positionalSelector": false,
-        "replay_firstOfMany": false,
-        "replay_volatileAnchor": [],
-        "replay_blindToggle": false,
-        "replay_switchStateCarrier": null,
-        "replay_switchGated": null,
-        "replay_optional": false,
-        "replay_dismissesOverlay": false,
-        "replay_writeRequests": 0,
-        "replay_runtimeInput": false,
-        "evidence_isAssert": true,
-        "evidence_requiredResponses": 0,
-        "evidence_responsesWithBody": 0,
-        "observe_templates": [],
-        "observe_status": "ready",
-        "evidence_assertion": "text",
-        "evidence_runtimeExpected": false,
-        "evidence_tautology": true,
-        "evidence_existenceOnly": false
-      }
-    ],
-    "path": "recordings/tiangong-hisec-readonly/trace.json",
-    "case": "tiangong-hisec-readonly"
-  },
-  {
-    "name": "tiangonglab-8000-recording",
-    "totals": {
-      "steps": 3,
-      "selectorKinds": {
-        "role": 2,
-        "scoped": 1
-      },
-      "replay_positionalSelectors": 0,
-      "replay_firstOfMany": 0,
-      "replay_volatileAnchors": 0,
-      "replay_blindToggles": 0,
-      "replay_switches": 0,
-      "replay_optional": 0,
-      "replay_dismissesOverlay": 0,
-      "replay_writeRequests": 0,
-      "replay_runtimeInputs": 0,
-      "evidence_assertions": 1,
-      "evidence_tautologies": 1,
-      "evidence_existenceOnly": 0,
-      "evidence_runtimeExpected": 0,
-      "evidence_requiredResponses": 6,
-      "evidence_responsesWithBody": 0,
-      "observe_status": "ready",
-      "observe_templateCoverage": 1.0
-    },
-    "nodes": [
-      {
-        "nodeId": "step-0001",
-        "action": "Click",
-        "selectorKind": "role",
-        "replay_positionalSelector": false,
-        "replay_firstOfMany": false,
-        "replay_volatileAnchor": [],
-        "replay_blindToggle": false,
-        "replay_switchStateCarrier": null,
-        "replay_switchGated": null,
-        "replay_optional": false,
-        "replay_dismissesOverlay": false,
-        "replay_writeRequests": 0,
-        "replay_runtimeInput": false,
-        "evidence_isAssert": false,
-        "evidence_requiredResponses": 3,
-        "evidence_responsesWithBody": 0,
-        "observe_templates": [
-          "context",
-          "element"
-        ],
-        "observe_status": "ready"
-      },
-      {
-        "nodeId": "step-0002",
-        "action": "Click",
-        "selectorKind": "role",
-        "replay_positionalSelector": false,
-        "replay_firstOfMany": false,
-        "replay_volatileAnchor": [],
-        "replay_blindToggle": false,
-        "replay_switchStateCarrier": null,
-        "replay_switchGated": null,
-        "replay_optional": false,
-        "replay_dismissesOverlay": false,
-        "replay_writeRequests": 0,
-        "replay_runtimeInput": false,
-        "evidence_isAssert": false,
-        "evidence_requiredResponses": 3,
-        "evidence_responsesWithBody": 0,
-        "observe_templates": [
-          "context",
-          "element"
-        ],
-        "observe_status": "ready"
-      },
-      {
-        "nodeId": "step-0003",
-        "action": "Assert",
-        "selectorKind": "scoped",
-        "replay_positionalSelector": false,
-        "replay_firstOfMany": false,
-        "replay_volatileAnchor": [],
-        "replay_blindToggle": false,
-        "replay_switchStateCarrier": null,
-        "replay_switchGated": null,
-        "replay_optional": false,
-        "replay_dismissesOverlay": false,
-        "replay_writeRequests": 0,
-        "replay_runtimeInput": false,
-        "evidence_isAssert": true,
-        "evidence_requiredResponses": 0,
-        "evidence_responsesWithBody": 0,
-        "observe_templates": [],
-        "observe_status": "ready",
-        "evidence_assertion": "text",
-        "evidence_runtimeExpected": false,
-        "evidence_tautology": true,
-        "evidence_existenceOnly": false
-      }
-    ],
-    "path": "recordings/tiangonglab-8000-recording/trace.json",
-    "case": "tiangonglab-8000-recording"
   }
 ]
