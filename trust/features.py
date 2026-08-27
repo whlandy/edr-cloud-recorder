@@ -76,6 +76,7 @@ def node_features(node_id: str, node: dict) -> dict[str, Any]:
         "nodeId": node_id,
         "action": action,
         "selectorKind": ts.selector_of(node).get("kind"),
+        "selectorSel": sel,
 
         # ── 可回放性 ──
         "replay_positionalSelector": bool(POSITIONAL.search(sel)),
