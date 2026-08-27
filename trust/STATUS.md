@@ -156,6 +156,25 @@ silent-pass 最多的是 maa-flow5（5 条），正是在 9/17 和 15/17 之间�
 → 记给 P3：有些缺陷需要拿 `recording.json` 和 trace 对照才看得见，
 光看轨迹是看不出来的。
 
+## P2c —— recording ↔ trace 对照（2026-08-28，第 4 轮）
+
+产出：`trust/crosscheck.py`（3 条规则）、`trust/crosscheck.json`、
+`test/test_trust_crosscheck.py`（5 条）。
+
+起因是第 3 轮的发现：有一类缺陷在产物里根本不可见。录制里有的事实，编译进
+轨迹时可能丢掉 —— 只看轨迹就永远发现不了「丢了什么」。对照靠
+`provenance.sourceStepId` 把节点连回录制步骤。
+
+全语料结果：**1 条发现**。
+`maa-flow7 step_0004`：录制记着 `ambiguous / matches=2`，轨迹里没有
+（正是 P0 顺带发现的那条，现在变成可自动检出的规则）。
+
+两件**没有**发生的事同样是结论：0 处中段掉步（编译没有悄悄丢步骤），
+0 处凭据外泄（secret 步骤都被正确切掉了）。
+
+自检里最要紧的是一条**否定**用例：登录前缀是编译时故意切掉的，不能报成掉步 ——
+否则每条带登录的轨迹都会被冤枉，真正的掉步就淹没在噪音里。
+
 ## P1 待办与待你拍板
 
 - [ ] `trust/replay_lab.py`：k 次回放 + 状态扰动，产出 `labels.jsonl`
