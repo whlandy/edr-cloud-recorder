@@ -35,12 +35,25 @@ import re
 # 关闭件的通用命名。录制器判「这一下是不是在关浮层」时用的是同一族判据。
 CLOSER_SEL = re.compile(r'\.locator\("[^"]*(close|dismiss)', re.I)
 
+# 环境数据：主机名、IP、资产名。它们不是界面文案，是**这套环境此刻的库存**。
+# 和时间戳同类，只是变得慢一些 —— 换台机器、资产下线、换个筛选条件，
+# 这一行就不在了。P1 的实测标签里有 2/6 的失败就断在这上面。
+DATA_ANCHOR = re.compile(
+    r"\b\d{1,3}(?:\.\d{1,3}){3}\b"          # 170.170.11.26
+    r"|\b[A-Z0-9]{4,}-[A-Z0-9-]{4,}\b",        # DESKTOP-S917L7S-…
+)
+
 SILENT_PASS = "silent-pass"
 FLAKY = "flaky"
 LOUD_LATER = "loud-later"
 WEAK = "weak"
 
 REPLAY, EVIDENCE, OBSERVE = "replay", "evidence", "observe"
+
+
+def _anchors_of(node: dict) -> list[str]:
+    from trust.features import TEXT_ARGS
+    return [m.group(1) for m in TEXT_ARGS.finditer(node.get("selectorSel") or "")]
 
 
 def _finding(rule, axis, failure, node, evidence, consequence):
@@ -70,6 +83,14 @@ def node_findings(node: dict) -> list[dict]:
             "volatile_anchor", REPLAY, LOUD_LATER, node_id,
             f"作用域锚在会变的值上：{node['replay_volatileAnchor']}",
             "录完当场全绿；时间推进后再也找不到那一行，且报错指不到原因"))
+
+    anchors = [a for a in _anchors_of(node) if DATA_ANCHOR.search(a)]
+    if anchors:
+        out.append(_finding(
+            "environment_data_anchor", REPLAY, LOUD_LATER, node_id,
+            f"选择器锚在环境数据上：{anchors}",
+            "主机名/IP 是这套环境此刻的库存，不是界面文案 —— "
+            "资产下线或换个筛选条件，这一行就不在了"))
 
     if node["replay_positionalSelector"]:
         out.append(_finding(

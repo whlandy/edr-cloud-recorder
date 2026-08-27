@@ -84,3 +84,25 @@ def test_every_finding_carries_evidence_and_consequence():
         assert f["evidence"] and f["consequence"], f
         assert f["axis"] in ("replay", "evidence", "observe"), f
         assert f["failure"] in ("silent-pass", "flaky", "loud-later", "weak"), f
+
+
+def test_environment_data_anchor_is_reported():
+    """主机名/IP 是这套环境此刻的库存，不是界面文案。
+
+    P1 的实测标签里 2/6 的失败就断在这上面（getByText("DESKTOP-…-170.170.11.26")）。
+    这条规则是被实测标签买来的 —— 不是拍脑袋加的。
+    """
+    rules = _node_rules({
+        "selector": {"sel": 'getByText("DESKTOP-S917L7S-170.170.11.26", { exact: true })',
+                     "kind": "text"},
+        "action": {"type": "Click", "param": {}}})
+    assert "environment_data_anchor" in rules
+
+
+def test_business_label_is_not_a_data_anchor():
+    """界面文案不能被误判成环境数据，否则每条轨迹都会被这条规则刷屏。"""
+    for text in ("default-group", "开启合规检查策略配置", "应用"):
+        rules = _node_rules({
+            "selector": {"sel": f'getByText("{text}", {{ exact: true }})', "kind": "text"},
+            "action": {"type": "Click", "param": {}}})
+        assert "environment_data_anchor" not in rules, text
