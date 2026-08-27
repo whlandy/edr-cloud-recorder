@@ -151,6 +151,8 @@ def trace_features(trace: dict) -> dict[str, Any]:
         "replay_volatileAnchors": sum(bool(n["replay_volatileAnchor"]) for n in nodes),
         "replay_blindToggles": sum(n["replay_blindToggle"] for n in nodes),
         "replay_switches": sum(n["action"] == "SetSwitch" for n in nodes),
+        # 读得出「状态写在哪一层」的开关。读不出就只能盲拨。
+        "replay_switchCarriers": sum(bool(n["replay_switchStateCarrier"]) for n in nodes),
         "replay_optional": sum(n["replay_optional"] for n in nodes),
         "replay_dismissesOverlay": sum(n["replay_dismissesOverlay"] for n in nodes),
         # 这条轨迹自己会改动状态 —— 第二次回放的起点和第一次不同
@@ -165,6 +167,9 @@ def trace_features(trace: dict) -> dict[str, Any]:
         "evidence_responsesWithBody": sum(n["evidence_responsesWithBody"] for n in nodes),
 
         "observe_status": ts.meta(trace).get("status"),
+        # 计数和比率都要：比率给人看，计数用来比较两条轨迹谁更差
+        # （比率在「一个定位步骤都没有」时是 None，没法比方向）
+        "observe_templatedSteps": sum(bool(n["observe_templates"]) for n in nodes),
         "observe_templateCoverage": (
             round(sum(bool(n["observe_templates"]) for n in needs_template)
                   / len(needs_template), 4) if needs_template else None

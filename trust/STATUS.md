@@ -3,7 +3,7 @@
 方案见 [TRUST-EVAL-PLAN.md](../TRUST-EVAL-PLAN.md)。每轮只闭环一件事，
 结论必须带数字。**没有新证据不许改权重。**
 
-## 当前阶段：P0 完成，下一步 P1（重复回放取标签）
+## 当前阶段：P0 完成、P2 的变异器就绪，下一步 P1（重复回放取标签）
 
 ## P0 —— 特征抽取与语料盘点（2026-08-28）
 
@@ -70,6 +70,36 @@ maa-flow5 的振荡正是如此。
 `recording.json` 里有 `ambiguous` / `matches`（录制器验过唯一性），
 但 `_selector()` 不搬它。现在只能从 `sel` 反推 `.first()` 这个症状，
 拿不到「到底撞了几个」。P2 决定：反推，还是让轨迹带上它。
+
+## P2a —— 变异器（2026-08-28，第 2 轮）
+
+产出：`trust/mutate.py`（10 种在册缺陷的注入器）、`test/test_trust_mutate.py`（31 条）。
+
+真实语料只有 7 条，训不出也验不了模型。但每一种缺陷都真实发生过、且我们知道
+它的正确标签 —— 所以拿好轨迹成对造出 (原体, 变异体)。这既是 P3 的训练/验证
+数据，也是评估器自己的回归测试。
+
+每种变异都**声明**它必须让哪个汇总特征往哪个方向动。这张表是可证伪的：
+特征没动就说明抽取器对那种缺陷是瞎的。
+
+### 在 7 条真实语料上跑的结果：44 处可注入，漏检 0
+
+| 变异 | 可下手的轨迹数 | 说明 |
+|---|---|---|
+| positional_selector / volatile_anchor / first_of_many | 7 | 每条轨迹都能下手 |
+| drop_expected_body / drop_template | 7 | 同上 |
+| blind_toggle / drop_switch_carrier | 2 | 只有 flow5、flow6 有真正的 SetSwitch |
+| drop_optional | 2 | 只有 flow6、flow7 有可选标记（呼应 P0 结论 4） |
+| tautological_assertion / drop_assertions | 1 | **只有 flow7 有断言** |
+
+最后一行是 P0 结论 2 的另一种呈现：**语料里几乎没有断言可供破坏**。
+证据力这根轴不仅分数低，而且连负样本都造不出来 —— P3 想校准「证据力」
+这一维，先得有断言才行。
+
+验收：把 `blind_toggle` 改成「返回描述但什么都不改」，
+`test_every_mutation_moves_its_declared_feature[blind_toggle]` 立刻变红。
+另外两条硬性质也守着：每种变异都必须能在参考轨迹上下手（新加变异忘了扩充
+夹具会立刻喊出来）；变异只能改深拷贝，改到原体上就会污染语料和后续对照。
 
 ## P1 待办与待你拍板
 
