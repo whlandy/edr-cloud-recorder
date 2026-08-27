@@ -111,7 +111,23 @@ network expectations, or evaluation metrics. Read
 [visual-template-matching.md](references/visual-template-matching.md) before changing template
 capture or matching.
 
-### 6. Verify the Green Result
+### 6. Audit What the Green Actually Proves
+
+```bash
+python3 trust/audit.py recordings/<flow>
+```
+
+A trace can replay at score 100 and still prove nothing — the recorded corpus had
+5 of 7 traces with **zero assertions**, and every assertion that did exist was a
+tautology (`get_by_text("X")` then assert its text is `"X"`). Replay evaluation answers
+"did this run go through"; the audit answers "is this trace worth trusting", along two
+separate axes: whether it will replay the same way again, and what a green run proves.
+
+The audit reports evidence per node, not just a number. Its score expresses **ordering
+only** — it is not calibrated to a probability, and it says so in every report. See
+[TRUST-EVAL-PLAN.md](TRUST-EVAL-PLAN.md) and `trust/STATUS.md`.
+
+### 7. Verify the Green Result
 
 ```bash
 grep -rn "skip\|xfail" tests/ recordings/
@@ -168,6 +184,7 @@ assets/                     Runtime files copied into target projects
 orchestrate/                Cloud and endpoint coordination
 references/                 Details loaded only when needed
 test/                       Recorder, generator, replay, and structure checks
+trust/                      Trace trustworthiness audit (features, rules, score)
 ```
 
 ## Self-Check
