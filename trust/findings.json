@@ -1,0 +1,504 @@
+[
+  {
+    "name": "maa-flow",
+    "steps": 9,
+    "findings": [
+      {
+        "rule": "positional_selector",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0002",
+        "evidence": "选择器按位置定位（nth-of-type / nth）",
+        "consequence": "页面多一层浮层或多一行，指向就变了"
+      },
+      {
+        "rule": "environment_data_anchor",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0005",
+        "evidence": "选择器锚在环境数据上：['DESKTOP-S917L7S-170.170.11.26']",
+        "consequence": "主机名/IP 是这套环境此刻的库存，不是界面文案 —— 资产下线或换个筛选条件，这一行就不在了"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0009",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "no_assertions",
+        "axis": "evidence",
+        "failure": "silent-pass",
+        "node": null,
+        "evidence": "9 步，0 条断言",
+        "consequence": "这条轨迹只证明「这串操作能走完」，不证明系统做对了任何事"
+      },
+      {
+        "rule": "recorder_predates_overlay_evidence",
+        "axis": "observe",
+        "failure": "loud-later",
+        "node": null,
+        "evidence": "0 个关浮层标记，却有 1 个 CSS 路径步骤",
+        "consequence": "条件步骤全被当成必经节点；这类轨迹只能重录，重新生成补不回来"
+      }
+    ],
+    "byFailure": {
+      "loud-later": 3,
+      "flaky": 1,
+      "silent-pass": 1
+    },
+    "byAxis": {
+      "replay": 3,
+      "evidence": 1,
+      "observe": 1
+    },
+    "case": "maa-flow"
+  },
+  {
+    "name": "maa-flow2",
+    "steps": 6,
+    "findings": [
+      {
+        "rule": "positional_selector",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0001",
+        "evidence": "选择器按位置定位（nth-of-type / nth）",
+        "consequence": "页面多一层浮层或多一行，指向就变了"
+      },
+      {
+        "rule": "environment_data_anchor",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0004",
+        "evidence": "选择器锚在环境数据上：['DESKTOP-S917L7S-170.170.11.26']",
+        "consequence": "主机名/IP 是这套环境此刻的库存，不是界面文案 —— 资产下线或换个筛选条件，这一行就不在了"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0006",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "no_assertions",
+        "axis": "evidence",
+        "failure": "silent-pass",
+        "node": null,
+        "evidence": "6 步，0 条断言",
+        "consequence": "这条轨迹只证明「这串操作能走完」，不证明系统做对了任何事"
+      },
+      {
+        "rule": "recorder_predates_overlay_evidence",
+        "axis": "observe",
+        "failure": "loud-later",
+        "node": null,
+        "evidence": "0 个关浮层标记，却有 1 个 CSS 路径步骤",
+        "consequence": "条件步骤全被当成必经节点；这类轨迹只能重录，重新生成补不回来"
+      }
+    ],
+    "byFailure": {
+      "loud-later": 3,
+      "flaky": 1,
+      "silent-pass": 1
+    },
+    "byAxis": {
+      "replay": 3,
+      "evidence": 1,
+      "observe": 1
+    },
+    "case": "maa-flow2"
+  },
+  {
+    "name": "maa-flow3",
+    "steps": 13,
+    "findings": [
+      {
+        "rule": "positional_selector",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0001",
+        "evidence": "选择器按位置定位（nth-of-type / nth）",
+        "consequence": "页面多一层浮层或多一行，指向就变了"
+      },
+      {
+        "rule": "positional_selector",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0002",
+        "evidence": "选择器按位置定位（nth-of-type / nth）",
+        "consequence": "页面多一层浮层或多一行，指向就变了"
+      },
+      {
+        "rule": "positional_selector",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0005",
+        "evidence": "选择器按位置定位（nth-of-type / nth）",
+        "consequence": "页面多一层浮层或多一行，指向就变了"
+      },
+      {
+        "rule": "environment_data_anchor",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0007",
+        "evidence": "选择器锚在环境数据上：['DESKTOP-S917L7S-170.170.11.26']",
+        "consequence": "主机名/IP 是这套环境此刻的库存，不是界面文案 —— 资产下线或换个筛选条件，这一行就不在了"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0010",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0013",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "no_assertions",
+        "axis": "evidence",
+        "failure": "silent-pass",
+        "node": null,
+        "evidence": "13 步，0 条断言",
+        "consequence": "这条轨迹只证明「这串操作能走完」，不证明系统做对了任何事"
+      },
+      {
+        "rule": "recorder_predates_overlay_evidence",
+        "axis": "observe",
+        "failure": "loud-later",
+        "node": null,
+        "evidence": "0 个关浮层标记，却有 3 个 CSS 路径步骤",
+        "consequence": "条件步骤全被当成必经节点；这类轨迹只能重录，重新生成补不回来"
+      }
+    ],
+    "byFailure": {
+      "loud-later": 5,
+      "flaky": 2,
+      "silent-pass": 1
+    },
+    "byAxis": {
+      "replay": 6,
+      "evidence": 1,
+      "observe": 1
+    },
+    "case": "maa-flow3"
+  },
+  {
+    "name": "maa-flow4",
+    "steps": 15,
+    "findings": [
+      {
+        "rule": "positional_selector",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0001",
+        "evidence": "选择器按位置定位（nth-of-type / nth）",
+        "consequence": "页面多一层浮层或多一行，指向就变了"
+      },
+      {
+        "rule": "environment_data_anchor",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0004",
+        "evidence": "选择器锚在环境数据上：['DESKTOP-S917L7S-170.170.11.26']",
+        "consequence": "主机名/IP 是这套环境此刻的库存，不是界面文案 —— 资产下线或换个筛选条件，这一行就不在了"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0009",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0012",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0015",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "no_assertions",
+        "axis": "evidence",
+        "failure": "silent-pass",
+        "node": null,
+        "evidence": "15 步，0 条断言",
+        "consequence": "这条轨迹只证明「这串操作能走完」，不证明系统做对了任何事"
+      },
+      {
+        "rule": "recorder_predates_overlay_evidence",
+        "axis": "observe",
+        "failure": "loud-later",
+        "node": null,
+        "evidence": "0 个关浮层标记，却有 1 个 CSS 路径步骤",
+        "consequence": "条件步骤全被当成必经节点；这类轨迹只能重录，重新生成补不回来"
+      }
+    ],
+    "byFailure": {
+      "loud-later": 3,
+      "flaky": 3,
+      "silent-pass": 1
+    },
+    "byAxis": {
+      "replay": 5,
+      "evidence": 1,
+      "observe": 1
+    },
+    "case": "maa-flow4"
+  },
+  {
+    "name": "maa-flow5",
+    "steps": 17,
+    "findings": [
+      {
+        "rule": "positional_selector",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0001",
+        "evidence": "选择器按位置定位（nth-of-type / nth）",
+        "consequence": "页面多一层浮层或多一行，指向就变了"
+      },
+      {
+        "rule": "environment_data_anchor",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0006",
+        "evidence": "选择器锚在环境数据上：['DESKTOP-S917L7S-170.170.11.26']",
+        "consequence": "主机名/IP 是这套环境此刻的库存，不是界面文案 —— 资产下线或换个筛选条件，这一行就不在了"
+      },
+      {
+        "rule": "blind_toggle",
+        "axis": "replay",
+        "failure": "silent-pass",
+        "node": "step_0009",
+        "evidence": "动作是 Click，而目标看着是开关组件",
+        "consequence": "回放时朝哪个方向拨取决于当时的状态，拨反了也不报错"
+      },
+      {
+        "rule": "blind_toggle",
+        "axis": "replay",
+        "failure": "silent-pass",
+        "node": "step_0010",
+        "evidence": "动作是 Click，而目标看着是开关组件",
+        "consequence": "回放时朝哪个方向拨取决于当时的状态，拨反了也不报错"
+      },
+      {
+        "rule": "blind_toggle",
+        "axis": "replay",
+        "failure": "silent-pass",
+        "node": "step_0011",
+        "evidence": "动作是 Click，而目标看着是开关组件",
+        "consequence": "回放时朝哪个方向拨取决于当时的状态，拨反了也不报错"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0013",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "blind_toggle",
+        "axis": "replay",
+        "failure": "silent-pass",
+        "node": "step_0014",
+        "evidence": "动作是 Click，而目标看着是开关组件",
+        "consequence": "回放时朝哪个方向拨取决于当时的状态，拨反了也不报错"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0016",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "no_assertions",
+        "axis": "evidence",
+        "failure": "silent-pass",
+        "node": null,
+        "evidence": "17 步，0 条断言",
+        "consequence": "这条轨迹只证明「这串操作能走完」，不证明系统做对了任何事"
+      },
+      {
+        "rule": "recorder_predates_overlay_evidence",
+        "axis": "observe",
+        "failure": "loud-later",
+        "node": null,
+        "evidence": "0 个关浮层标记，却有 1 个 CSS 路径步骤",
+        "consequence": "条件步骤全被当成必经节点；这类轨迹只能重录，重新生成补不回来"
+      }
+    ],
+    "byFailure": {
+      "loud-later": 3,
+      "silent-pass": 5,
+      "flaky": 2
+    },
+    "byAxis": {
+      "replay": 8,
+      "evidence": 1,
+      "observe": 1
+    },
+    "case": "maa-flow5"
+  },
+  {
+    "name": "maa-flow6",
+    "steps": 9,
+    "findings": [
+      {
+        "rule": "environment_data_anchor",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0004",
+        "evidence": "选择器锚在环境数据上：['DESKTOP-S917L7S-170.170.11.26']",
+        "consequence": "主机名/IP 是这套环境此刻的库存，不是界面文案 —— 资产下线或换个筛选条件，这一行就不在了"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0007",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "no_assertions",
+        "axis": "evidence",
+        "failure": "silent-pass",
+        "node": null,
+        "evidence": "9 步，0 条断言",
+        "consequence": "这条轨迹只证明「这串操作能走完」，不证明系统做对了任何事"
+      }
+    ],
+    "byFailure": {
+      "loud-later": 1,
+      "flaky": 1,
+      "silent-pass": 1
+    },
+    "byAxis": {
+      "replay": 2,
+      "evidence": 1
+    },
+    "case": "maa-flow6"
+  },
+  {
+    "name": "maa-flow7",
+    "steps": 9,
+    "findings": [
+      {
+        "rule": "unmarked_dismissal",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0002",
+        "evidence": "看着是关闭图标的点击，却是必经节点",
+        "consequence": "弹窗出现与否取决于账号状态和历史操作；它不出现时整条轨迹断在这一步"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0003",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "first_of_many",
+        "axis": "replay",
+        "failure": "silent-pass",
+        "node": "step_0004",
+        "evidence": "选择器以 .first() 收尾",
+        "consequence": "命中多个时点/断言哪一个由页面顺序决定，选错了也不报错"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0004",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "existence_only_assertion",
+        "axis": "evidence",
+        "failure": "weak",
+        "node": "step_0004",
+        "evidence": "断言只是「至少有一个可见」",
+        "consequence": "是真命题，但只能证明这段文字还在，证不了系统做对了什么"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0005",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0007",
+        "evidence": "1 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "mutates_state",
+        "axis": "replay",
+        "failure": "flaky",
+        "node": "step_0008",
+        "evidence": "8 个必发的写请求",
+        "consequence": "这一步改动了下一次回放的起点 —— 第二遍不是重复实验"
+      },
+      {
+        "rule": "environment_data_anchor",
+        "axis": "replay",
+        "failure": "loud-later",
+        "node": "step_0009",
+        "evidence": "选择器锚在环境数据上：['170.170.11.184']",
+        "consequence": "主机名/IP 是这套环境此刻的库存，不是界面文案 —— 资产下线或换个筛选条件，这一行就不在了"
+      },
+      {
+        "rule": "existence_only_assertion",
+        "axis": "evidence",
+        "failure": "weak",
+        "node": "step_0009",
+        "evidence": "断言只是「至少有一个可见」",
+        "consequence": "是真命题，但只能证明这段文字还在，证不了系统做对了什么"
+      }
+    ],
+    "byFailure": {
+      "loud-later": 2,
+      "flaky": 5,
+      "silent-pass": 1,
+      "weak": 2
+    },
+    "byAxis": {
+      "replay": 8,
+      "evidence": 2
+    },
+    "case": "maa-flow7"
+  }
+]
