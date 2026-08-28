@@ -114,7 +114,7 @@ capture or matching.
 ### 6. Audit What the Green Actually Proves
 
 ```bash
-python3 trust/audit.py recordings/<flow>
+python3 ../maa-trace-eval/trust/audit.py recordings/<flow>
 ```
 
 A trace can replay at score 100 and still prove nothing — the recorded corpus had
@@ -124,8 +124,12 @@ tautology (`get_by_text("X")` then assert its text is `"X"`). Replay evaluation 
 separate axes: whether it will replay the same way again, and what a green run proves.
 
 The audit reports evidence per node, not just a number. Its score expresses **ordering
-only** — it is not calibrated to a probability, and it says so in every report. See
-[TRUST-EVAL-PLAN.md](TRUST-EVAL-PLAN.md) and `trust/STATUS.md`.
+only** — it is not calibrated to a probability, and it says so in every report.
+
+It lives in a separate project, [maa-trace-eval](../maa-trace-eval), because the two have
+opposite jobs: this repository produces traces, that one distrusts them. It reads the trace
+shape from `scripts/trace_schema.py` here rather than copying it — a copy would drift, and a
+drifted copy would judge traces against a shape nothing actually produces.
 
 ### 7. Verify the Green Result
 
@@ -184,7 +188,6 @@ assets/                     Runtime files copied into target projects
 orchestrate/                Cloud and endpoint coordination
 references/                 Details loaded only when needed
 test/                       Recorder, generator, replay, and structure checks
-trust/                      Trace trustworthiness audit (features, rules, score)
 ```
 
 ## Self-Check
