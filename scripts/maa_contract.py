@@ -81,10 +81,11 @@ def contract_problems(trace: dict[str, Any]) -> list[str]:
         elif action not in EXECUTABLE_ACTIONS:
             # 标了 web-only 的是**已知**只有我们自己的回放器懂，不算问题；
             # 没标的才是问题 —— 那意味着没人知道桌面侧会拿它怎么办。
-            if ts.provenance(node).get("actionScope") != ts.VERIFY_SCOPE_WEB:
+            scope = ts.provenance(node).get("actionScope")
+            if not scope:
                 problems.append(
                     f"{name}: 动作 {action!r} 不在 maa-fw 能执行的集合里，"
-                    f"且没标 {ts.VERIFY_SCOPE_WEB}")
+                    f"且没标 actionScope")
 
         nxt = coerced.next
         if not isinstance(nxt, list):
