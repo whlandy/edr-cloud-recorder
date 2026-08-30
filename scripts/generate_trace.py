@@ -19,6 +19,7 @@ from generate_spec import pair_network_events, prepare_steps
 from rec_secrets import redact_sensitive_values
 from trace_schema import (
     FULL_FRAME_ROI,
+    MAA_ACTIONS,
     TEMPLATE_METHOD,
     VERIFY_SCOPE_WEB,
     build_node,
@@ -364,6 +365,15 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
             provenance["dismissesOverlay"] = True
         if step.get("id") in gated_ids:
             provenance["optional"] = True
+        node_action = _action(
+            step,
+            relative_point=visual_ui.get("click"),
+            focus_before_input=focus_before_input,
+        )
+        # 这个动作 maa-fw 编译不出来，只有我们自己的回放器懂。标出来 ——
+        # 不标的话桌面侧多半会退化成一次盲点击，而那是不报错的错。
+        if node_action["type"] not in MAA_ACTIONS:
+            provenance["actionScope"] = VERIFY_SCOPE_WEB
 
         verification: dict[str, Any] = {}
         if step.get("type") == "assert":
@@ -378,11 +388,7 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
 
         node = build_node(
             recognition=recognition,
-            action=_action(
-                step,
-                relative_point=visual_ui.get("click"),
-                focus_before_input=focus_before_input,
-            ),
+            action=node_action,
             task_key=name,
             scene_key=_scene_key(step),
             provenance=provenance,
