@@ -114,7 +114,7 @@ capture or matching.
 ### 6. Audit What the Green Actually Proves
 
 ```bash
-python3 ../maa-trace-eval/trust/audit.py recordings/<flow>
+python3 ../trace-eval/trust/audit.py recordings/<flow>
 ```
 
 A trace can replay at score 100 and still prove nothing — the recorded corpus had
@@ -126,7 +126,7 @@ separate axes: whether it will replay the same way again, and what a green run p
 The audit reports evidence per node, not just a number. Its score expresses **ordering
 only** — it is not calibrated to a probability, and it says so in every report.
 
-It lives in a separate project, [maa-trace-eval](../maa-trace-eval), because the two have
+It lives in a separate project, [trace-eval](../trace-eval), because the two have
 opposite jobs: this repository produces traces, that one distrusts them. It reads the trace
 shape from `scripts/trace_schema.py` here rather than copying it — a copy would drift, and a
 drifted copy would judge traces against a shape nothing actually produces.
