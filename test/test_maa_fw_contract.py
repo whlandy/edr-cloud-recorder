@@ -100,3 +100,62 @@ def test_exported_desktop_traces_survive_maa_fw(maa_fw):
     for case in cases:
         trace = convert(json.loads(case.read_text(encoding="utf-8")))
         assert contract_problems(trace) == [], case.parent.name
+
+
+# ── 链条真的走得通 ──
+# coerce 只证明「节点读得懂」。读得懂不等于走得通：$meta 不惰性会被当成一步、
+# next 指错会让链条断在中间、动作在 coerce 时被改写会让执行器收到 DoNothing ——
+# 这三件事逐个 coerce 全都看不出来。
+
+def _walk(trace):
+    from maa_contract import traversal_problems
+    return traversal_problems(trace)
+
+
+def test_generated_trace_walks_end_to_end(recording, maa_fw):
+    assert _walk(_trace(recording)) == []
+
+
+def test_walk_catches_a_broken_next(recording, maa_fw):
+    import trace_schema as ts
+
+    trace = _trace(recording)
+    victim = next(name for name, node in ts.nodes(trace) if node.get("next"))
+    trace[victim]["next"] = ["step_9999"]
+    assert any("顺序" in p for p in _walk(trace)), _walk(trace)
+
+
+def test_walk_catches_an_action_rewritten_during_coercion(recording, maa_fw):
+    """文件里写的和 maa-fw 实际收到的必须逐个对上。
+
+    不能拿变异后的轨迹跟它自己比 —— 动作被改成 DoNothing 时「本该不做事的
+    节点」也跟着 +1，那种检查永远发现不了问题。
+    """
+    import trace_schema as ts
+
+    trace = _trace(recording)
+    victim = next(name for name, _ in ts.nodes(trace))
+    trace[victim]["action"] = {"typo": "Click"}          # coerce 会退成 DoNothing
+    assert any("不一致" in p for p in _walk(trace)), _walk(trace)
+
+
+def test_walk_catches_a_non_inert_meta(recording, maa_fw):
+    """$meta 真正的风险是「界面完全对不上」时被一路落到 —— 它无条件命中。
+
+    顺着走一遍查不出这件事：第一步就成功返回了，$meta 根本没轮到。
+    """
+    import trace_schema as ts
+
+    trace = _trace(recording)
+    trace[ts.META_KEY]["max_hit"] = None
+    trace[ts.META_KEY]["attach"]["stats"]["hit_count"] = 0
+    assert any("不惰性" in p for p in _walk(trace)), _walk(trace)
+
+
+def test_walk_catches_a_cycle(recording, maa_fw):
+    import trace_schema as ts
+
+    trace = _trace(recording)
+    names = [name for name, _ in ts.nodes(trace)]
+    trace[names[2]]["next"] = [names[1]]
+    assert any("回头路" in p for p in _walk(trace)), _walk(trace)
