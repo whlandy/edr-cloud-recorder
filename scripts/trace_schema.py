@@ -50,6 +50,18 @@ STRICT_GUI_TARGET_KEYS = frozenset({
 # （「显示的是当前时间」）也没法写成静态的 OCR expected。
 VERIFY_SCOPE_WEB = "web-only"
 
+# maa-fw 的 MaaNodeCompiler._compile_action 产得出的动作。这是两边能安全互通的
+# 集合 —— 它的执行器是注入的，不认识的动作会怎样取决于调用方，我们控制不了。
+#
+# 落在集合外的动作（SetSwitch / Check / Uncheck 这些「读了状态再决定拨不拨」的）
+# 必须在 provenance.actionScope 上标 web-only。不标的话，桌面侧多半会退化成
+# 一次盲点击 —— 而「拨开关退化成盲点击」正是本仓库花了很大力气消灭的缺陷：
+# 方向取决于当时的状态，拨反了也不报错。
+MAA_ACTIONS = frozenset({
+    "Click", "RightClick", "DoubleClick", "LongPress",
+    "InputText", "Hotkey", "PressKey", "Scroll", "DoNothing",
+})
+
 # maa-fw 的 TemplateMatch 默认 method，对应 cv2.TM_CCOEFF_NORMED
 TEMPLATE_METHOD = 5
 # 我们的模板是整屏视口裁图，搜索范围就是整屏。MaaFramework 里全零即全图 ——
