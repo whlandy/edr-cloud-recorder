@@ -127,10 +127,28 @@ def _verification(step: dict) -> dict:
 def _selector(step: dict) -> dict:
     selector = step.get("selector") or {}
     control = selector.get("control") or {}
+    ancestry = control.get("ancestry") or []
+
+    # 定位依据按可靠性排。**不能只看控件自己的 automationId** ——
+    # 实测三种都真实存在：
+    #   滚动步骤：控件层没有 id，id 在祖先链上（目标是「那张表」）
+    #   菜单项：  没有 id，但有 name（「语言设置」）
+    # Qt 控件本来就是 automation_id **或** text 二选一。只认前者会把一堆
+    # 定位得了的步骤误判成「没有任何依据」，而误报正是可信度工具最不能有的东西。
+    candidates = [
+        ("automationId", control.get("automationId")),
+        ("name", control.get("name")),
+        ("automationIdAncestor",
+         next((a.get("automationId") for a in ancestry if a.get("automationId")), None)),
+        ("nameAncestor",
+         next((a.get("name") for a in ancestry if a.get("name")), None)),
+    ]
+    kind, anchor = next(((k, v) for k, v in candidates if v), ("none", None))
     return {
-        # 桌面侧的「选择器」就是 automationId + 祖先链，和 web 的 DOM 选择器同位
-        "kind": "automationId",
-        "sel": control.get("automationId") or "",
+        # 桌面侧的「选择器」就是 automationId / name + 祖先链，和 web 的 DOM 选择器同位
+        "kind": kind,
+        "sel": anchor or "",
+        "anchoredOnAncestor": kind.endswith("Ancestor"),
         "label": control.get("name") or "",
         "controlType": control.get("controlType"),
         "fingerprint": control.get("fingerprint"),
