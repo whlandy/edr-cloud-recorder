@@ -77,3 +77,26 @@ def test_the_checker_catches_a_character_split_next(recording, maa_fw):
 
     problems = contract_problems(trace)
     assert any(victim in p and "字符" in p for p in problems), problems
+
+
+@pytest.mark.skipif(
+    not (__import__("pathlib").Path.home() / "ai-projects/edr-wd/recordings").is_dir(),
+    reason="本机没有 edr-wd 录制")
+def test_exported_desktop_traces_survive_maa_fw(maa_fw):
+    """桌面轨迹导出成 v2 之后，maa-fw 必须真的能加载并保住动作。
+
+    这是这条链的**终点检查**：edr-wd 产物 → 导出 → maa-fw。
+    没有这一条的话，导出器可以产出一堆 DoNothing 而没人发现 ——
+    那正是没有导出器时的原始状态。
+    """
+    import json
+    from pathlib import Path
+
+    from desktop_to_v2 import convert
+
+    cases = sorted((Path.home() / "ai-projects/edr-wd/recordings").glob(
+        "*/golden-trace.json"))
+    assert cases, "没有可用的 edr-wd 录制"
+    for case in cases:
+        trace = convert(json.loads(case.read_text(encoding="utf-8")))
+        assert contract_problems(trace) == [], case.parent.name

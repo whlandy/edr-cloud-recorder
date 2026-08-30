@@ -49,6 +49,8 @@ STRICT_GUI_TARGET_KEYS = frozenset({
 # 网络断言（HTTP 状态码/请求体）桌面上根本看不到；运行时算的期望值
 # （「显示的是当前时间」）也没法写成静态的 OCR expected。
 VERIFY_SCOPE_WEB = "web-only"
+# 桌面侧的对应物：窗口状态、控件勾选状态这些，web 上没有，maa-fw 也验不了。
+VERIFY_SCOPE_DESKTOP = "desktop-only"
 
 # maa-fw 的 MaaNodeCompiler._compile_action 产得出的动作。这是两边能安全互通的
 # 集合 —— 它的执行器是注入的，不认识的动作会怎样取决于调用方，我们控制不了。
