@@ -931,6 +931,40 @@ def _(rec):
     assert s and s["sel"] == 'locator("#real_user")', s and s["sel"]
 
 
+@check("placeholder 撞车时用稳定 class 收紧")
+def _(rec):
+    s = find(rec["steps"],
+             lambda s: s["type"] == "fill" and s.get("value") == "class-scoped-name")
+    assert s and s["sel"] == \
+        'locator("input.form_field[placeholder=\\"重复名称\\"]")', s and s["sel"]
+
+
+# ── 输入动作的因果顺序 ──
+# 受控组件可能在 input/change 后把 value 镜像到 aria-label。定位必须取动作前状态，
+# 否则生成的 selector 依赖尚未输入的值，回放永远找不到元素。
+
+@check("输入值不会反向成为同一步的定位条件")
+def _(rec):
+    s = find(rec["steps"],
+             lambda s: s["type"] == "fill" and s.get("value") == "future-name")
+    assert s, "缺少 value→aria-label 的受控输入框步骤"
+    assert "future-name" not in s["sel"], s["sel"]
+    assert "getByRole" not in s["sel"], s["sel"]
+    assert s["sel"] == 'locator("div#value_named_box > input.value_named_input")', s["sel"]
+    press = find(rec["steps"], lambda x: x["type"] == "press" and x.get("css") == s["css"])
+    assert press and press["sel"] == s["sel"], press and press["sel"]
+
+
+@check("动作前 selector 让受控输入仍按 fill→Enter 回放")
+def _(rec):
+    spec = spec_of(rec)
+    selector = 'page.locator("div#value_named_box > input.value_named_input")'
+    fill_at = spec.find(f'{selector}.fill("future-name")')
+    press_at = spec.find(f'{selector}.press("Enter")')
+    assert fill_at >= 0 and press_at >= 0 and fill_at < press_at, \
+        f"fill@{fill_at} press@{press_at}"
+
+
 # ── 回放稳定性：生成的草稿必须自带三件事 ──
 
 @check("草稿走录制会话 page 而不是裸 page")

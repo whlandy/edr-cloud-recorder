@@ -141,6 +141,12 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
        录制时点哪个都能跑通，回放必然 strict mode 报错。 -->
   <div id="real_box"><input id="real_user" placeholder="账号/手机号"></div>
   <div id="decoy_box"><input placeholder="账号/手机号" autocomplete="on"></div>
+  <input class="search_field" placeholder="重复名称">
+  <input class="form_field" placeholder="重复名称">
+
+  <!-- 受控组件把输入值镜像成 aria-label。若录制器在 change 之后才算 selector，
+       会生成 getByRole('textbox', {name:'用户刚输入的值'})，回放永远无法先定位。 -->
+  <div id="value_named_box"><input class="value_named_input"></div>
 
   <!-- 时间显示在 value 上的输入框：innerText 恒为空，读错了断言永远不通过。
        值是页面自己按当天算的 —— 正是「可反复运行」的那种目标。 -->
@@ -208,6 +214,9 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
       // 只有点在行上才展开；点里面的标签只高亮 —— 和真实资产树一致
       if (ev.target.classList.contains('tree_label')) { ev.stopPropagation(); return; }
       expanded_marker.textContent = '终端甲';
+    });
+    document.querySelector('.value_named_input').addEventListener('input', (ev) => {
+      ev.currentTarget.setAttribute('aria-label', ev.currentTarget.value);
     });
     // 点滑块，状态写在容器上；「待开启」那个还要过 300ms 才写
     for (const [row, delay] of [[row_thumb_on, 0], [row_thumb_off, 300]]) {
@@ -485,6 +494,17 @@ def drive(chrome: str | None = None) -> dict:
             # 必须失焦：fill 的值是在 change 事件里记的，不失焦就不会产生步骤。
             page.fill("#real_user", "zhangsan")
             page.locator("#real_user").blur()
+            page.wait_for_timeout(300)
+
+            # placeholder 与列表搜索框撞车，但稳定 class 能区分表单输入框。
+            page.fill(".form_field", "class-scoped-name")
+            page.locator(".form_field").blur()
+            page.wait_for_timeout(300)
+
+            # selector 必须在输入发生前冻结；输入事件会把值同步成 aria-label。
+            page.fill(".value_named_input", "future-name")
+            page.press(".value_named_input", "Enter")
+            page.locator(".value_named_input").blur()
             page.wait_for_timeout(300)
 
             # ── 断言菜单：右键 → 改 expected → 提交 ──

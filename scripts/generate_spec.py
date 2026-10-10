@@ -19,9 +19,14 @@ from urllib.parse import urlsplit
 from selector_py import SelectorError, to_python
 from rec_secrets import REDACTED, redact_sensitive_values
 
-# 易变值：UUID 和 10 位以上纯数字（雪花 ID、毫秒时间戳）
+# 易变值：UUID、长数字（雪花 ID / 毫秒时间戳）和日期时间筛选边界。
 VOLATILE = re.compile(
     r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{10,})$",
+    re.I,
+)
+VOLATILE_DATETIME = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?)?$",
     re.I,
 )
 
@@ -39,7 +44,7 @@ from rec_visual import visual_click
 
 # 由 web-record 生成：{name}
 # 写请求已自动生成断言（状态码 + 请求体形态）；GET 保留为注释。
-# 请求体里的 UUID / 长数字 ID / 时间戳已放宽，避免每次运行都失效。
+# 请求体里的 UUID / 长数字 ID / 时间戳 / 日期时间已放宽，避免每次运行都失效。
 #
 # 用 recorded_page 而不是裸 page：它加载本次录制随附的 cookies 和 web storage。
 # 首启弹窗由 dismiss_overlays 统一关掉 —— 它们的遮罩会静默吞掉后续点击，
@@ -88,6 +93,20 @@ def prepare_steps(steps):
                 and a["sel"] == b["sel"] and a.get("inFrame") == b.get("inFrame")):
             prepared[i] = {**b, "t": a["t"]}
             prepared[i + 1] = {**a, "t": b["t"]}
+
+    # 用户先点输入框、再输入时，点击已经完成了目标消歧和聚焦。尤其是视觉回退：
+    # DOM selector 可能匹配两个组件，但屏幕坐标点中了其中正确的那个。fill 若再次
+    # 用歧义 selector 定位，会丢掉刚刚建立的因果关系并触发 strict-mode violation。
+    # 这里只认紧邻、同一 DOM 目标和同一 frame 的 click → fill，不跨步骤猜焦点。
+    for i in range(1, len(prepared)):
+        focus, step = prepared[i - 1], prepared[i]
+        same_target = bool(
+            (focus.get("css") and focus.get("css") == step.get("css"))
+            or (focus.get("sel") and focus.get("sel") == step.get("sel"))
+        )
+        if (step.get("type") == "fill" and focus.get("type") == "click"
+                and same_target and focus.get("inFrame") == step.get("inFrame")):
+            prepared[i] = {**step, "_useFocusedElement": True}
 
     # 「用文本定位元素，再断言它的文本等于那段文本」是同义反复：
     # expect(page.get_by_text("X")).to_have_text("X") 只有元素消失才会失败。
@@ -184,7 +203,7 @@ def _to_matcher(v, indent: int = 4) -> str:
         return "{\n" + items + f",\n{pad}}}"
     if v == REDACTED:
         return "ANY_STR"
-    if isinstance(v, str) and VOLATILE.match(v):
+    if isinstance(v, str) and (VOLATILE.match(v) or VOLATILE_DATETIME.match(v)):
         return "ANY_STR"
     # 数字型的时间戳和雪花 ID 也要放宽。只处理字符串的话，像「最近 30 天」这种
     # 默认查询条件会把录制那一刻的毫秒时间戳原样钉进断言 —— 下一次运行必然对不上，
@@ -378,7 +397,9 @@ def generate_spec(steps, net, start_url, name):
 
         # 存在性断言撞车不是缺陷：「至少有一个可见」本来就是确定的命题，
         # 这时候用「回放时可能点错」吓人反而误导。
-        if not s.get("ambiguous"):
+        if s.get("_useFocusedElement"):
+            warn = "   # 前一步已聚焦正确输入框；fill 不再用歧义 selector 二次定位"
+        elif not s.get("ambiguous"):
             warn = ""
         elif s.get("_wasTextTautology"):
             warn = f"   # {s.get('matches')} 个元素匹配 → 断言的是「至少有一个可见」"
@@ -524,6 +545,14 @@ def generate_spec(steps, net, start_url, name):
             continue
 
         loc = f"{root}.{sel}"
+        # 录制器的歧义计数有意包含隐藏副本（许多 Playwright 定位器也会包含）。
+        # 但真正执行动作时，先排除隐藏副本通常就只剩一个业务控件；这样比对一个
+        # 超宽、近纯色的输入框做视觉匹配可靠。多个可见候选仍会 strict-mode 失败，
+        # click 随后才交给 visual_click 消歧，不会静默挑 first。
+        action_loc = f"{loc}.filter(visible=True)" if s.get("ambiguous") else loc
+        input_loc = (
+            f'{root}.locator(":focus")' if s.get("_useFocusedElement") else action_loc
+        )
         t = s["type"]
         visual_ui = {
             key: s.get("ui", {}).get(key)
@@ -532,16 +561,16 @@ def generate_spec(steps, net, start_url, name):
         }
         if t in ("click", "dblclick") and visual_ui.get("templates"):
             action = (
-                f"visual_click(page, {loc}, template_root=Path(__file__).parent, "
+                f"visual_click(page, {action_loc}, template_root=Path(__file__).parent, "
                 f"ui={visual_ui!r}"
                 f"{', click_count=2' if t == 'dblclick' else ''})"
             )
         elif t == "click":
-            action = f"{loc}.click()"
+            action = f"{action_loc}.click()"
         elif t == "dblclick":
-            action = f"{loc}.dblclick()"
+            action = f"{action_loc}.dblclick()"
         elif t == "fill" and s.get("secret"):
-            action = f'{loc}.fill(os.environ["REC_PASSWORD"])'
+            action = f'{input_loc}.fill(os.environ["REC_PASSWORD"])'
         elif t == "fill" and (s.get("valueFrom") or {}).get("kind") == LOCALTIME_KIND:
             # 填的是日期：按「相对录制当天几天」回放，而不是钉死那一天。
             # 死值不会报错，只会悄悄查错区间 —— 这类错最难发现。
@@ -554,13 +583,13 @@ def generate_spec(steps, net, start_url, name):
             args = f"{_lit(vf.get('format') or '%Y-%m-%d')}"
             if off:
                 args += f", offset_days={off}"
-            action = f"{loc}.fill(local_time_value({args}))"
+            action = f"{input_loc}.fill(local_time_value({args}))"
         elif t == "fill":
-            action = f"{loc}.fill({_lit(s.get('value') or '')})"
+            action = f"{input_loc}.fill({_lit(s.get('value') or '')})"
         elif t == "check":
-            action = f"{loc}.check()"
+            action = f"{action_loc}.check()"
         elif t == "uncheck":
-            action = f"{loc}.uncheck()"
+            action = f"{action_loc}.uncheck()"
         elif t == "press":
             action = f'{loc}.press("Enter")'
         else:

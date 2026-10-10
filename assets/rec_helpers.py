@@ -178,14 +178,18 @@ def dismiss_overlays(page: Page, selectors: list[str] | None = None,
             pass
 
     for _ in range(5):
-        btn = closers.filter(visible=True).first
+        # 多层弹窗按 DOM 顺序叠放时，最后一个通常在最上层。点 first 会去点
+        # 被上层遮罩挡住的底层关闭按钮，Playwright 为它等满默认超时后仍失败；
+        # 随后的每一步视觉点击又都会被最上层弹窗截获。必须从栈顶往下关。
+        btn = closers.filter(visible=True).last
         try:
             if not btn.is_visible():
                 break
         except Exception:
             break
         try:
-            btn.click()
+            # 即使站点的层叠顺序不遵循 DOM，也不要为一个不可点候选卡几十秒。
+            btn.click(timeout=2_000)
         except Exception:
             pass
         page.wait_for_timeout(400)

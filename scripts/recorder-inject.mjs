@@ -162,7 +162,13 @@ export const RECORDER = () => {
 
   const nameOf = (e) => {
     const al = (e.getAttribute?.('aria-label') || '').trim();
-    if (al) return al;
+    // 有些受控输入组件会在 input/change 后把当前 value 镜像进 aria-label。
+    // 那不是元素原本的无障碍名，而是这次动作产生的结果：若拿它生成
+    // getByRole('textbox', {name: value})，回放会陷入「先有输入值才能定位，
+    // 但必须先定位才能输入」的因果循环。
+    const isFormControl = ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.tagName);
+    const currentValue = isFormControl ? String(e.value ?? '').trim() : '';
+    if (al && !(currentValue && al === currentValue)) return al;
     if (e.labels?.[0]) return txt(e.labels[0]);
     const ti = (e.getAttribute?.('title') || '').trim();
     if (ti) return ti;
@@ -376,6 +382,21 @@ export const RECORDER = () => {
       const ph = (e.getAttribute('placeholder') || '').trim();
       if (ph && document.querySelectorAll(`[placeholder=${JSON.stringify(ph)}]`).length === 1) {
         return { kind: 'placeholder', code: `getByPlaceholder(${JSON.stringify(ph)})` };
+      }
+      // placeholder 撞车时先用控件自己的稳定 class 收紧。常见场景是列表搜索框和
+      // 新建弹窗名称框都叫「请输入策略名称」，但分别是 eui_searchInput 和
+      // eui_textField_input。直接退到结构 CSS 会把同一表单里的名称/备注框一起
+      // 命中；placeholder + class 则既保留语义，又能稳定区分控件类型。
+      if (ph && typeof e.className === 'string') {
+        const tag = e.tagName.toLowerCase();
+        const classes = e.className.trim().split(/\s+/)
+          .filter((c) => c && !/^\d/.test(c) && !/\d{3,}/.test(c));
+        for (const cls of classes) {
+          const css = `${tag}.${CSS.escape(cls)}[placeholder=${JSON.stringify(ph)}]`;
+          if (document.querySelectorAll(css).length === 1) {
+            return { kind: 'placeholder-class', code: `locator(${JSON.stringify(css)})` };
+          }
+        }
       }
       // label 和 placeholder 都撞车时，稳定的 id 是最好的退路。
       // 含 3 位以上数字的 id 多半是运行时生成的（tip_box_10059），第二次跑就变了，
@@ -652,7 +673,12 @@ export const RECORDER = () => {
       // 却会以 locator("html") 的形式留在草稿里，读的人还得判断它是不是有意义。
       if (['click', 'dblclick'].includes(type) &&
           (t === document.body || t === document.documentElement)) return;
-      const sel = selectorFor(t, { requireOwnText: type === 'switch' });
+      // fill/check 的 change 发生在页面完成状态更新之后。定位依据若也在这里
+      // 现算，就可能读到本次动作刚写入的 value/aria-label。输入事件监听器会在
+      // 动作之前冻结 selector，并通过这个私有字段交进来；私有字段不能落盘。
+      const { _selectorBeforeAction, ...publicExtra } = extra || {};
+      const sel = _selectorBeforeAction
+        || selectorFor(t, { requireOwnText: type === 'switch' });
       const step = {
         id: extra?._id || `${tag}-${++seq}`,
         t: now, actionT: extra?.actionT ?? now, type, sel: sel.code, kind: sel.kind,
@@ -663,7 +689,7 @@ export const RECORDER = () => {
         // 只搜主文档，一定找不到。登录表单放在 iframe 里是很常见的做法。
         inFrame: window !== window.top,
         framePath: window !== window.top ? location.pathname : undefined,
-        ...extra,
+        ...publicExtra,
       };
       if (['click', 'dblclick', 'switch', 'check', 'uncheck'].includes(type)) {
         step.ui = renderedUi(t, event);
@@ -689,6 +715,17 @@ export const RECORDER = () => {
 
   let seq = 0;
   const tag = Math.random().toString(36).slice(2, 8);
+
+  // 定位是动作的前置条件，必须从动作发生前的 DOM 状态采集。
+  // WeakMap 以元素为键，不延长已卸载页面/节点的生命周期；一次 change 消费后
+  // 删除，下次编辑会重新冻结，避免沿用上一次交互留下的旧 selector。
+  const selectorBeforeInput = new WeakMap();
+  const rememberSelectorBeforeInput = (el) => {
+    if (!el?.matches?.('input, textarea, select') || selectorBeforeInput.has(el)) return;
+    try {
+      selectorBeforeInput.set(el, selectorFor(meaningful(el)));
+    } catch { /* 采集失败不影响页面，change 时仍可走现有兜底 */ }
+  };
 
   /* ────────── 断言菜单 ────────── */
 
@@ -1104,6 +1141,12 @@ export const RECORDER = () => {
     if (!fromMenu(e)) closeMenu();
   }, true);
 
+  // pointerdown 覆盖鼠标/触控，focusin 覆盖 Tab 聚焦，beforeinput 覆盖已经聚焦后
+  // 的后续编辑。三个时点都早于 value 变化；重复命中由 WeakMap 去重。
+  document.addEventListener('pointerdown', (e) => rememberSelectorBeforeInput(e.target), true);
+  document.addEventListener('focusin', (e) => rememberSelectorBeforeInput(e.target), true);
+  document.addEventListener('beforeinput', (e) => rememberSelectorBeforeInput(e.target), true);
+
   document.addEventListener('click', (e) => {
     if (fromMenu(e)) return;
     if (e.detail > 1) return; // 第二次 click 由 dblclick 步骤表示
@@ -1164,21 +1207,29 @@ export const RECORDER = () => {
     // 一些站点会在普通 div 上派发自定义 change（Bing 首页轮播就是如此）。
     // 这不是用户输入；若继续读取不存在的 value，会每次都录成空 fill。
     if (!el?.matches?.('input, textarea, select')) return;
+    const before = selectorBeforeInput.get(el);
+    selectorBeforeInput.delete(el);
     if (el.type === 'checkbox' || el.type === 'radio') {
-      push(el.checked ? 'check' : 'uncheck', el);
+      push(el.checked ? 'check' : 'uncheck', el, { _selectorBeforeAction: before });
     } else if (el.type === 'password') {
       // 步骤照记，值不记。生成的脚本用 process.env.REC_PASSWORD 代替 ——
       // 明文密码写进 spec 会让脚本绑死在一个账号上，而且 spec 通常是要进版本库的。
-      push('fill', el, { secret: true });
+      push('fill', el, { secret: true, _selectorBeforeAction: before });
     } else {
       const filled = String(el.value ?? '').slice(0, 200);
-      push('fill', el, { value: filled, ...dateValueMeta(filled) });
+      push('fill', el, {
+        value: filled, ...dateValueMeta(filled), _selectorBeforeAction: before,
+      });
     }
   }, true);
   document.addEventListener('keydown', (e) => {
     if (fromMenu(e)) return;
     if (e.key === 'Escape') { closeMenu(); return; }
-    if (e.key === 'Enter') push('press', e.target, { key: 'Enter' });
+    // Enter 通常发生在值已输入、change 尚未触发的窗口里。这里也必须复用
+    // beforeinput 冻结的 selector；不要消费它，后续 change/fill 还要用同一份。
+    if (e.key === 'Enter') push('press', e.target, {
+      key: 'Enter', _selectorBeforeAction: selectorBeforeInput.get(e.target),
+    });
   }, true);
 
   window.__rec = { steps, drain: () => steps.splice(0, steps.length) };
