@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 from contextlib import ExitStack
 from datetime import datetime
@@ -25,6 +26,11 @@ import trace_schema as ts
 
 TRACE_SCHEMA = ts.SCHEMA
 EXECUTION_SCHEMA = "edr.execution-trace/v1"
+VOLATILE_DATETIME = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?)?$",
+    re.I,
+)
 # 断言步骤的动作类型是 DoNothing —— 断言不产生动作，识别/校验本身就是结论。
 # 「这一步是不是断言」改看 attach.verification.assertion 有没有东西。
 SUPPORTED_ACTIONS = {
@@ -349,6 +355,8 @@ def _request_body_base64(request) -> str:
 
 def _redacted_matchers(value):
     if value == REDACTED:
+        return ANY_STR
+    if isinstance(value, str) and VOLATILE_DATETIME.match(value):
         return ANY_STR
     if isinstance(value, dict):
         return {key: _redacted_matchers(item) for key, item in value.items()}

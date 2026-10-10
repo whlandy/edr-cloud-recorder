@@ -6,8 +6,9 @@ import pytest
 from generate_spec import generate_spec, prepare_steps
 from generate_trace import generate_trace
 import trace_schema as ts
-from rec_assert import ANY_NUM
+from rec_assert import ANY_NUM, ANY_STR
 from rec_config import load_config
+from rec_helpers import dismiss_overlays
 from record import (
     _artifact_paths,
     _capture_storage,
@@ -59,6 +60,51 @@ def test_artifact_paths_reject_path_traversal(tmp_path, name):
 def test_any_num_rejects_bool():
     assert not (ANY_NUM == True)
     assert ANY_NUM == 42
+
+
+def test_dismiss_overlays_closes_topmost_dialog_first():
+    stack = ["bottom", "top"]
+    clicked = []
+
+    class Button:
+        def __init__(self, name):
+            self.name = name
+
+        def wait_for(self, **_kwargs):
+            return None
+
+        def is_visible(self):
+            return self.name in stack
+
+        def click(self, **_kwargs):
+            assert self.name == stack[-1], "底层关闭按钮仍被上层遮罩挡住"
+            clicked.append(stack.pop())
+
+    class Collection:
+        def filter(self, **_kwargs):
+            return self
+
+        @property
+        def first(self):
+            return Button(stack[0] if stack else None)
+
+        @property
+        def last(self):
+            return Button(stack[-1] if stack else None)
+
+        def count(self):
+            return len(stack)
+
+    class Page:
+        def locator(self, selector):
+            return Collection()
+
+        def wait_for_timeout(self, _milliseconds):
+            return None
+
+    dismiss_overlays(Page())
+
+    assert clicked == ["top", "bottom"]
 
 
 def test_selector_translates_alt_text():
@@ -123,6 +169,35 @@ def test_generate_spec_adds_visual_fallback_without_style_noise():
     assert "visual_click(page, page.get_by_role" in spec
     assert "flow.assets/step-0001.element.png" in spec
     assert "'style'" not in spec
+
+
+def test_fill_uses_focused_element_after_visual_click_disambiguates_target():
+    css = "div.form-row > input.field"
+    steps = [
+        {
+            "id": "focus-input", "t": 100, "type": "click",
+            "sel": f'locator("{css}")', "css": css,
+            "ambiguous": True, "matches": 2,
+            "ui": {
+                "pageRect": {"x": 10, "y": 20, "width": 80, "height": 32},
+                "templates": {"element": {"path": "assets/input.png"}},
+            },
+        },
+        {
+            "id": "fill-input", "t": 110, "type": "fill",
+            "sel": f'locator("{css}")', "css": css,
+            "ambiguous": True, "matches": 2, "value": "test",
+        },
+    ]
+
+    spec = generate_spec(
+        steps, [], start_url="https://app.example/form", name="focused-input"
+    )
+
+    assert "visual_click(page, page.locator" in spec
+    assert f'page.locator("{css}").filter(visible=True)' in spec
+    assert 'page.locator(":focus").fill("test")' in spec
+    assert f'page.locator("{css}").fill("test")' not in spec
 
 
 def test_generated_secret_input_requires_environment_variable():
@@ -420,6 +495,45 @@ def test_generated_request_assertion_never_contains_old_recording_password():
     assert '"password": ANY_STR' in spec
     request = ts.expected_responses(trace["step_0001"])[0]["request"]
     assert request["body"]["password"] == REDACTED
+
+
+def test_generated_request_assertion_relaxes_dynamic_datetime_strings():
+    steps = [{
+        "t": 100, "type": "click", "kind": "role",
+        "sel": 'getByRole("button", { name: "Refresh", exact: true })',
+    }]
+    net = [
+        {"id": 1, "t": 110, "phase": "req", "method": "POST",
+         "url": "https://app.example/api/stats",
+         "body": '{"startTime":"2026-09-11 00:00:00",'
+                 '"endTime":"2026-10-10 11:30:06","assetId":""}'},
+        {"requestId": 1, "t": 120, "phase": "res", "method": "POST",
+         "url": "https://app.example/api/stats", "status": 200},
+    ]
+
+    spec = generate_spec(
+        steps, net, start_url="https://app.example", name="dynamic-time"
+    )
+
+    assert '"startTime": ANY_STR' in spec
+    assert '"endTime": ANY_STR' in spec
+    assert '"assetId": ""' in spec
+
+
+def test_trace_replay_relaxes_dynamic_datetime_strings():
+    from replay_trace import _redacted_matchers
+
+    expected = _redacted_matchers({
+        "startTime": "2026-09-11 00:00:00",
+        "endTime": "2026-10-10T11:30:06.123+08:00",
+        "assetId": "",
+    })
+
+    assert expected == {
+        "startTime": ANY_STR,
+        "endTime": ANY_STR,
+        "assetId": "",
+    }
 
 
 def test_capture_storage_uses_existing_frames_without_opening_pages():
