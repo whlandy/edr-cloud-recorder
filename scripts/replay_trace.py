@@ -13,7 +13,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from rec_assert import (
-    LOCALTIME_KIND, ANY_STR, assert_subset, expect_local_time, local_time_value,
+    LOCALTIME_KIND, TIMEWINDOW_KIND, ANY_STR, assert_subset, expect_local_time,
+    expect_time_window, local_time_value,
 )
 from rec_session import restore_context_session
 from rec_secrets import REDACTED
@@ -421,6 +422,14 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
             timeout=timeout_ms / 1000,
         )
         return
+    if dynamic.get("kind") == TIMEWINDOW_KIND:
+        expect_time_window(
+            locator, expected, dynamic.get("format") or "%H:%M",
+            fluctuation_minutes=dynamic.get("fluctuationMinutes") or 0,
+            read="value" if assertion == "value" else "text",
+            timeout=timeout_ms / 1000,
+        )
+        return
     readers = {
         "visible": lambda: locator.is_visible(),
         "text": lambda: locator.inner_text(),
@@ -555,6 +564,29 @@ POINTER_INTERCEPT = "intercepts pointer events"
 def _intercepted(error: Exception) -> bool:
     """这一步是「找到了但点不动」——有别的元素挡在上面，不是找不到。"""
     return POINTER_INTERCEPT in str(error)
+
+
+def _failure_category(error: BaseException) -> str:
+    """失败类别的确定性映射 —— 按异常**类型/来源**，不做消息字符串匹配。
+
+    平台规范 §7.1 的 failure_category：质量报告的「失败类型分布」
+    只有落在结构化字段上才可统计。规则留了 unknown 出口：
+    出现没登记过的新异常时先归 unknown 再回来补映射 ——
+    未知比错标安全（不猜）。
+    """
+    if isinstance(error, TraceReplayError):
+        return "infrastructure"     # 轨迹格式 / 环境契约错误
+    if isinstance(error, AssertionError):
+        return "assertion"         # 业务断言（含 expect_local_time / expect_time_window / 网络断言）
+    if isinstance(error, (VisualAbsent, VisualAmbiguous)):
+        return "automation"         # 元素缺席（非 optional）/ 视觉歧义
+    if isinstance(error, VisualMatchError):
+        return "infrastructure"     # 截图解码等视觉基设失败
+    if type(error).__module__.startswith("playwright."):
+        return "automation"         # 定位 / 交互 / 网络层超时与遮挡
+    if isinstance(error, OSError):
+        return "infrastructure"     # 模板文件 / 证据 IO
+    return "unknown"
 
 
 def _perform(page, node: dict, root: Path, targeting: str, timeout_ms: int,
@@ -773,6 +805,7 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
             else:
                 result["status"] = "failed"
                 result["error"] = f"{type(error).__name__}: {error}"
+                result["failureCategory"] = _failure_category(error)
                 first_error = error
         finally:
             result["durationMs"] = round((time.perf_counter() - started) * 1000, 3)
@@ -890,6 +923,15 @@ def evaluate_trace(golden: dict, execution: dict) -> dict:
         + 0.10 * order_rate
         + 0.05 * efficiency
     )
+    # 失败类型分布（平台规范 §3.5/§7.1）：只透传统计，不进评分公式。
+    # 老 execution 文件没有 failureCategory 字段时计 unknown —— 缺字段不是失败。
+    failure_categories: dict[str, int] = {}
+    for node in order:
+        step = actual.get(node, {})
+        if step.get("status") == "failed":
+            category = step.get("failureCategory") or "unknown"
+            failure_categories[category] = failure_categories.get(category, 0) + 1
+
     return {
         "taskSuccess": task_success,
         "score": round(score, 2),
@@ -900,6 +942,7 @@ def evaluate_trace(golden: dict, execution: dict) -> dict:
         "trajectoryEfficiency": round(efficiency, 4),
         "extraActionCount": extra_actions,
         "retryCount": retries,
+        "failureCategories": failure_categories,
         "averageVisualMatchScore": (
             round(sum(visual_scores) / len(visual_scores), 4) if visual_scores else None
         ),
