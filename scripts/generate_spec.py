@@ -19,6 +19,22 @@ from urllib.parse import urlsplit
 from selector_py import SelectorError, to_python
 from rec_secrets import REDACTED, redact_sensitive_values
 
+
+class SpecGenerationError(ValueError):
+    """生成失败：有步骤无法被**如实**转译。
+
+    宁可整份不生成，也不生成一份少了断言/动作的 spec —— 断言不存在的
+    用例跑绿是最危险的一种假绿（录制者以为守住了，其实没守）。
+    问题在收集阶段**一次报全**，不 fail-fast：半份诊断不如全份诊断。
+    """
+
+    def __init__(self, problems: list[str]):
+        self.problems = list(problems)
+        super().__init__(
+            f"生成失败（{len(self.problems)} 步无法转译）：\n  "
+            + "\n  ".join(self.problems)
+        )
+
 # 易变值：UUID、长数字（雪花 ID / 毫秒时间戳）和日期时间筛选边界。
 VOLATILE = re.compile(
     r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{10,})$",
@@ -36,8 +52,8 @@ from pathlib import Path
 from playwright.sync_api import Page, expect
 
 from rec_assert import (
-    ANY_NUM, ANY_STR, assert_subset, expect_local_time, local_time_value,
-    poll_until,
+    ANY_NUM, ANY_STR, assert_subset, expect_local_time, expect_time_window,
+    local_time_value, poll_until,
 )
 from rec_helpers import dismiss_overlays, is_present, nth_request
 from rec_visual import visual_click
@@ -63,6 +79,7 @@ LOGIN_FRAME = re.compile(r"login|signin|sso", re.I)
 
 # 动态期望值的种类；与 rec_assert.LOCALTIME_KIND 同名同义
 LOCALTIME_KIND = "localtime"
+TIMEWINDOW_KIND = "timewindow"
 LOGIN_ACTION = re.compile(r"login|sign[ -]?in|登录|登入", re.I)
 
 
@@ -379,6 +396,9 @@ def generate_spec(steps, net, start_url, name):
     # 所以 in-frame 的步骤既不报变化，也不更新基准。
     last_top_url = None
 
+    # 无法如实转译的步骤：收集全部问题，最后统一拒发（SpecGenerationError）。
+    # 注释照写 —— 错误文本里已有诊断，代码文本只是第二份证据。
+    problems: list[str] = []
     for i, s in enumerate(steps):
         hi = steps[i + 1]["t"] if i + 1 < len(steps) else float("inf")
         calls = between(s["t"], hi)
@@ -429,6 +449,8 @@ def generate_spec(steps, net, start_url, name):
             sel = to_python(s["sel"])
         except SelectorError as e:
             lines.append(f"    # ⚠ 无法转译选择器 {s['sel']!r}：{e}")
+            problems.append(
+                f"step#{i} (id={s.get('id')}): 无法转译选择器 {s['sel']!r}：{e}")
             for c in calls:
                 lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
             continue
@@ -462,6 +484,15 @@ def generate_spec(steps, net, start_url, name):
                 extra = f", read={_lit(read)}" if read == "value" else ""
                 lines.append(f"    expect_local_time({loc}, {_lit(fmt)}, "
                              f"match={_lit(match)}{extra}){warn}")
+            elif dyn.get("kind") == TIMEWINDOW_KIND:
+                fmt = dyn.get("format") or "%H:%M"
+                fluctuation = dyn.get("fluctuationMinutes") or 0
+                read = "value" if a == "value" else "text"
+                extra = f", read={_lit(read)}" if read == "value" else ""
+                lines.append(
+                    f"    expect_time_window({loc}, {_lit(exp)}, {_lit(fmt)}, "
+                    f"fluctuation_minutes={_lit(fluctuation)}{extra}){warn}"
+                )
             elif a == "text":
                 lines.append(f"    expect({loc}).to_have_text({_lit(exp)}){warn}")
             elif a == "value":
@@ -486,6 +517,9 @@ def generate_spec(steps, net, start_url, name):
                              f"{_lit(s.get('attribute'))}, {_lit(exp)}){warn}")
             else:
                 lines.append(f"    # ⚠ 未知断言类型 {_lit(a)}，已跳过")
+                problems.append(
+                    f"step#{i} (id={s.get('id')}): 未知断言类型 {_lit(a)} —— "
+                    "这条断言在生成的用例里不存在，拒发而不是少断言")
             for c in calls:
                 lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
             continue
@@ -593,9 +627,15 @@ def generate_spec(steps, net, start_url, name):
         elif t == "press":
             action = f'{loc}.press("Enter")'
         else:
+            # 与未知断言同一红线：动作被静默丢掉 = 用例少做一件事还跑绿。
+            problems.append(
+                f"step#{i} (id={s.get('id')}): 未知动作类型 {_lit(t)} —— "
+                "回放会少做这一步，拒发而不是静默跳过")
             continue
 
         lines.extend(emit_action(action, calls, warn))
 
     lines.append("")
+    if problems:
+        raise SpecGenerationError(problems)
     return "\n".join(lines)

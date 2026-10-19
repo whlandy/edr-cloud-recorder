@@ -32,6 +32,10 @@ recorder 的定位是「用例生成 + 本地回放」，执行结果是文件�
 录制者以为守住了，其实没守。桌面侧转换器已有「不猜」纪律
 （未知 actionId → DoNothing + unmappedAction），web 生成侧缺同等的门。
 
+实现勘察（2026-10-20）补记**第三处**同类跳过点：动作发射器对未知步骤
+类型（click/dblclick/fill/check/uncheck/press 之外）走 `else: continue`，
+整步动作被静默丢弃。与未知断言同一红线，P1 一并收口。
+
 ### 设计
 1. 新增 `SpecGenerationError`（`generate_spec.py` 内），携带问题列表
    （步骤序号 + 步骤 id + 原因，如 `step#5: 未知断言类型 'html'`）。
