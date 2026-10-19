@@ -107,6 +107,25 @@ def test_desktop_only_verifiers_are_marked():
     assert ts.verification(trace["step_0001"])["scope"] == ts.VERIFY_SCOPE_DESKTOP
 
 
+def test_time_range_verifiers_are_marked_desktop_only():
+    """时间窗断言（text_time_range / window_text_time_range）同样是
+    运行时才算得出的期望 —— edr-wd schema 新加的两个类型。
+    转换器若漏标，maa-fw 会以为验过了（静默假验证）。
+    修前本测试必挂：scope 不标。"""
+    trace = convert(_desktop({
+        "actionId": None,
+        "verifiers": [
+            {"type": "text_time_range", "expected": "10:20",
+             "timeoutSeconds": 10.0},
+            {"type": "window_text_time_range", "expected": "2026-10-09 10:20",
+             "timeoutSeconds": 10.0},
+        ]}))
+    verification = ts.verification(trace["step_0001"])
+    assert verification["scope"] == ts.VERIFY_SCOPE_DESKTOP
+    assert [v["type"] for v in verification["verifiers"]] == [
+        "text_time_range", "window_text_time_range"]
+
+
 def test_templates_carry_over_with_their_order():
     trace = convert(_desktop({**_click(), "selector": {
         "control": {"automationId": "Win.btn", "name": "", "controlType": "Button",

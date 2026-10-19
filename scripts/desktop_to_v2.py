@@ -49,9 +49,15 @@ ACTIONS = {
 }
 
 # 这些断言只有桌面侧验得了。窗口是否打开、控件是否勾选，maa-fw 的识别器里
-# 没有对应能力；运行时算出来的期望值（当前日期）更不能塞进静态的 OCR expected。
+# 没有对应能力；运行时算出来的期望值（当前日期/时间窗）更不能塞进静态的
+# OCR expected。
+# **注意**：这个集合是能力清单，不是语料清单 —— edr-wd 的 schema 每加一种
+# 桌面侧断言类型，这里必须同步，否则转换后不带 scope 标记，maa-fw 会以为
+# 验过了（静默假验证）。回归测试：test/test_desktop_to_v2.py::
+# test_time_range_verifiers_are_marked_desktop_only
 DESKTOP_ONLY_VERIFIERS = frozenset({
     "window_open", "checked", "window_text_contains_time",
+    "text_time_range", "window_text_time_range",
 })
 
 
