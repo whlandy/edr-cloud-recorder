@@ -69,7 +69,8 @@ from rec_visual import visual_click
 # 仍需人工处理：
 #   1. 收紧仍标着 AMBIGUOUS 的选择器（多数已自动加了作用域）
 #   2. 删掉与意图无关的误操作步骤
-#   3. 会产生数据的用例补上清理逻辑（建议放 try/finally，中途失败也能还原）
+#   3. 会产生数据的用例：把清理动作填进文件末尾 _run_cleanup 的占位
+#      （失败独立记录，绝不推翻业务结论 —— 平台规范 §6.6）
 '''
 
 # 开头那段登录：几乎必然录进来（录制从登录页开始），也几乎必然回放不了 ——
@@ -634,6 +635,34 @@ def generate_spec(steps, net, start_url, name):
             continue
 
         lines.extend(emit_action(action, calls, warn))
+
+    # P3a：业务与清理**结构隔离**（平台规范 §6.6）。
+    # 业务段进 try 先行定案；清理在独立函数、finally 里独立运行，
+    # 自身失败只告警 —— 清理挂掉不能翻掉业务 PASS/FAIL，
+    # 业务挂了清理也要跑。旧模板只有注释建议用户自己塞 try/finally，
+    # 清理失败可以直接盖掉业务失败。
+    try_idx = next(i for i, ln in enumerate(lines)
+                   if ln.startswith("    page.goto("))
+    lines[try_idx:try_idx] = ["    try:"]
+    lines[try_idx + 1:] = [("    " + ln if ln else ln)
+                           for ln in lines[try_idx + 1:]]
+    lines += [
+        "    finally:",
+        "        _run_cleanup(page)",
+        "",
+        "",
+        "def _run_cleanup(page):",
+        '    """清理动作（录制后手写，仅当本用例会写数据）。',
+        "",
+        "    finally 里独立运行：业务失败它仍要跑；它自己的失败只",
+        "    记一条告警，绝不推翻业务结论（平台规范 §6.6）。",
+        '    """',
+        "    try:",
+        "        pass  # TODO cleanup: 清理动作写在这里",
+        "    except Exception as e:",
+        '        print(f"⚠ cleanup failed（不影响业务结论）: '
+        '{type(e).__name__}: {e}")',
+    ]
 
     lines.append("")
     if problems:

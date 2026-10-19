@@ -118,6 +118,27 @@ replay 的 per-node result 只有 `status`（success/failed/skipped）+ 自由�
   golden steps 不兼容（缺 selector/verifiers 字段等），先回来补设计，
   不边写边定。
 
+### 实现勘察（2026-10-20）与范围修正（方案 A：契约先行）
+
+更深一层的勘察推翻了两个前提：
+
+1. **web 录制数据模型没有 cleanup 概念** —— recording.json 无标记、
+   无字段；生成器旧模板只有一行注释建议。SKILL.md 的真实流程是
+   **录制后用户手写 cleanup**（「add cleanup for writes」是显式步骤）。
+   原 P3a「隔离机器录制的 cleanup 步骤」无数据源可隔离。
+2. **全部语料的 `cleanup` 列表为空**（9 条桌面 golden + 全部 web
+   trace）——P3b 若现在实现 = 零实例纯发明节点结构。
+
+修正后（用户批准方向 A）：
+
+- **P3a（已实现，契约先行）**：生成模板建立结构红线 —— 业务段整体进
+  `try`，清理在独立函数 `_run_cleanup` 里于 `finally` 运行，清理异常
+  只 print 告警不外抛。数据源暂为空（TODO 占位），用户手写清理落进
+  隔离结构；红线（清理失败不推翻业务结论）从此由模板保证而非靠自觉。
+- **P3b（降级为设计附录，延后实现）**：cleanup 执行协议（节点字段、
+  状态语义、`cleanupSuccess` 评分独立）保留设计，**触发条件 = 首个
+  非空 cleanup 语料出现**；届时先按附录补完节点结构定义再写码。
+
 ### 验收测试
 | # | 阶段 | 测试 | 断言 |
 |---|---|---|---|
@@ -134,8 +155,8 @@ P3a、P3b 各自一个 commit（可独立回滚）；全量绿。
 |---|---|---|---|---|
 | P1 | `generate_spec.py` | 3 | 假绿路径关闭；语料零回归 | 1 commit |
 | P2 | `replay_trace.py` | 3 | 失败可分类；评分零变化 | 1 commit |
-| P3a | `generate_spec.py` | 1 | 清理异常不覆盖业务结论 | 1 commit |
-| P3b | `replay_trace.py` (+schema 文档) | 2 | cleanup 独立记录，业务状态不受影响 | 1 commit |
+| P3a | `generate_spec.py` | 3 | 模板级清理隔离（契约先行）；spec 仍可编译 | 1 commit |
+| P3b | 延后（设计附录） | — | 首个非空 cleanup 语料出现时再实现 | — |
 
 执行顺序 P1 → P2 → P3a → P3b；每阶段一个 commit 并推送
 （`git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=0 push` 重试循环）。
