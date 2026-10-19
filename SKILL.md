@@ -172,6 +172,7 @@ Load only the reference needed for the current task:
 | [safe-writes.md](references/safe-writes.md) | a test changes server-side data or must capture without sending |
 | [endpoint-orchestration.md](references/endpoint-orchestration.md) | cloud changes must be verified through edr-wd on an endpoint |
 | [troubleshooting.md](references/troubleshooting.md) | browser startup, certificates, missing traffic, intermittent failures |
+| [assertion-hardening-design.md](references/assertion-hardening-design.md) | changing assertion generation/replay semantics, or auditing against the testing-platform spec |
 
 ## Repository Map
 
