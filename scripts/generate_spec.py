@@ -47,12 +47,14 @@ VOLATILE_DATETIME = re.compile(
 )
 
 HEADER = '''import os
+import re
 from pathlib import Path
 
 from playwright.sync_api import Page, expect
 
 from rec_assert import (
     ANY_NUM, ANY_STR, assert_subset, expect_local_time, expect_time_window,
+    expect_count, expect_value, expect_attribute, expect_time_range,
     local_time_value, poll_until,
 )
 from rec_helpers import dismiss_overlays, is_present, nth_request
@@ -81,6 +83,7 @@ LOGIN_FRAME = re.compile(r"login|signin|sso", re.I)
 # 动态期望值的种类；与 rec_assert.LOCALTIME_KIND 同名同义
 LOCALTIME_KIND = "localtime"
 TIMEWINDOW_KIND = "timewindow"
+TIMETRANGE_KIND = "timerange"
 LOGIN_ACTION = re.compile(r"login|sign[ -]?in|登录|登入", re.I)
 
 
@@ -145,6 +148,10 @@ def prepare_steps(steps):
         # 期望值在回放时算出来的断言不是同义反复：它比的不是「录到的那段文字」，
         # 而是「回放此刻的时间」。改写成存在性断言会把这个意图整个抹掉。
         if step.get("expectedFrom"):
+            continue
+        # 显式选了比较算子就不改：「等于」的默认语义才等价于「这段文字应该在」。
+        # 用户选了包含/正则/为空等，比较方式本身就是命题的一部分。
+        if step.get("op"):
             continue
         expected = step.get("expected")
         sel = step.get("sel") or ""
@@ -500,10 +507,52 @@ def generate_spec(steps, net, start_url, name):
                     f"    expect_time_window({loc}, {_lit(exp)}, {_lit(fmt)}, "
                     f"fluctuation_minutes={_lit(fluctuation)}{extra}){warn}"
                 )
+            elif dyn.get("kind") == TIMETRANGE_KIND:
+                # 期望值是一段「时间区间」：[起点, 起点+时长) 半开区间，
+                # 比的是元素文本里时间记号的**值**（记号可在文本任意位置）。
+                duration = dyn.get("durationSeconds")
+                read = "value" if a == "value" else "text"
+                extra = f", read={_lit(read)}" if read == "value" else ""
+                dur_lit = _lit(duration) if duration else ""
+                lines.append(
+                    f"    expect_time_range({loc}, {_lit(exp)}, {dur_lit}{extra}){warn}"
+                )
+            elif a == "count":
+                op = s.get("op") or "equals"
+                lines.append(
+                    f"    expect_count({loc}, {_lit(exp)}, op={_lit(op)}){warn}"
+                )
             elif a == "text":
-                lines.append(f"    expect({loc}).to_have_text({_lit(exp)}){warn}")
+                op = s.get("op") or "equals"
+                if op == "equals":
+                    lines.append(f"    expect({loc}).to_have_text({_lit(exp)}){warn}")
+                elif op == "not_equals":
+                    lines.append(f"    expect({loc}).not_to_have_text({_lit(exp)}){warn}")
+                elif op == "contains":
+                    lines.append(f"    expect({loc}).to_contain({_lit(exp)}){warn}")
+                elif op == "not_contains":
+                    lines.append(f"    expect({loc}).not_to_contain({_lit(exp)}){warn}")
+                elif op == "starts_with":
+                    lines.append(f"    expect({loc}).to_have_text("
+                                 f"re.compile({_lit(r'^' + re.escape(str(exp)))})){warn}")
+                elif op == "ends_with":
+                    lines.append(f"    expect({loc}).to_have_text("
+                                 f"re.compile({_lit(re.escape(str(exp)) + r'$')})){warn}")
+                elif op == "matches":
+                    lines.append(f"    expect({loc}).to_have_text(re.compile({_lit(exp)})){warn}")
+                elif op == "is_blank":
+                    lines.append(f"    expect({loc}).to_have_text(re.compile(r'^\\s*$')){warn}")
+                elif op == "is_not_blank":
+                    lines.append(f"    expect({loc}).not_to_have_text(re.compile(r'^\\s*$')){warn}")
+                else:
+                    lines.append(f"    # ⚠ 文本不支持算子 {_lit(op)}，已跳过")
+                    problems.append(f"step#{i}: text 不支持算子 {op!r}")
             elif a == "value":
-                lines.append(f"    expect({loc}).to_have_value({_lit(exp)}){warn}")
+                op = s.get("op") or "equals"
+                if op == "equals":
+                    lines.append(f"    expect({loc}).to_have_value({_lit(exp)}){warn}")
+                else:
+                    lines.append(f"    expect_value({loc}, {_lit(exp)}, op={_lit(op)}){warn}")
             elif a == "visible":
                 if s.get("_wasTextTautology"):
                     lines.append(
@@ -520,8 +569,13 @@ def generate_spec(steps, net, start_url, name):
                 lines.append(f"    expect({loc}).to_be_checked(){warn}" if exp
                              else f"    expect({loc}).not_to_be_checked(){warn}")
             elif a == "attribute":
-                lines.append(f"    expect({loc}).to_have_attribute("
-                             f"{_lit(s.get('attribute'))}, {_lit(exp)}){warn}")
+                op = s.get("op") or "equals"
+                if op == "equals":
+                    lines.append(f"    expect({loc}).to_have_attribute("
+                                 f"{_lit(s.get('attribute'))}, {_lit(exp)}){warn}")
+                else:
+                    lines.append(f"    expect_attribute({loc}, {_lit(s.get('attribute'))}, "
+                                 f"{_lit(exp)}, op={_lit(op)}){warn}")
             else:
                 lines.append(f"    # ⚠ 未知断言类型 {_lit(a)}，已跳过")
                 problems.append(

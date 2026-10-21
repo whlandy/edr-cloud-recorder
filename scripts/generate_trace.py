@@ -178,6 +178,9 @@ def _assertion_spec(step: dict) -> dict:
         "assertion": step.get("assertion"),
         "expected": step.get("expected"),
     }
+    # 比较算子：缺省 equals（不写字段，与旧录制兼容）；显式选了别的才落。
+    if step.get("op"):
+        spec["op"] = step["op"]
     if step.get("attribute") is not None:
         spec["attribute"] = step["attribute"]
     # 期望值在回放那一刻算，录制里的 expected 只作证据 —— 见 rec_assert 的说明

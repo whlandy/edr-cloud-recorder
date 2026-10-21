@@ -734,12 +734,17 @@ export const RECORDER = () => {
   const MENU_ID = '__rec_assert_menu__';
 
   // 断言类型 → 该类型的 expected 怎么取默认值、用什么控件编辑
+  // 类型名是名词（文本/输入值/属性）：「等于」是**比较方式**不是类型 ——
+  // 类型和比较拆开，一条断言才能同时表达「哪段内容」+「以什么方式比较」。
   const ASSERTIONS = {
-    text:      { label: '文本等于',   kind: 'string', of: (e) => txt(e) },
-    value:     { label: '输入值等于', kind: 'string', of: (e) => String(e.value ?? '') },
-    visible:   { label: '可见性',     kind: 'bool',   of: () => true },
-    checked:   { label: '勾选状态',   kind: 'bool',   of: (e) => !!e.checked },
-    attribute: { label: '属性等于',   kind: 'attr',   of: () => '' },
+    text:      { label: '文本',   kind: 'string', of: (e) => txt(e) },
+    value:     { label: '输入值', kind: 'string', of: (e) => String(e.value ?? '') },
+    visible:   { label: '可见性', kind: 'bool',   of: () => true },
+    checked:   { label: '勾选状态', kind: 'bool',   of: (e) => !!e.checked },
+    attribute: { label: '属性',   kind: 'attr',   of: () => '' },
+    // 元素数量：断言的是「匹配该选择器的元素有几个」，用于列表条数、
+    // 候选项个数。隐藏元素也算（DOM 里的），要断言看不见请用可见性。
+    count:     { label: '元素数量', kind: 'count', of: () => '' },
     // 期望值不从录制里搬，而是回放那一刻按本机时钟算出来。
     // 页面上显示时间的字段（「最近使用」「更新于」）断字面量隔一会儿就红，
     // 而红的原因和被测功能无关 —— 那种断言守不住任何东西。
@@ -749,7 +754,28 @@ export const RECORDER = () => {
     timewindow:{ label: '时间在范围内', kind: 'timewindow',
                  of: (e) => timeSourceOf(e) === 'value'
                    ? String(e.value ?? '') : txt(e) },
+    // 前缀 + 时长的时间区间：HH:MM 守整个一分钟，HH:MM:SS + 时长守
+    // [起点, 起点+时长) 的半开区间。比较的是文本里时间**值**是否落进
+    // 区间（记号可以在文本任意位置），与「前缀匹配」的范围断言不同。
+    timerange: { label: '时间区间(起点+时长)', kind: 'timerange',
+                 of: (e) => timeSourceOf(e) === 'value'
+                   ? String(e.value ?? '') : txt(e) },
   };
+
+  // 比较算子：对齐商用测试系统的通用面（Playwright expect / Katalon 的
+  // verify 关键字）。缺省「等于」与旧录制逐字节兼容 —— 老步骤没有 op 字段
+  // 时回放端仍按严格等于处理。
+  const STRING_OPS = [
+    ['equals', '等于'], ['not_equals', '不等于'], ['contains', '包含'],
+    ['not_contains', '不包含'], ['starts_with', '开头是'], ['ends_with', '结尾是'],
+    ['matches', '正则匹配(全串)'], ['is_blank', '为空'], ['is_not_blank', '非空'],
+  ];
+  const VALUE_OPS = [...STRING_OPS, ['greater_than', '大于(数值)'], ['less_than', '小于(数值)']];
+  const COUNT_OPS = [['equals', '等于'], ['at_least', '至少'], ['at_most', '至多']];
+  const opsFor = (key) =>
+    key === 'value' ? VALUE_OPS
+    : key === 'count' ? COUNT_OPS
+    : key === 'text' || key === 'attribute' ? STRING_OPS : null;
 
   // 时间显示在哪：输入框在 value 上，inner_text 恒为空 —— 读错了断言永远不通过。
   const timeSourceOf = (e) =>
@@ -837,10 +863,14 @@ export const RECORDER = () => {
             .map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></div>
         <div class="row" id="attrRow" style="display:none"><label>属性名</label>
           <input type="text" id="attr" placeholder="如 href、data-state"></div>
+        <div class="row" id="opRow" style="display:none"><label>比较方式</label>
+          <select id="op"></select></div>
         <div class="row" id="fmtRow" style="display:none"><label>时间格式</label>
           <input type="text" id="fmt" value="%H:%M" placeholder="%H:%M"></div>
         <div class="row" id="slackRow" style="display:none"><label>波动(分钟)</label>
           <input type="number" id="slack" value="0" min="0" step="1"></div>
+        <div class="row" id="durRow" style="display:none"><label>时长(秒)</label>
+          <input type="number" id="dur" value="60" min="1" step="1"></div>
         <div class="row" id="fmtPreview" style="display:none"><label></label>
           <span id="fmtNow" style="color:#555;font-size:12px"></span></div>
         <div class="row"><label id="esLabel">Expected</label>
@@ -882,23 +912,53 @@ export const RECORDER = () => {
     fit();
 
     const $ = (id) => sh.getElementById(id);
+    // 时长框一旦被用户碰过，就不再自动覆盖 —— 自动默认值只在「人没管过它」时
+    // 跟随起点粒度（HH:MM → 60 秒整分钟；HH:MM:SS → 1 秒）。
+    let rangeDurTouched = false;
+    const fillOps = (key) => {
+      const ops = opsFor(key);
+      if (!ops) { $('opRow').style.display = 'none'; return; }
+      $('opRow').style.display = 'flex';
+      $('op').innerHTML = ops
+        .map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+      if ($('op').value) $('op').value = 'equals';
+      $('op').dispatchEvent(new Event('change'));
+    };
     const sync = () => {
       const a = ASSERTIONS[$('t').value];
       const isTime = a.kind === 'time' || a.kind === 'timewindow';
+      const isRange = a.kind === 'timerange';
       $('attrRow').style.display = a.kind === 'attr' ? 'flex' : 'none';
+      fillOps(a.kind === 'count' ? 'count' : $('t').value);
       $('fmtRow').style.display = isTime ? 'flex' : 'none';
       $('slackRow').style.display = a.kind === 'timewindow' ? 'flex' : 'none';
-      $('fmtPreview').style.display = isTime ? 'flex' : 'none';
+      $('durRow').style.display = isRange ? 'flex' : 'none';
+      $('fmtPreview').style.display = (isTime || isRange) ? 'flex' : 'none';
       $('eb').style.display = a.kind === 'bool' ? 'block' : 'none';
       // time 类型没有要人填的期望值 —— 它由回放时的时钟决定。
       // 仍然把录制当时看到的文本显示出来（只读），好让人确认选的是不是那个元素。
       $('es').style.display = a.kind === 'bool' ? 'none' : 'block';
+      $('es').type = a.kind === 'count' ? 'number' : 'text';
       $('es').readOnly = a.kind === 'time';
       // 时间类型下这个框**不是**期望值 —— 期望值由回放时的时钟算出。
       // 还叫 Expected 会直接误导人：实测有人据此以为断言比的是这个字符串。
-      $('esLabel').textContent = a.kind === 'time' ? '录制时看到' : 'Expected';
-      if (isTime) $('fmt').value = guessTimeFormat(a.of(el));
+      if (a.kind === 'time') $('esLabel').textContent = '录制时看到';
+      else if (isRange) $('esLabel').textContent = '区间起点';
+      else $('esLabel').textContent = 'Expected';
+      if (isTime || !isRange) $('fmt').value = guessTimeFormat(a.of(el));
       if (a.kind === 'bool') $('eb').value = String(a.of(el));
+      else if (a.kind === 'count') $('es').value = '';
+      else if (isRange) {
+        // 区间起点必须是纯时间值（HH:MM / HH:MM:SS），从显示文本里抠出来。
+        // 带日期前缀的显示值（2026-10-21 00:28:56）只取时间部分。
+        const seen = String(a.of(el) ?? '').trim();
+        const m = seen.match(/(?:^|\D)((?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?)(?=\D|$)/);
+        $('es').value = m ? m[1] : '';
+        // 精确到秒的起点默认守 1 秒（与回放端 parse_time_range 的缺省一致）；
+        // 只到分钟的起点守整个一分钟。
+        $('dur').value = (m && m[1].length === 8) ? 1 : 60;
+        rangeDurTouched = false;
+      }
       else $('es').value = String(a.of(el) ?? '');
       if (a.kind === 'timewindow')
         $('es').value = valueByTimeFormat(a.of(el), $('fmt').value);
@@ -941,20 +1001,53 @@ export const RECORDER = () => {
         if (!expected) bad = '请填写时间范围起点';
         else if (!supported.includes(fmt)) bad = '时间范围仅支持 %H:%M、%Y-%m-%d %H:%M 或 %Y-%m-%d';
         else if (!Number.isFinite(slack) || slack < 0) bad = '波动分钟必须是大于或等于 0 的数字';
+      } else if (a.kind === 'timerange') {
+        const prefix = $('es').value.trim();
+        // 起点粒度变了就跟着换时长默认值 —— 但只限人没动过时长框
+        if (!rangeDurTouched && prefix) {
+          const want = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(prefix) ? 60 : 1;
+          if (Number($('dur').value) !== want) $('dur').value = String(want);
+        }
+        const dur = Number($('dur').value);
+        const pm = /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(prefix);
+        const p2 = (n) => String(n).padStart(2, '0');
+        if (!prefix) $('fmtNow').textContent = '区间起点填 HH:MM（守整分钟）或 HH:MM:SS（+时长守半开区间）';
+        else if (!pm) $('fmtNow').textContent = '起点须为 HH:MM 或 HH:MM:SS';
+        else if (prefix.length === 5) {
+          const [h, m] = prefix.split(':').map(Number);
+          const end = (h * 60 + m + 1) % 1440;
+          $('fmtNow').textContent = `${prefix}:00 – ${p2(Math.floor(end / 60))}:${p2(end % 60)}:00（整个一分钟）`;
+        } else {
+          const start = prefix.split(':').reduce((acc, p) => acc * 60 + Number(p), 0);
+          const total = (start + dur) % 86400;
+          $('fmtNow').textContent = `[${prefix}, ${p2(Math.floor(total / 3600))}:${p2(Math.floor(total % 3600 / 60))}:${p2(total % 60)} 秒)（半开区间，跨午夜回绕）`;
+        }
+        if (!pm) bad = '区间起点须为 HH:MM 或 HH:MM:SS';
+        else if (!Number.isInteger(dur) || dur < 1 || dur > 86400)
+          bad = '时长须为 1 – 86400 的整数秒';
+      } else if (a.kind === 'count') {
+        const n = $('es').value.trim();
+        if (n === '' || !/^\d+$/.test(n)) bad = '数量须为不小于 0 的整数';
       } else if (a.kind === 'attr' && !$('attr').value.trim()) bad = '请填写属性名';
-      // expected 不能默默为空：空字符串是合法断言，但必须是明确的选择
-      else if (a.kind !== 'bool' && !$('es').value && !$('allowEmpty').checked)
+      // expected 不能默默为空：空字符串是合法断言，但必须是明确的选择。
+      // 空值类算子不需要期望值 —— 命题本身就是「是否为空」。
+      const op = $('op').value;
+      const opNeedsNoExpected = op === 'is_blank' || op === 'is_not_blank';
+      if (!bad && a.kind !== 'bool' && !opNeedsNoExpected
+              && !$('es').value && !$('allowEmpty').checked)
         bad = 'Expected 为空。确实要断言空字符串就勾「允许空值」';
       $('hint').textContent = bad;
       $('ok').disabled = !!bad;
     };
     sh.addEventListener('input', validate);
+    $('dur').addEventListener('input', () => { rangeDurTouched = true; });
     $('t').addEventListener('change', sync);
     $('cancel').addEventListener('click', closeMenu);
     $('ok').addEventListener('click', () => {
       const type = $('t').value;
       const a = ASSERTIONS[type];
       const expected = a.kind === 'bool' ? $('eb').value === 'true' : $('es').value;
+      const op = opsFor(type) ? $('op').value : null;
       if (a.kind === 'time') {
         // 断言类型仍然是 text —— 变的只是「期望值从哪来」。
         // 这样回放侧读取文本的那套逻辑一行都不用改。
@@ -972,8 +1065,24 @@ export const RECORDER = () => {
           match: 'prefix',
           fluctuationMinutes: Number($('slack').value) || 0,
         });
+      } else if (a.kind === 'timerange') {
+        // 期望值是一个「时间区间」，不是字面文本：expected 存区间起点，
+        // 时长进 expectedFrom。回放端按 [起点, 起点+时长) 半开区间匹配
+        // 元素文本里的时间记号（记号可以在文本任意位置）。
+        pushAssert(el, timeSourceOf(el) === 'value' ? 'value' : 'text',
+                   expected.trim(), undefined, {
+          kind: 'timerange',
+          durationSeconds: Number($('dur').value),
+        });
+      } else if (a.kind === 'count') {
+        // 数量断言：expected 是整数，算子走 op（equals / at_least / at_most）。
+        const step = pushAssert(el, 'count', Number(expected.trim()));
+        if (step && op && op !== 'equals') step.op = op;
       } else {
-        pushAssert(el, type, expected, a.kind === 'attr' ? $('attr').value.trim() : undefined);
+        const step = pushAssert(el, type, expected, a.kind === 'attr' ? $('attr').value.trim() : undefined);
+        // op 缺省 equals 不写字段 —— 老回放端没有 op 概念，按严格等于跑。
+        // 只有显式选了别的算子才落字段，老录制与老回放之间逐字节兼容。
+        if (step && op && op !== 'equals') step.op = op;
       }
       closeMenu();
     });

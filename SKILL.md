@@ -67,9 +67,13 @@ Configuration, regeneration, and artifact rules are in
 
 ### 3. Add Intent While Recording
 
-Right-click an element to add a manual assertion. Supported checks are text, input value,
-visibility, checked state, and an attribute value. The user must confirm the expected value;
-the recorder must not infer intent from the current value without confirmation.
+Right-click an element to add a manual assertion. Each assertion separates **what** is
+checked (text, input value, attribute, visibility, checked state, element count, or one of
+three time kinds) from **how** it is compared (equals, contains, starts/ends with, regex,
+blank/non-blank, numeric greater/less, count at-least/at-most). The full table of types,
+operators, and time semantics is in [assertions.md](references/assertions.md). The user must
+confirm the expected value; the recorder must not infer intent from the current value
+without confirmation.
 
 In visual replay, actions may use templates, but manual assertions are independent DOM-backed
 `verifier` nodes. This keeps evaluation separate from the Agent's targeting mechanism.
@@ -226,6 +230,7 @@ Load only the reference needed for the current task:
 | [selectors.md](references/selectors.md) | selectors collide, drift, or hit the wrong element |
 | [auth-and-session.md](references/auth-and-session.md) | login reuse, SSO, sessionStorage, profile isolation |
 | [ui-assertions.md](references/ui-assertions.md) | choosing or debugging manual UI assertions |
+| [assertions.md](references/assertions.md) | assertion types, comparison operators, count, and the three time assertion kinds |
 | [safe-writes.md](references/safe-writes.md) | a test changes server-side data or must capture without sending |
 | [endpoint-orchestration.md](references/endpoint-orchestration.md) | cloud changes must be verified through edr-wd on an endpoint |
 | [troubleshooting.md](references/troubleshooting.md) | browser startup, certificates, missing traffic, intermittent failures |

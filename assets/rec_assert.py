@@ -114,6 +114,8 @@ def poll_until(fn, expected, timeout: float = 5.0, interval: float = 0.1):
 
 LOCALTIME_KIND = "localtime"
 TIMEWINDOW_KIND = "timewindow"
+# 前缀 + 时长的时间区间（HH:MM → 整分钟；HH:MM:SS + durationSeconds）。
+TIMETRANGE_KIND = "timerange"
 DEFAULT_TIME_FORMAT = "%H:%M"
 # 跨分钟边界的容差：页面在 23:24:59 渲染、断言在 23:25:00 求值，
 # 两边差一分钟却都没错。不给容差的话这种假红会随机出现，
@@ -299,3 +301,232 @@ def local_time_value(fmt: str = "%Y-%m-%d", *, offset_days: int = 0,
     """
     moment = datetime.now() + timedelta(days=offset_days, seconds=offset_seconds)
     return moment.strftime(fmt)
+
+# ────────────────────────── 断言比较算子 ──────────────────────────
+#
+# 以前只有「严格等于」一种比较：想守「错误消息包含 xxx」只能把整段文本
+# 钉死（换个措辞就红），「列表里要有 3 条」「数值大于 5」根本表达不了。
+#
+# 算子集对齐成熟商用系统的通用面（Playwright expect 的 toHaveText/
+# toContain/toHaveCount、Katalon 的 verify 关键字）：
+#
+#   * 字符串算子两边都按「连续空白压成一个」归一化再比（与 to_have_text 一致）；
+#   * matches 是正则 fullmatch（与 toHaveText(re) 一致），不是搜索；
+#   * 数值算子（greater_than / less_than）只用于输入值：先解析成 float，
+#     解析不出就是断言失败而不是字符串比较 —— 静默的字符串比较会给出
+#     看起来对、其实一直在比字典序的「绿」；
+#   * count 比的是 DOM 元素个数（locator.count()，隐藏元素也算）。
+#     「不在 DOM」≠「存在但隐藏」：要断言看不见，用 visible 断言，不用 count。
+#
+# op 缺省 equals —— 老录制里没有这个字段，语义与旧版逐字节一致。
+
+STRING_OPS = ("equals", "not_equals", "contains", "not_contains",
+              "starts_with", "ends_with", "matches", "is_blank", "is_not_blank")
+VALUE_OPS = STRING_OPS + ("greater_than", "less_than")
+COUNT_OPS = ("equals", "at_least", "at_most")
+
+
+def _norm(value: Any) -> str:
+    return " ".join(str(value).split()) if value is not None else ""
+
+
+def matches_assert(actual: Any, expected: Any, op: str = "equals") -> bool:
+    """纯函数比较：actual 在算子 op 下是否满足 expected。只返回布尔，不抛异常。
+
+    is_blank / is_not_blank 不用 expected；其余算子里 expected 为 None
+    一律按空串处理（equals 空串是合法命题，但菜单侧要求显式勾选「允许空值」）。
+    未知算子抛 ValueError —— 宁可生成时报错，也不让回放静默地不比。
+    """
+    if op in ("is_blank", "is_not_blank"):
+        blank = _norm(actual) == ""
+        return blank if op == "is_blank" else not blank
+    if op in ("greater_than", "less_than", "at_least", "at_most"):
+        try:
+            a, e = float(str(actual).strip()), float(str(expected).strip())
+        except (TypeError, ValueError):
+            return False
+        if op == "greater_than":
+            return a > e
+        if op == "less_than":
+            return a < e
+        if op == "at_least":
+            return a >= e
+        return a <= e    # at_most
+    a, e = _norm(actual), _norm(expected)
+    if op == "equals":
+        return a == e
+    if op == "not_equals":
+        return a != e
+    if op == "contains":
+        return e in a
+    if op == "not_contains":
+        return e not in a
+    if op == "starts_with":
+        return a.startswith(e)
+    if op == "ends_with":
+        return a.endswith(e)
+    if op == "matches":
+        try:
+            return re.fullmatch(str(expected), str(actual)) is not None
+        except re.error:
+            return False
+    raise ValueError(f"不支持的比较算子: {op!r}")
+
+
+def expect_value(locator, expected, op: str = "equals",
+                 timeout: float = 5.0) -> Any:
+    """轮询输入框的 value 直到满足算子。对应 to_have_value，外加 contains 等。
+
+    Playwright 的 to_have_value 只认等于/正则，「包含」在商用系统里是高频
+    需求（输入框残留的前缀、拼接的提示），这里补齐。
+    """
+    deadline = time.monotonic() + timeout
+    last = None
+    while True:
+        try:
+            last = locator.input_value()
+        except Exception as error:
+            last = f"{type(error).__name__}: {error}"
+        if matches_assert(last, expected, op):
+            return last
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"输入值断言失败: op={op!r} expected={expected!r} actual={last!r}"
+            )
+        time.sleep(0.1)
+
+
+def expect_attribute(locator, name: str, expected, op: str = "equals",
+                     timeout: float = 5.0) -> Any:
+    """轮询元素的某个属性直到满足算子。
+
+    属性不存在时 get_attribute 返回 None —— equals 下按空串比，
+    所以「断言 href 等于空」和「断言 href 不存在」在这里无法区分，
+    需要区分就用 is_blank / not_equals。
+    """
+    deadline = time.monotonic() + timeout
+    last = None
+    while True:
+        try:
+            last = locator.get_attribute(name)
+        except Exception as error:
+            last = f"{type(error).__name__}: {error}"
+        if matches_assert(last, expected, op):
+            return last
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"属性断言失败: {name} op={op!r} expected={expected!r} actual={last!r}"
+            )
+        time.sleep(0.1)
+
+
+def expect_count(locator, expected: int, op: str = "equals",
+                 timeout: float = 5.0) -> int:
+    """断言匹配到的元素**个数**满足算子（Playwright to_have_count 只有等于）。
+
+    at_least / at_most 是自加：「至少 1 条记录」「不超过 N 个候选」是商用
+    系统里常见的数量断言。at_most 在 0 时也满足 —— 断「不超过 N」前请确认
+    列表已经加载完（或再配一条内容断言），否则页面还没渲染就「通过」了。
+    """
+    if not isinstance(expected, int) or isinstance(expected, bool):
+        raise ValueError(f"count 断言的 expected 必须是整数: {expected!r}")
+    deadline = time.monotonic() + timeout
+    last = -1
+    while True:
+        try:
+            last = locator.count()
+        except Exception:
+            last = -1
+        if (op == "equals" and last == expected
+                or op == "at_least" and last >= expected
+                or op == "at_most" and last <= expected):
+            return last
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"数量断言失败: op={op!r} expected={expected!r} actual={last!r}"
+            )
+        time.sleep(0.1)
+
+# ────────────────────────── 时间区间（前缀 + 时长） ──────────────────────────
+#
+# 与桌面侧 edr-wd 的 window_text_time_range 同一套语义（两边录制器要能
+# 讲同一种断言语言）：
+#
+#   * HH:MM   → 整个一分钟 [HH:MM:00, HH:MM+1:00)
+#   * HH:MM:SS + durationSeconds → [start, start+duration)
+#   * 半开区间：起点算内，终点算外；跨午夜回绕。
+#   * 从整段文本里扫所有时间记号（不是只看开头），所以「检查时间 10:20:59」
+#     这种带前缀的内容也能命中 —— 与 timewindow 的「前缀匹配」不同，
+#     这个比较的是时间值本身，不要求记号在文本开头。
+#
+# 选哪种：
+#   * 要守「这条记录的时间在某个时间段里」，且起点精确到秒 → 时间区间；
+#   * 只认「以某个字面前缀开头的显示值」 → 仍用 timewindow（波动分钟）。
+
+_TIME_RANGE_TOKEN = re.compile(
+    r"(?<![\d:+-])(?:[01]\d|2[0-3]):[0-5]\d(?::(?:[0-5]\d|\d))?(?![\d:])"
+)
+
+
+def _time_range_to_seconds(value: str) -> int:
+    parts = tuple(int(p) for p in value.split(":"))
+    return parts[0] * 3600 + parts[1] * 60 + (parts[2] if len(parts) == 3 else 0)
+
+
+def parse_time_range(prefix: str,
+                     duration_seconds: int | None = None) -> tuple[int, int]:
+    """返回 [start, start+duration) 的秒数。规则见上方注释。"""
+    match = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?",
+                          str(prefix).strip())
+    if match is None:
+        raise ValueError(f"time_range_invalid_prefix: {prefix!r}")
+    start = (_time_range_to_seconds(f"{match[1]}:{match[2]}:{match[3] or 0}")
+             if match[3] is not None else
+             int(match[1]) * 3600 + int(match[2]) * 60)
+    if duration_seconds is None:
+        duration_seconds = 1 if match[3] is not None else 60
+    if (isinstance(duration_seconds, bool) or not isinstance(duration_seconds, int)
+            or not 1 <= duration_seconds <= 86400):
+        raise ValueError(f"time_range_invalid_duration: {duration_seconds!r}")
+    return start, duration_seconds
+
+
+def matches_time_range(text: Any, prefix: str,
+                      duration_seconds: int | None = None) -> list[str]:
+    """text 里落在区间内的全部时间记号（可能多个，按出现顺序）。"""
+    if text is None:
+        return []
+    start, duration = parse_time_range(prefix, duration_seconds)
+    return [
+        token
+        for token in _TIME_RANGE_TOKEN.findall(str(text))
+        if (_time_range_to_seconds(token) - start) % 86400 < duration
+    ]
+
+
+def expect_time_range(locator, prefix: str,
+                      duration_seconds: int | None = None, *,
+                      read: str = "text", timeout: float = 5.0) -> list[str]:
+    """轮询元素文本，直到出现任一落在区间内的时间记号。
+
+    read="value" 读输入框（时间填在 value 上，inner_text 恒为空）。
+    返回命中的记号列表 —— 报错信息要打出「实际看到了什么」，
+    只有「区间不匹配」这句话，人还得去页面上自己找当时的时间。
+    """
+    deadline = time.monotonic() + timeout
+    last = None
+    while True:
+        try:
+            last = locator.input_value() if read == "value" else locator.inner_text()
+        except Exception as error:
+            last = f"{type(error).__name__}: {error}"
+        hits = matches_time_range(last, prefix, duration_seconds)
+        if hits:
+            return hits
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"时间区间断言失败: prefix={prefix!r} "
+                f"duration={duration_seconds!r} actual={last!r} "
+                "（区间内没有时间记号）"
+            )
+        time.sleep(0.1)
