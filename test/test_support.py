@@ -6,7 +6,7 @@ import pytest
 from generate_spec import generate_spec, prepare_steps
 from generate_trace import generate_trace
 import trace_schema as ts
-from rec_assert import ANY_NUM, ANY_STR
+from rec_assert import ANY_NUM, ANY_STR, matches_time_window
 from rec_config import load_config
 from rec_helpers import dismiss_overlays
 from record import (
@@ -34,6 +34,46 @@ def _solid_png(width: int, height: int) -> bytes:
     )
     assert ok
     return encoded.tobytes()
+
+
+def test_time_window_accepts_the_whole_expected_minute():
+    assert matches_time_window("10:20:00", "10:20")
+    assert matches_time_window("10:20:59", "10:20")
+    assert not matches_time_window("检查时间 10:20:59", "10:20")
+    assert not matches_time_window("10:21:00", "10:20")
+
+
+def test_time_window_extends_forward_by_fluctuation_minutes():
+    assert matches_time_window(
+        "10:21:59", "10:20", fluctuation_minutes=1
+    )
+    assert not matches_time_window(
+        "10:22:00", "10:20", fluctuation_minutes=1
+    )
+
+
+def test_time_window_handles_midnight_as_a_half_open_range():
+    assert matches_time_window("00:00:30", "23:59", fluctuation_minutes=1)
+    assert not matches_time_window("00:01:00", "23:59", fluctuation_minutes=1)
+
+
+def test_generated_spec_uses_recorded_time_window():
+    spec = generate_spec(
+        [{
+            "id": "a1", "t": 1, "type": "assert", "assertion": "text",
+            "expected": "10:20", "sel": 'locator("#clock")', "kind": "id",
+            "expectedFrom": {
+                "kind": "timewindow", "format": "%H:%M",
+                "match": "prefix", "fluctuationMinutes": 1,
+            },
+        }],
+        [],
+        start_url="https://app.example/page",
+        name="time-window",
+    )
+
+    assert "expect_time_window" in spec
+    assert "fluctuation_minutes=1" in spec
 
 
 def test_artifact_paths_keep_one_case_in_one_directory(tmp_path):

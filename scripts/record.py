@@ -60,6 +60,11 @@ from rec_config import ConfigError, load_config, with_defaults  # noqa: E402
 from rec_session import restore_context_session, write_session_snapshot  # noqa: E402
 from rec_secrets import redact_text                            # noqa: E402
 from recorder_loader import recorder_source                 # noqa: E402
+import trace_schema as ts                                    # noqa: E402
+
+# 复用现成的回放前门槛：validate_trace 会同时跑格式、无环、entry、支持的
+# 动作，以及 maa-fw 的节点契约。这里不做「回放」，只把「能不能回放」报出来。
+from replay_trace import validate_trace, TraceReplayError   # noqa: E402
 
 DRAIN = "() => (window.__rec ? window.__rec.drain() : [])"
 PUMP_MS = 200
@@ -682,9 +687,13 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         ensure_ascii=False, indent=1), encoding="utf-8")
 
     trace_file = artifacts["trace_file"]
+    trace = generate_trace(steps, net, name=name, start_url=start_url)
     trace_file.write_text(json.dumps(
-        generate_trace(steps, net, name=name, start_url=start_url),
-        ensure_ascii=False, indent=1), encoding="utf-8")
+        trace, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    # 回放就绪自检：validate_trace 跑的是回放器真实的门槛（格式/无环/契约），
+    # status 由 _replayability 经 ts.meta()（即 $meta.attach.status）读取。
+    trace_ready, trace_reason = _replayability(trace)
 
     spec_text = generate_spec(steps, net, start_url=start_url, name=name)
     # pytest 只收集 test_*.py，文件名必须带前缀，而且得是合法模块名
@@ -705,6 +714,10 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     print(f"  操作 {len(steps)} 步 · 接口 {len(responses)} 次 · 写请求 {len(writes)} 次")
     print(f"  原始记录  {raw_file}")
     print(f"  成功轨迹  {trace_file}")
+    if trace_ready:
+        print(f"  回放就绪  ✓ 可回放（已过格式 + maa 契约，共 {len(trace) - 1} 节点）")
+    else:
+        print(f"  回放就绪  ✗ 尚未全部可回放：{trace_reason}（见 trace 内各 step 的 status）")
     print(f"  脚本草稿  {spec_file}")
     if snapshot["state"]:
         print(f"  登录态    {state_file}")
@@ -722,6 +735,22 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
             "raw_file": raw_file,
             "trace_file": trace_file, "spec_file": spec_file,
             "state_file": state_file if snapshot["state"] else None}
+
+
+def _replayability(trace: dict) -> tuple[bool, str]:
+    """回放就绪自检（纯判定）：validate_trace 过 + status==ready 才可回放。
+
+    status 读 `ts.meta(trace)` —— 它把 v2 真实的 `$meta.attach.status` 归一上来。
+    写 `trace["$meta"].get("status")` 会读到恒为 null 的 `$meta.status`，
+    把合法 ready 轨迹误报成不可回放（这是修掉的缺陷）。
+    """
+    try:
+        validate_trace(trace)
+    except TraceReplayError as error:
+        return False, str(error)
+    ready = ts.meta(trace).get("status") == "ready"
+    reason = "" if ready else "存在缺模板/缺选择器的定位步骤"
+    return ready, reason
 
 
 def _now() -> int:
