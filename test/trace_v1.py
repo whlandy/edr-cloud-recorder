@@ -51,7 +51,7 @@ def node_to_v2(flat: dict) -> dict:
     if action.get("type") == "Assert":
         # v2 里断言不再是一种动作类型 —— 断言规格进 attach.verification.assertion
         spec = {key: param.pop(key) for key in
-                ("assertion", "expected", "expectedFrom", "attribute")
+                ("assertion", "expected", "expectedFrom", "attribute", "op")
                 if key in param}
         verification["assertion"] = spec
         action["type"] = "DoNothing"

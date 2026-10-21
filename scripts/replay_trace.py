@@ -13,8 +13,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from rec_assert import (
-    LOCALTIME_KIND, TIMEWINDOW_KIND, ANY_STR, assert_subset, expect_local_time,
-    expect_time_window, local_time_value,
+    LOCALTIME_KIND, TIMEWINDOW_KIND, TIMETRANGE_KIND, ANY_STR, assert_subset,
+    expect_local_time, expect_time_window, local_time_value,
+    expect_count, expect_value, expect_attribute, expect_time_range,
+    matches_assert, COUNT_OPS, VALUE_OPS,
 )
 from rec_session import restore_context_session
 from rec_secrets import REDACTED
@@ -437,6 +439,45 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
             timeout=timeout_ms / 1000,
         )
         return
+    if dynamic.get("kind") == TIMETRANGE_KIND:
+        # 前缀 + 时长的时间区间：期望值本身是「一段时间」，不是字面文本。
+        expect_time_range(
+            locator, expected,
+            dynamic.get("durationSeconds"),
+            read="value" if assertion == "value" else "text",
+            timeout=timeout_ms / 1000,
+        )
+        return
+    op = param.get("op") or "equals"
+    # 快速失败：算子/期望值形状不对是录制或生成侧的错，轮询等满超时才报错，
+    # 排障的人只会看到一条含糊的「断言失败」。
+    if assertion in ("visible", "checked") and op != "equals":
+        raise TraceReplayError(f"{assertion} 断言不支持算子 {op!r}")
+    if assertion in ("text", "value", "attribute") and op not in VALUE_OPS:
+        raise TraceReplayError(f"不支持的比较算子: {op!r}")
+    if assertion == "count":
+        if (isinstance(expected, bool) or not isinstance(expected, int)
+                or op not in COUNT_OPS):
+            raise TraceReplayError(
+                f"count 断言要求整数期望值与算子 {'/'.join(COUNT_OPS)}: "
+                f"expected={expected!r} op={op!r}")
+        # 元素个数：读 DOM 数量，与「读一个元素的某个方面」不是一条路径。
+        # locator.count() 不抛「找不到」—— 找不到就是 0，
+        # 「列表为空」是合法观测值，不该被当成定位错误。
+        deadline = time.monotonic() + timeout_ms / 1000
+        actual = -1
+        while True:
+            try:
+                actual = locator.count()
+            except Exception:
+                actual = -1
+            if matches_assert(actual, expected, op):
+                return
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"断言失败: count actual={actual!r} expected={expected!r} op={op!r}"
+                )
+            time.sleep(0.1)
     readers = {
         "visible": lambda: locator.is_visible(),
         "text": lambda: locator.inner_text(),
@@ -452,16 +493,15 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
     while True:
         try:
             actual = readers[assertion]()
-            matches = actual == expected
-            if assertion == "text" and isinstance(actual, str) and isinstance(expected, str):
-                matches = " ".join(actual.split()) == " ".join(expected.split())
-            if matches:
+            # matches_assert 的 equals 与旧行为一致（text 空白归一化）；
+            # 其余算子（包含/正则/数值…）是扩展，缺省 op 语义不变。
+            if matches_assert(actual, expected, op):
                 return
         except Exception as error:
             actual = f"{type(error).__name__}: {error}"
         if time.monotonic() >= deadline:
             raise AssertionError(
-                f"断言失败: {assertion} actual={actual!r} expected={expected!r}"
+                f"断言失败: {assertion} actual={actual!r} expected={expected!r} op={op!r}"
             )
         time.sleep(0.1)
 
