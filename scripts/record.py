@@ -68,6 +68,11 @@ from replay_trace import validate_trace, TraceReplayError   # noqa: E402
 
 DRAIN = "() => (window.__rec ? window.__rec.drain() : [])"
 PUMP_MS = 200
+# 无头 + 无脚本驱动的收尾泵周期数。人工路径靠「用户关窗」让 closed["v"] 翻 true
+# 走出循环；无头模式下没人看得到窗口也不会去关，缺这一步则循环永久挂起、零产出，
+# CI 里等于直接卡死。这里录一小段就收尾（约 1.5s），把「挂死」变成「确定完成并
+# 落盘」，无头冒烟只验证 record→generate 管线本身，不承诺录出业务步。
+HEADLESS_SMOKE_CYCLES = 8
 VISUAL_STEP_TYPES = POSITIONAL_STEP_TYPES
 PRE_ACTION_ONLY_TYPES = {"check", "uncheck", "switch"}
 PRE_FRAME_MAX_AGE_MS = 1_500
@@ -553,8 +558,13 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
 
         print(f"\n打开 {start_url}")
         if on_ready is None:
-            print("需要登录就在这个窗口里登录（密码不会被记录）。")
-            print("操作完成后直接关闭浏览器窗口，脚本自动生成。\n")
+            if headless:
+                print(f"无头冒烟：无人操作也录 {HEADLESS_SMOKE_CYCLES * PUMP_MS // 1000}s "
+                      "后自动收尾（只捕获页面自动事件，不产生人工步骤）。")
+                print("要录业务操作请用人工模式，或经 on_ready 提供脚本驱动。\n")
+            else:
+                print("需要登录就在这个窗口里登录（密码不会被记录）。")
+                print("操作完成后直接关闭浏览器窗口，脚本自动生成。\n")
 
         try:
             page.goto(start_url, wait_until="domcontentloaded")
@@ -641,6 +651,8 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
             for target in alive_pages():
                 target.close()
 
+        headless_wait = headless and on_ready is None
+        cycles = 0
         while not closed["v"]:
             drain_all_pages()
             capture_pending()
@@ -654,6 +666,12 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
                 current[0].wait_for_timeout(PUMP_MS)
             except Exception:
                 break                               # 浏览器已关
+
+            # 无头 + 无驱动：没人会关窗。录不动就基于周期数收尾，别让 CI 挂死。
+            if headless_wait:
+                cycles += 1
+                if cycles >= HEADLESS_SMOKE_CYCLES:
+                    break
 
         drain_all_pages()
 

@@ -107,7 +107,8 @@ def prepare_steps(steps):
 
     for i in range(len(prepared) - 1):
         a, b = prepared[i], prepared[i + 1]
-        if (a["type"] == "press" and b["type"] == "fill"
+        if (a["type"] == "press" and a.get("inputOrder") != "value-before-key"
+                and b["type"] == "fill"
                 and a["sel"] == b["sel"] and a.get("inFrame") == b.get("inFrame")):
             prepared[i] = {**b, "t": a["t"]}
             prepared[i + 1] = {**a, "t": b["t"]}
@@ -124,6 +125,11 @@ def prepare_steps(steps):
         )
         if (step.get("type") == "fill" and focus.get("type") == "click"
                 and same_target and focus.get("inFrame") == step.get("inFrame")):
+            prepared[i] = {**step, "_useFocusedElement": True}
+        elif (step.get("type") == "press" and focus.get("type") == "fill"
+                and focus.get("_useFocusedElement") and same_target
+                and focus.get("inFrame") == step.get("inFrame")):
+            # 连续 click → fill → Enter 保留已确认的输入目标。
             prepared[i] = {**step, "_useFocusedElement": True}
 
     # 「用文本定位元素，再断言它的文本等于那段文本」是同义反复：
@@ -626,7 +632,7 @@ def generate_spec(steps, net, start_url, name):
         elif t == "uncheck":
             action = f"{action_loc}.uncheck()"
         elif t == "press":
-            action = f'{loc}.press("Enter")'
+            action = f'{input_loc}.press("Enter")'
         else:
             # 与未知断言同一红线：动作被静默丢掉 = 用例少做一件事还跑绿。
             problems.append(

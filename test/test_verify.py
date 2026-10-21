@@ -210,14 +210,15 @@ def _(rec):
     assert s and "[data-cy=" in s["sel"] and "getByTestId" not in s["sel"], s and s["sel"]
 
 
-@check("录制忠实记下了 press 在 fill 之前")
+@check("输入值在 Enter 提交前落盘，失焦后不重复")
 def _(rec):
     steps = rec["steps"]
     fi = next((i for i, s in enumerate(steps)
                if s["type"] == "fill" and s.get("value") == "bob"), -1)
     pi = next((i for i, s in enumerate(steps)
                if s["type"] == "press" and "请输入用户名" in s["sel"]), -1)
-    assert pi >= 0 and fi >= 0 and pi < fi, f"press@{pi} fill@{fi}"
+    assert pi >= 0 and fi >= 0 and fi < pi, f"press@{pi} fill@{fi}"
+    assert sum(s["type"] == "fill" and s.get("value") == "bob" for s in steps) == 1
 
 
 @check("点在空白处不产生步骤")
@@ -667,7 +668,7 @@ def _(rec):
 def _(rec):
     spec = spec_of(rec)
     i_fill = spec.find('.fill("bob")')
-    i_press = spec.find('get_by_placeholder("请输入用户名").press("Enter")')
+    i_press = spec.find('page.locator(":focus").press("Enter")', i_fill)
     assert i_fill >= 0 and i_press >= 0 and i_fill < i_press, \
         f"fill@{i_fill} press@{i_press}"
 

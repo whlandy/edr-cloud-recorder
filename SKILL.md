@@ -209,6 +209,8 @@ papered over until one run turns green:
 7. **A headed demo is not proof.** A demo may omit repeated-write assertions so a human can watch
    the UI, but it must be labeled as a demo and must not be reported as a successful verified replay.
 
+8. **Commit typed text before Enter.** A search may submit before `change`/blur. Record the current input value before the Enter event, deduplicate the later change, preserve password redaction, and ignore IME composition Enter. Legacy `press → fill` normalization remains for old recordings. An adjacent same-target, same-frame `click → fill → Enter` chain preserves the established input focus for Enter.
+
 More environment and browser failures are covered by
 [troubleshooting.md](references/troubleshooting.md).
 
