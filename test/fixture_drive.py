@@ -417,7 +417,7 @@ def drive(chrome: str | None = None) -> dict:
             page.click("#row_sp", position={"x": 5, "y": 5})
             page.wait_for_timeout(400)
 
-            # 打字 + 回车：值在 change 才记，按键当场记 → 录出来是「先回车后填值」
+            # 打字 + 回车：Enter 前同步保存当前输入值，后续 change 不重复录制
             page.click('input[placeholder="请输入用户名"]')
             page.fill('input[placeholder="请输入用户名"]', "bob")
             page.press('input[placeholder="请输入用户名"]', "Enter")

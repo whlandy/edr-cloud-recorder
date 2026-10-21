@@ -720,6 +720,8 @@ export const RECORDER = () => {
   // WeakMap 以元素为键，不延长已卸载页面/节点的生命周期；一次 change 消费后
   // 删除，下次编辑会重新冻结，避免沿用上一次交互留下的旧 selector。
   const selectorBeforeInput = new WeakMap();
+  const pendingInput = new WeakSet();
+  const lastRecordedInputValue = new WeakMap();
   const rememberSelectorBeforeInput = (el) => {
     if (!el?.matches?.('input, textarea, select') || selectorBeforeInput.has(el)) return;
     try {
@@ -1185,6 +1187,11 @@ export const RECORDER = () => {
   document.addEventListener('pointerdown', (e) => rememberSelectorBeforeInput(e.target), true);
   document.addEventListener('focusin', (e) => rememberSelectorBeforeInput(e.target), true);
   document.addEventListener('beforeinput', (e) => rememberSelectorBeforeInput(e.target), true);
+  document.addEventListener('input', (e) => {
+    if (!fromMenu(e) && e.target?.matches?.('input:not([type=checkbox]):not([type=radio]), textarea')) {
+      pendingInput.add(e.target);
+    }
+  }, true);
 
   document.addEventListener('click', (e) => {
     if (fromMenu(e)) return;
@@ -1240,34 +1247,44 @@ export const RECORDER = () => {
   document.addEventListener('dblclick', (e) => {
     if (!fromMenu(e)) push('dblclick', e.target, undefined, e);
   }, true);
+  const commitInputValue = (el, before) => {
+    const value = String(el.value ?? '');
+    pendingInput.delete(el);
+    if (lastRecordedInputValue.get(el) === value) return;
+    let step;
+    if (el.type === 'password') {
+      // 密码只保留 secret 标记，不进入上报的步骤。
+      step = push('fill', el, { secret: true, _selectorBeforeAction: before });
+    } else {
+      const filled = value.slice(0, 200);
+      step = push('fill', el, {
+        value: filled, ...dateValueMeta(filled), _selectorBeforeAction: before,
+      });
+    }
+    if (step) lastRecordedInputValue.set(el, value);
+  };
   document.addEventListener('change', (e) => {
     if (fromMenu(e)) return;
     const el = e.target;
-    // 一些站点会在普通 div 上派发自定义 change（Bing 首页轮播就是如此）。
-    // 这不是用户输入；若继续读取不存在的 value，会每次都录成空 fill。
     if (!el?.matches?.('input, textarea, select')) return;
     const before = selectorBeforeInput.get(el);
     selectorBeforeInput.delete(el);
     if (el.type === 'checkbox' || el.type === 'radio') {
       push(el.checked ? 'check' : 'uncheck', el, { _selectorBeforeAction: before });
-    } else if (el.type === 'password') {
-      // 步骤照记，值不记。生成的脚本用 process.env.REC_PASSWORD 代替 ——
-      // 明文密码写进 spec 会让脚本绑死在一个账号上，而且 spec 通常是要进版本库的。
-      push('fill', el, { secret: true, _selectorBeforeAction: before });
     } else {
-      const filled = String(el.value ?? '').slice(0, 200);
-      push('fill', el, {
-        value: filled, ...dateValueMeta(filled), _selectorBeforeAction: before,
-      });
+      commitInputValue(el, before);
     }
   }, true);
   document.addEventListener('keydown', (e) => {
     if (fromMenu(e)) return;
     if (e.key === 'Escape') { closeMenu(); return; }
-    // Enter 通常发生在值已输入、change 尚未触发的窗口里。这里也必须复用
-    // beforeinput 冻结的 selector；不要消费它，后续 change/fill 还要用同一份。
-    if (e.key === 'Enter') push('press', e.target, {
-      key: 'Enter', _selectorBeforeAction: selectorBeforeInput.get(e.target),
+    if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
+    // Enter 可立即提交、清空或卸载输入框，必须先同步保存其当前值。
+    // selector 留给随后的 change；相同值由 commitInputValue 去重。
+    const before = selectorBeforeInput.get(e.target);
+    if (pendingInput.has(e.target)) commitInputValue(e.target, before);
+    push('press', e.target, {
+      key: 'Enter', inputOrder: 'value-before-key', _selectorBeforeAction: before,
     });
   }, true);
 

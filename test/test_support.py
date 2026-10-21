@@ -1178,3 +1178,20 @@ def test_existence_assertion_without_a_text_anchor_stays_web_only():
     node = trace["step_0001"]
     assert node["recognition"]["type"] == "DirectHit"
     assert ts.assertion_of(node)["scope"] == ts.VERIFY_SCOPE_WEB
+
+
+@pytest.mark.parametrize("boundary", ["same", "different-target", "different-frame", "intervening-click"])
+def test_enter_reuses_proven_input_focus_only_for_adjacent_same_target(boundary):
+    steps = [
+        {"id":"focus", "t":100, "type":"click", "sel":'locator("#search")', "css":"#search"},
+        {"id":"fill", "t":110, "type":"fill", "sel":'locator("#search")', "css":"#search", "value":"11.26"},
+        {"id":"enter", "t":120, "type":"press", "sel":'getByPlaceholder("old placeholder")', "css":"#search", "key":"Enter", "inputOrder":"value-before-key"},
+    ]
+    if boundary == "different-target":
+        steps[-1].update(sel='locator("#other")', css="#other")
+    elif boundary == "different-frame":
+        steps[-1].update(inFrame=True, framePath="/other")
+    elif boundary == "intervening-click":
+        steps.insert(2, {"id":"other", "t":115, "type":"click", "sel":'locator("#other")', "css":"#other"})
+    spec = generate_spec(steps, [], start_url="https://example.test/", name="input-enter")
+    assert ('page.locator(":focus").press("Enter")' in spec) == (boundary == "same")

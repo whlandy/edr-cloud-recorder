@@ -75,6 +75,10 @@ The pytest generator:
 Network calls belong to the action that started the request. Use request timestamps when available;
 a slow response may finish after the next UI action and must not be reassigned.
 
+## Keyboard Input
+
+Text edits are marked on `input`. Before Enter submits, the recorder emits the current `fill` followed by `press`, without waiting for blur. The following unchanged `change` is deduplicated. Password values remain omitted; an Enter used during IME composition is not a submission. Old recordings with adjacent `press → fill` remain normalized by the generator. For an adjacent same-target, same-frame `click → fill → Enter` chain, Enter reuses the input focus established by the click and fill instead of resolving a stale placeholder again.
+
 ## Manual Assertions
 
 Right-click recording supports:

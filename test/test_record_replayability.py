@@ -14,6 +14,7 @@
 
 from record import _replayability
 from trace_v1 import to_v2
+from generate_trace import generate_trace
 
 
 def _flat(status="ready"):
@@ -26,6 +27,34 @@ def _flat(status="ready"):
         "entry": "step-0001",
         "steps": {"step-0001": {"status": "ready", "next": None}},
     }
+
+
+# ── G3 项 1：云侧「generate 自检 ready」纳入 pytest ─────────────────
+# record 完成摘要走的 `_replayability`，应和 generate_trace 产出对齐：
+# 非位置步骤（断言）录出来的轨迹 status=ready、过 validate_trace → 判定可回放；
+# 位置步骤缺模板 → status=incomplete → 判定不可回放并给可操作原因。
+
+
+def test_generate_trace_assert_recording_is_self_checked_ready():
+    trace = generate_trace(
+        [{"id": "a", "t": 1, "type": "assert",
+          "sel": 'getByText("已应用")', "assertion": "text", "expected": "已应用"}],
+        [], name="x", start_url="https://a/",
+    )
+    ok, reason = _replayability(trace)
+    assert ok is True
+    assert reason == ""
+
+
+def test_generate_trace_positional_without_template_is_incomplete():
+    trace = generate_trace(
+        [{"id": "c", "t": 1, "type": "click", "kind": "css",
+          "sel": 'locator("#x")', "css": "#x"}],
+        [], name="x", start_url="https://a/",
+    )
+    ok, reason = _replayability(trace)
+    assert ok is False
+    assert "缺模板" in reason
 
 
 def test_replayability_recognizes_ready_v2():
