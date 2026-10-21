@@ -54,7 +54,14 @@ def validate_trace(trace: dict) -> list[str]:
     try:
         meta = ts.check_schema(trace)
     except ts.TraceFormatError as error:
-        raise TraceReplayError(str(error)) from error
+        message = str(error)
+        # 旧版 v1 轨迹没有 $meta，check_schema 会把它当成「不是 v2」。这类
+        # 轨迹不是「坏了」，是另一种格式 —— 报错要指明去向，否则会让人白查
+        # 生成器。只扩文案，不动校验逻辑。
+        if "缺少 $meta" in message or "不是 v2" in message:
+            message += ("\n提示：这是旧版非 v2 轨迹（无 $meta）。用 record.py 重新录制，"
+                        "或用 /v2 导出器转出后再回放。")
+        raise TraceReplayError(message) from error
     ids = ts.node_ids(trace)
     entry = meta.get("entry")
     if not ids:
@@ -947,3 +954,48 @@ def evaluate_trace(golden: dict, execution: dict) -> dict:
             round(sum(visual_scores) / len(visual_scores), 4) if visual_scores else None
         ),
     }
+
+
+def _check_cli(argv: list[str] | None = None) -> int:
+    """只读自检：一条命令确认 trace 能不能回放，不改任何文件。
+
+    通过回放器真实的门槛（validate_trace：格式/无环/entry/支持动作/maa 契约），
+    再叠加 $meta.status == 'ready'。不实际回放 —— 那需要浏览器与登录态。
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="replay_trace --check",
+        description="确认一条 golden trace 是否可回放（只读，不执行）",
+    )
+    parser.add_argument(
+        "--check", action="store_true",
+        help="只读检查 trace 是否可回放（不执行）。这是默认行为，带上它只是让"
+             "命令自述更明确（与 SKILL/设计文档里的调用一致）。",
+    )
+    parser.add_argument("trace", help="trace.json 路径")
+    args = parser.parse_args(argv)
+
+    try:
+        trace = load_trace(args.trace)
+        order = validate_trace(trace)
+        status = ts.meta(trace).get("status")
+        if status != "ready":
+            n_missing = sum(
+                1 for node_id in order
+                if ts.provenance(trace[node_id]).get("status") == "missing_template"
+            )
+            print(
+                f"NOT READY  {args.trace}: {n_missing} 个定位步骤缺模板/选择器"
+                "（$meta.status != ready）。先用 record.py 补录或补齐模板再回放。"
+            )
+            return 1
+        print(f"READY  {args.trace}: 可回放（{len(order)} 节点，过格式 + maa 契约）")
+        return 0
+    except TraceReplayError as error:
+        print(f"NOT REPLAYABLE  {args.trace}: {error}")
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(_check_cli())

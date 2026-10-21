@@ -259,11 +259,51 @@ def visual_click(
     try:
         locator.wait_for(state="visible", timeout=dom_timeout)
     except Exception as dom_error:
+        # 录制器会把当时的绝对位置一并落盘。选择器后来若匹配到多个可见元素，
+        # 先用这个位置在 DOM 候选里消歧；这比直接转视觉模板更稳，因为页面轻微的
+        # 字体/配色变化会降低模板分数，却不会改变我们要点的是哪一行、哪一列。
+        nearest = _nearest_dom_candidate(locator, ui)
+        if nearest is not None:
+            # 子 SVG path 经常被父 svg 命中层拦截。这里已经用录制坐标选定了唯一
+            # 候选，因此可安全跳过 Playwright 的 pointer-events 再校验。
+            nearest.dblclick(force=True) if click_count == 2 else nearest.click(force=True)
+            return "dom-position"
         return _visual_fallback(page, template_root, ui, dom_error, click_count)
 
     # wait_for 成功后 click 可能已经发出请求才因导航等原因报错，不能再视觉补点。
     locator.dblclick() if click_count == 2 else locator.click()
     return "dom"
+
+
+def _nearest_dom_candidate(locator: Any, ui: dict) -> Any | None:
+    rect = ui.get("pageRect") or {}
+    if rect.get("x") is None or rect.get("y") is None:
+        return None
+    try:
+        count = locator.count()
+    except Exception:
+        return None
+    if count < 2:
+        return None
+
+    expected_x = float(rect["x"]) + float(rect.get("width", 0)) / 2
+    expected_y = float(rect["y"]) + float(rect.get("height", 0)) / 2
+    candidates = []
+    for index in range(count):
+        candidate = locator.nth(index)
+        try:
+            box = candidate.bounding_box(timeout=300)
+        except Exception:
+            continue
+        if not box:
+            continue
+        center_x = float(box["x"]) + float(box["width"]) / 2
+        center_y = float(box["y"]) + float(box["height"]) / 2
+        distance = (center_x - expected_x) ** 2 + (center_y - expected_y) ** 2
+        candidates.append((distance, candidate))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])[1]
 
 
 def _visual_fallback(page: Any, template_root: str | Path,

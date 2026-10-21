@@ -83,6 +83,17 @@ an assertion that appears to read the wrong object.
 pytest recordings/<flow>/test_<flow>.py
 ```
 
+When the user wants to watch the replay, keep synchronization event-driven and slow only the
+browser actions:
+
+```bash
+pytest recordings/<flow>/test_<flow>.py --headed --slowmo=800 --reruns=0
+```
+
+`--slowmo` is presentation pacing, not synchronization. Do not insert fixed sleeps between steps.
+If replay waits for a locator or request and then races through queued actions, fix the failed
+precondition or overly broad wait instead of increasing the delay.
+
 Review the draft before accepting it. Remove accidental actions, resolve any `AMBIGUOUS` marker,
 and add cleanup for writes.
 
@@ -105,6 +116,22 @@ execution = replay_trace(
 report = evaluate_trace(golden, execution)
 assert report["taskSuccess"]
 ```
+
+> **回放就绪门槛**：一条 trace 可回放 ⟺ `validate_trace` 通过 **且** `$meta.status == "ready"`。
+> `validate_trace` 跑的是回放器真实的门槛（格式 / 无环 / entry / 支持的动作 / maa-fw 节点契约）；
+> `status` 由生成器按「是否缺模板」算好。录制完成后先自检再回放，避免在
+> 一条 not-ready 的轨迹上白跑一遍：
+>
+> ```bash
+> python scripts/replay_trace.py --check recordings/<flow>/trace.json
+> # READY    → 可回放
+> # NOT READY→ 存在缺模板/缺选择器的定位步骤，先补录或补模板
+> # NOT REPLAYABLE → 格式/契约问题（旧版 v1 trace 会在这里被指出方向）
+> ```
+>
+> `record.py` 每次录制结束也会打印「回放就绪」一行，用途同上。
+> 旧版无 `$meta` 的 v1 轨迹不是「坏了」，是另一种格式：按提示重新录制或用
+> `/v2` 导出器转出。
 
 Read [trace-replay.md](references/trace-replay.md) before changing the trace schema, runner,
 network expectations, or evaluation metrics. Read
@@ -153,6 +180,34 @@ For write operations, confirm cleanup executes after success, assertion failure,
 | click intercepted | visible overlay | close visible overlays; do not delete DOM nodes |
 | switch ends in wrong state | blind click or wrong state carrier | inspect recorded `via` and poll the target state |
 | trace passes with suspicious behavior | weak verifier or missing path checks | inspect execution trace, assertions, extras, retries |
+
+## Lessons From Repeated Replay
+
+These failures have occurred in real recordings and must be handled as causality problems, not
+papered over until one run turns green:
+
+1. **A selector matching several visible elements is unresolved.** First add a stable semantic
+   ancestor. If the page exposes no better semantics, compare the visible DOM candidates with the
+   recorded element rectangle and choose the nearest candidate. Never silently use `.first`.
+2. **A tiny repeated icon needs more visual context.** Capture the element plus progressively larger
+   context crops and keep the smallest crop that is unique across the complete pre-action viewport.
+   Fixed 12 CSS px context is only the first candidate, not a guarantee of uniqueness. See
+   [visual-template-matching.md](references/visual-template-matching.md).
+3. **Do not target an SVG implementation leaf.** A recorded `svg > path` may be visible while its
+   parent `svg` receives pointer events. Prefer the clickable `button`, `span`, or `svg`; only force
+   a click after DOM identity has already been proven by semantic scope or recorded geometry.
+4. **Replay toggles must express the target state.** Tree expanders, switches, tabs, and selections
+   cannot be replayed as blind clicks. Inspect their current state, act only when necessary, and
+   verify the resulting state before continuing.
+5. **A successful write can make the next replay a no-op.** If the saved value already equals the
+   target value, the UI may close without sending the recorded POST. Do not weaken the network
+   assertion. Give the test a reset/cleanup step, or model the write as "already in target state OR
+   the expected request succeeds" when that is the actual product contract.
+6. **Recorded and live request types can differ.** Form inputs are strings, while serializers may
+   send numbers. Compare against the observed wire type and regenerate the assertion when the
+   product contract changes; do not coerce every numeric-looking string globally.
+7. **A headed demo is not proof.** A demo may omit repeated-write assertions so a human can watch
+   the UI, but it must be labeled as a demo and must not be reported as a successful verified replay.
 
 More environment and browser failures are covered by
 [troubleshooting.md](references/troubleshooting.md).

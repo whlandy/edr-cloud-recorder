@@ -10,6 +10,7 @@ JS 版生成器靠 @playwright/test 的 expect 提供了三样东西，Python �
 是为了让生成的用例只有一个额外依赖，拷到别的项目里也带得走。
 """
 
+import re
 import time
 from datetime import datetime, timedelta
 from typing import Any
@@ -112,6 +113,7 @@ def poll_until(fn, expected, timeout: float = 5.0, interval: float = 0.1):
 # 所以这类断言的期望值要在**回放那一刻**算出来，而不是从录制里搬。
 
 LOCALTIME_KIND = "localtime"
+TIMEWINDOW_KIND = "timewindow"
 DEFAULT_TIME_FORMAT = "%H:%M"
 # 跨分钟边界的容差：页面在 23:24:59 渲染、断言在 23:25:00 求值，
 # 两边差一分钟却都没错。不给容差的话这种假红会随机出现，
@@ -184,6 +186,102 @@ def expect_local_time(locator, fmt: str = DEFAULT_TIME_FORMAT, *,
                 f"时间断言失败: actual={actual!r} "
                 f"期望{'含有' if match == 'contains' else '等于'}此刻时间 "
                 f"{local_time_candidates(fmt, slack_seconds)}（fmt={fmt!r}）"
+            )
+        time.sleep(0.1)
+
+
+_TIME_WINDOW_PATTERNS = {
+    "%H:%M": (
+        re.compile(r"(?<!\d)(\d{1,2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?)(?!\d)"),
+        ("%H:%M:%S.%f", "%H:%M:%S", "%H:%M"),
+        timedelta(minutes=1),
+    ),
+    "%Y-%m-%d %H:%M": (
+        re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}"
+                   r"(?::\d{2}(?:\.\d{1,6})?)?)(?!\d)"),
+        ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"),
+        timedelta(minutes=1),
+    ),
+    "%Y-%m-%d": (
+        re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)"),
+        ("%Y-%m-%d",),
+        timedelta(days=1),
+    ),
+}
+
+
+def _parse_time_window_value(value: str, formats: tuple[str, ...]) -> datetime | None:
+    value = value.replace("T", " ")
+    for candidate_format in formats:
+        try:
+            return datetime.strptime(value, candidate_format)
+        except ValueError:
+            continue
+    return None
+
+
+def matches_time_window(actual, expected: str, fmt: str = DEFAULT_TIME_FORMAT, *,
+                        fluctuation_minutes: float = 0) -> bool:
+    """先按 expected 做前缀匹配，再应用可选的向后分钟波动。
+
+    expected="10:20" 直接接受任何以 "10:20" 开头的显示值。波动为 1 时，
+    再接受下一分钟 10:21:xx，而 10:22:00 不接受。
+    """
+    if actual is None or fmt not in _TIME_WINDOW_PATTERNS:
+        return False
+    text = " ".join(str(actual).split())
+    expected_text = str(expected).strip()
+    if not expected_text:
+        return False
+    if text.startswith(expected_text):
+        return True
+    pattern, actual_formats, base_width = _TIME_WINDOW_PATTERNS[fmt]
+    expected_value = _parse_time_window_value(expected_text, (fmt,))
+    if expected_value is None:
+        return False
+    try:
+        extra = timedelta(minutes=max(0.0, float(fluctuation_minutes)))
+    except (TypeError, ValueError):
+        return False
+    if extra <= timedelta(0):
+        return False
+    end = expected_value + base_width + extra
+    # 波动比较也只接受从字符串开头读出的时间；否则会把
+    # "旧记录 10:21" 这种带说明前缀的内容误当成 expected 的前缀延伸。
+    for match in pattern.finditer(text):
+        if match.start() != 0:
+            continue
+        candidate = _parse_time_window_value(match.group(1), actual_formats)
+        if candidate is None:
+            continue
+        # 只有纯时分格式可能跨午夜；把 00:xx 视为期望日的下一天。
+        if fmt == "%H:%M" and end.date() > expected_value.date() and candidate < expected_value:
+            candidate += timedelta(days=1)
+        if expected_value <= candidate < end:
+            return True
+    return False
+
+
+def expect_time_window(locator, expected: str, fmt: str = DEFAULT_TIME_FORMAT, *,
+                       read: str = "text", fluctuation_minutes: float = 0,
+                       timeout: float = 5.0) -> str:
+    """轮询元素，直到其时间落入固定的 expected 时间窗口。"""
+    deadline = time.monotonic() + timeout
+    actual = None
+    while True:
+        try:
+            actual = locator.input_value() if read == "value" else locator.inner_text()
+        except Exception as error:
+            actual = f"{type(error).__name__}: {error}"
+        else:
+            if matches_time_window(
+                actual, expected, fmt, fluctuation_minutes=fluctuation_minutes
+            ):
+                return actual
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"时间范围断言失败: actual={actual!r}, expected={expected!r}, "
+                f"fmt={fmt!r}, fluctuation_minutes={fluctuation_minutes!r}"
             )
         time.sleep(0.1)
 

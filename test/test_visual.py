@@ -116,6 +116,50 @@ def test_visual_click_keeps_fast_dom_path_cold(tmp_path):
     ) == "dom"
 
 
+def test_visual_click_disambiguates_dom_candidates_by_recorded_position(tmp_path):
+    clicked = []
+
+    class Candidate:
+        def __init__(self, index, box):
+            self.index = index
+            self.box = box
+
+        def bounding_box(self, *, timeout):
+            assert timeout == 300
+            return self.box
+
+        def click(self, *, force):
+            assert force is True
+            clicked.append(self.index)
+
+    candidates = [
+        Candidate(0, {"x": 100, "y": 100, "width": 20, "height": 20}),
+        Candidate(1, {"x": 790, "y": 240, "width": 120, "height": 24}),
+    ]
+
+    class Locator:
+        def wait_for(self, *, state, timeout):
+            raise RuntimeError("strict mode violation")
+
+        def count(self):
+            return len(candidates)
+
+        def nth(self, index):
+            return candidates[index]
+
+    class Page:
+        def screenshot(self):
+            raise AssertionError("DOM 位置消歧成功时不应截图")
+
+    result = visual_click(
+        Page(), Locator(), template_root=tmp_path,
+        ui={"pageRect": {"x": 790, "y": 240, "width": 120, "height": 24}},
+    )
+
+    assert result == "dom-position"
+    assert clicked == [1]
+
+
 def test_visual_click_uses_recorded_relative_point(tmp_path):
     template = _pattern(20, 16)
     asset_dir = tmp_path / "flow.assets"

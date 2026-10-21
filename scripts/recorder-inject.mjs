@@ -744,6 +744,9 @@ export const RECORDER = () => {
     nowtext:   { label: '显示的是当前时间', kind: 'time',
                  of: (e) => timeSourceOf(e) === 'value'
                    ? String(e.value ?? '') : txt(e) },
+    timewindow:{ label: '时间在范围内', kind: 'timewindow',
+                 of: (e) => timeSourceOf(e) === 'value'
+                   ? String(e.value ?? '') : txt(e) },
   };
 
   // 时间显示在哪：输入框在 value 上，inner_text 恒为空 —— 读错了断言永远不通过。
@@ -757,6 +760,15 @@ export const RECORDER = () => {
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return '%Y-%m-%d';
     if (/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s)) return '%Y-%m-%d %H:%M';
     return TIME_FORMAT_DEFAULT;
+  };
+
+  const valueByTimeFormat = (sample, fmt) => {
+    const s = String(sample || '').trim();
+    if (fmt === '%H:%M') return s.match(/(?:^|\D)(\d{2}:\d{2})(?:\D|$)/)?.[1] || s;
+    if (fmt === '%Y-%m-%d %H:%M')
+      return s.match(/(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})/)?.[1]?.replace('T', ' ') || s;
+    if (fmt === '%Y-%m-%d') return s.match(/(\d{4}-\d{2}-\d{2})/)?.[1] || s;
+    return s;
   };
 
   // 只做值的比对，不解析时间、不换算时区。默认只比到分钟：
@@ -805,8 +817,10 @@ export const RECORDER = () => {
                box-sizing:border-box; padding:10px; width:340px; }
         .row { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
         label { flex:0 0 68px; color:#555; }
-        select, input[type=text] { flex:1; padding:3px 5px; border:1px solid #ccc;
-                                   border-radius:3px; font:inherit; min-width:0; }
+        select, input[type=text], input[type=number] {
+          flex:1; padding:3px 5px; border:1px solid #ccc;
+          border-radius:3px; font:inherit; min-width:0;
+        }
         .hint { color:#a00; font-size:12px; min-height:16px; margin-bottom:4px; }
         .acts { display:flex; justify-content:flex-end; gap:8px; }
         button { font:inherit; padding:3px 12px; border-radius:4px; border:1px solid #bbb;
@@ -823,6 +837,8 @@ export const RECORDER = () => {
           <input type="text" id="attr" placeholder="如 href、data-state"></div>
         <div class="row" id="fmtRow" style="display:none"><label>时间格式</label>
           <input type="text" id="fmt" value="%H:%M" placeholder="%H:%M"></div>
+        <div class="row" id="slackRow" style="display:none"><label>波动(分钟)</label>
+          <input type="number" id="slack" value="0" min="0" step="1"></div>
         <div class="row" id="fmtPreview" style="display:none"><label></label>
           <span id="fmtNow" style="color:#555;font-size:12px"></span></div>
         <div class="row"><label id="esLabel">Expected</label>
@@ -866,9 +882,11 @@ export const RECORDER = () => {
     const $ = (id) => sh.getElementById(id);
     const sync = () => {
       const a = ASSERTIONS[$('t').value];
+      const isTime = a.kind === 'time' || a.kind === 'timewindow';
       $('attrRow').style.display = a.kind === 'attr' ? 'flex' : 'none';
-      $('fmtRow').style.display = a.kind === 'time' ? 'flex' : 'none';
-      $('fmtPreview').style.display = a.kind === 'time' ? 'flex' : 'none';
+      $('fmtRow').style.display = isTime ? 'flex' : 'none';
+      $('slackRow').style.display = a.kind === 'timewindow' ? 'flex' : 'none';
+      $('fmtPreview').style.display = isTime ? 'flex' : 'none';
       $('eb').style.display = a.kind === 'bool' ? 'block' : 'none';
       // time 类型没有要人填的期望值 —— 它由回放时的时钟决定。
       // 仍然把录制当时看到的文本显示出来（只读），好让人确认选的是不是那个元素。
@@ -877,9 +895,11 @@ export const RECORDER = () => {
       // 时间类型下这个框**不是**期望值 —— 期望值由回放时的时钟算出。
       // 还叫 Expected 会直接误导人：实测有人据此以为断言比的是这个字符串。
       $('esLabel').textContent = a.kind === 'time' ? '录制时看到' : 'Expected';
-      if (a.kind === 'time') $('fmt').value = guessTimeFormat(a.of(el));
+      if (isTime) $('fmt').value = guessTimeFormat(a.of(el));
       if (a.kind === 'bool') $('eb').value = String(a.of(el));
       else $('es').value = String(a.of(el) ?? '');
+      if (a.kind === 'timewindow')
+        $('es').value = valueByTimeFormat(a.of(el), $('fmt').value);
       validate();
       fit();                     // 控件行数变了，高度跟着变，得重新收边
     };
@@ -908,6 +928,17 @@ export const RECORDER = () => {
         } else if (!seen.trim()) {
           bad = '这个元素当前没有文本。确认它回放时会显示时间，否则断言必然失败';
         }
+      } else if (a.kind === 'timewindow') {
+        const fmt = $('fmt').value.trim() || TIME_FORMAT_DEFAULT;
+        const slack = Number($('slack').value);
+        const expected = $('es').value.trim();
+        const supported = ['%H:%M', '%Y-%m-%d %H:%M', '%Y-%m-%d'];
+        $('fmtNow').textContent = expected
+          ? `从 ${expected} 所在的${fmt.includes('%M') ? '一分钟' : '时间粒度'}开始，额外 +${slack || 0} 分钟`
+          : '请输入范围起点';
+        if (!expected) bad = '请填写时间范围起点';
+        else if (!supported.includes(fmt)) bad = '时间范围仅支持 %H:%M、%Y-%m-%d %H:%M 或 %Y-%m-%d';
+        else if (!Number.isFinite(slack) || slack < 0) bad = '波动分钟必须是大于或等于 0 的数字';
       } else if (a.kind === 'attr' && !$('attr').value.trim()) bad = '请填写属性名';
       // expected 不能默默为空：空字符串是合法断言，但必须是明确的选择
       else if (a.kind !== 'bool' && !$('es').value && !$('allowEmpty').checked)
@@ -930,6 +961,14 @@ export const RECORDER = () => {
           kind: 'localtime',
           format: $('fmt').value.trim() || TIME_FORMAT_DEFAULT,
           match: 'contains',
+        });
+      } else if (a.kind === 'timewindow') {
+        pushAssert(el, timeSourceOf(el) === 'value' ? 'value' : 'text',
+                   expected, undefined, {
+          kind: 'timewindow',
+          format: $('fmt').value.trim() || TIME_FORMAT_DEFAULT,
+          match: 'prefix',
+          fluctuationMinutes: Number($('slack').value) || 0,
         });
       } else {
         pushAssert(el, type, expected, a.kind === 'attr' ? $('attr').value.trim() : undefined);
