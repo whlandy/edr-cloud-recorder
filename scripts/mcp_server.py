@@ -28,6 +28,10 @@ from fastmcp import FastMCP
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
+# replay_trace 还依赖 assets/ 下的 rec_assert / rec_visual / rec_session。
+_ASSETS = _SCRIPTS.parent / "assets"
+if str(_ASSETS) not in sys.path:
+    sys.path.insert(0, str(_ASSETS))
 
 import trace_schema as _ts  # noqa: E402
 
@@ -155,6 +159,58 @@ def contract_check(trace_path: str) -> str:
         "path": str(path),
         "problems": problems,
         "valid_for_maa": len(problems) == 0,
+    }, ensure_ascii=False)
+
+
+@mcp.tool(
+    name="replay_check",
+    description=(
+        "Read-only replay readiness gate for a web-record success trace (v2) — the same "
+        "criteria as `replay_trace --check` (format / acyclic / entry / supported actions / "
+        "maa contract + $meta status == ready). Returns verdict READY, NOT READY (incomplete; "
+        "missing templates/selectors) or NOT REPLAYABLE (non-v2 / contract damaged) with an "
+        "actionable reason. Does not replay — that needs a browser and login."
+    ),
+)
+def replay_check(trace_path: str) -> str:
+    from replay_trace import TraceReplayError, validate_trace as _validate_trace
+
+    path = Path(trace_path)
+    if not path.is_file():
+        return json.dumps({"ok": False, "error": f"not a file: {trace_path}"},
+                          ensure_ascii=False)
+    try:
+        trace = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({
+            "ok": True, "path": str(path), "replayable": False,
+            "verdict": "NOT REPLAYABLE",
+            "reason": f"trace.json 不是合法 JSON 或读不出：{exc}", "node_count": 0,
+        }, ensure_ascii=False)
+    try:
+        order = _validate_trace(trace)
+    except TraceReplayError as exc:
+        # validate_trace 对旧 v1 已带「重录 / 转 v2」的可操作提示，原样透传。
+        return json.dumps({
+            "ok": True, "path": str(path), "replayable": False,
+            "verdict": "NOT REPLAYABLE", "reason": str(exc), "node_count": 0,
+        }, ensure_ascii=False)
+    status = _ts.meta(trace).get("status")
+    if status != "ready":
+        n_missing = sum(
+            1 for node_id in order
+            if _ts.provenance(trace[node_id]).get("status") == "missing_template"
+        )
+        return json.dumps({
+            "ok": True, "path": str(path), "replayable": False,
+            "verdict": "NOT READY",
+            "reason": (f"$meta.status={status!r}：{n_missing} 个定位步骤缺模板/选择器。"
+                       "先用 record.py 补录或补齐模板再回放。"),
+            "node_count": len(order),
+        }, ensure_ascii=False)
+    return json.dumps({
+        "ok": True, "path": str(path), "replayable": True,
+        "verdict": "READY", "reason": "", "node_count": len(order),
     }, ensure_ascii=False)
 
 

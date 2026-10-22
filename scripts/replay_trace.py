@@ -441,9 +441,15 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
         return
     if dynamic.get("kind") == TIMETRANGE_KIND:
         # 前缀 + 时长的时间区间：期望值本身是「一段时间」，不是字面文本。
+        # 时长非法（0 / 非整数 / 越界）不能静默当缺省 —— 快速失败。
+        duration = dynamic.get("durationSeconds")
+        if (duration is not None
+                and (isinstance(duration, bool) or not isinstance(duration, int)
+                     or not 1 <= duration <= 86400)):
+            raise TraceReplayError(
+                f"时间区间断言的时长非法: {duration!r}（需 1–86400 的整数秒，或省略）")
         expect_time_range(
-            locator, expected,
-            dynamic.get("durationSeconds"),
+            locator, expected, duration,
             read="value" if assertion == "value" else "text",
             timeout=timeout_ms / 1000,
         )
@@ -462,20 +468,26 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
                 f"count 断言要求整数期望值与算子 {'/'.join(COUNT_OPS)}: "
                 f"expected={expected!r} op={op!r}")
         # 元素个数：读 DOM 数量，与「读一个元素的某个方面」不是一条路径。
-        # locator.count() 不抛「找不到」—— 找不到就是 0，
-        # 「列表为空」是合法观测值，不该被当成定位错误。
+        # locator.count() 正常时找不到就是 0（合法观测值）；**抛错**则不是
+        # 「0 个」——读取失败不进比较，预算内重试，超时带最后异常失败。
         deadline = time.monotonic() + timeout_ms / 1000
-        actual = -1
+        last = None
+        last_error = None
         while True:
             try:
-                actual = locator.count()
-            except Exception:
-                actual = -1
-            if matches_assert(actual, expected, op):
+                last = locator.count()
+                last_error = None
+            except Exception as error:
+                last_error = error
+            if last_error is None and matches_assert(last, expected, op):
                 return
             if time.monotonic() >= deadline:
+                if last_error is not None:
+                    raise AssertionError(
+                        f"断言失败: count 读取持续失败 op={op!r} expected={expected!r}: "
+                        f"{type(last_error).__name__}: {last_error}")
                 raise AssertionError(
-                    f"断言失败: count actual={actual!r} expected={expected!r} op={op!r}"
+                    f"断言失败: count actual={last!r} expected={expected!r} op={op!r}"
                 )
             time.sleep(0.1)
     readers = {
@@ -487,21 +499,30 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
     }
     if assertion not in readers:
         raise TraceReplayError(f"不支持的断言: {assertion!r}")
+    # text 保留空白归一化；value/attribute/visible/checked 走精确比较
+    # （旧回放语义：属性缺失 None 与空串 "" 必须可区分）。
+    strict = assertion != "text"
 
     deadline = time.monotonic() + timeout_ms / 1000
-    actual = None
+    last_actual = None
+    last_error = None
     while True:
         try:
-            actual = readers[assertion]()
-            # matches_assert 的 equals 与旧行为一致（text 空白归一化）；
-            # 其余算子（包含/正则/数值…）是扩展，缺省 op 语义不变。
-            if matches_assert(actual, expected, op):
-                return
+            last_actual = readers[assertion]()
+            last_error = None
         except Exception as error:
-            actual = f"{type(error).__name__}: {error}"
+            # 读取失败不进比较：错误不是观测值。拿异常字符串参与比较会让
+            # not_equals / is_not_blank 用错误消息「通过」（假通过）。
+            last_error = error
+        if last_error is None and matches_assert(last_actual, expected, op, strict=strict):
+            return
         if time.monotonic() >= deadline:
+            if last_error is not None:
+                raise AssertionError(
+                    f"断言失败: {assertion} 读取持续失败 op={op!r} expected={expected!r}: "
+                    f"{type(last_error).__name__}: {last_error}")
             raise AssertionError(
-                f"断言失败: {assertion} actual={actual!r} expected={expected!r} op={op!r}"
+                f"断言失败: {assertion} actual={last_actual!r} expected={expected!r} op={op!r}"
             )
         time.sleep(0.1)
 

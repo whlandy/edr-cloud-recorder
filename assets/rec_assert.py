@@ -175,15 +175,25 @@ def expect_local_time(locator, fmt: str = DEFAULT_TIME_FORMAT, *,
     """
     deadline = time.monotonic() + timeout
     actual = None
+    last_error = None
     while True:
         try:
             actual = locator.input_value() if read == "value" else locator.inner_text()
+            last_error = None
         except Exception as error:
-            actual = f"{type(error).__name__}: {error}"
-        else:
-            if matches_local_time(actual, fmt, match=match, slack_seconds=slack_seconds):
-                return actual
+            # 读取异常不进比较（错误不是观测值），预算内重试
+            last_error = error
+        if (last_error is None
+                and matches_local_time(actual, fmt, match=match,
+                                       slack_seconds=slack_seconds)):
+            return actual
         if time.monotonic() >= deadline:
+            if last_error is not None:
+                raise AssertionError(
+                    f"时间断言失败: 读取持续失败 期望{'含有' if match == 'contains' else '等于'}"
+                    f"此刻时间 {local_time_candidates(fmt, slack_seconds)}（fmt={fmt!r}）: "
+                    f"{type(last_error).__name__}: {last_error}"
+                )
             raise AssertionError(
                 f"时间断言失败: actual={actual!r} "
                 f"期望{'含有' if match == 'contains' else '等于'}此刻时间 "
@@ -270,17 +280,25 @@ def expect_time_window(locator, expected: str, fmt: str = DEFAULT_TIME_FORMAT, *
     """轮询元素，直到其时间落入固定的 expected 时间窗口。"""
     deadline = time.monotonic() + timeout
     actual = None
+    last_error = None
     while True:
         try:
             actual = locator.input_value() if read == "value" else locator.inner_text()
+            last_error = None
         except Exception as error:
-            actual = f"{type(error).__name__}: {error}"
-        else:
-            if matches_time_window(
-                actual, expected, fmt, fluctuation_minutes=fluctuation_minutes
-            ):
-                return actual
+            # 读取异常不进比较（错误不是观测值），预算内重试
+            last_error = error
+        if (last_error is None
+                and matches_time_window(
+                    actual, expected, fmt, fluctuation_minutes=fluctuation_minutes
+                )):
+            return actual
         if time.monotonic() >= deadline:
+            if last_error is not None:
+                raise AssertionError(
+                    f"时间范围断言失败: 读取持续失败 expected={expected!r}, fmt={fmt!r}: "
+                    f"{type(last_error).__name__}: {last_error}"
+                )
             raise AssertionError(
                 f"时间范围断言失败: actual={actual!r}, expected={expected!r}, "
                 f"fmt={fmt!r}, fluctuation_minutes={fluctuation_minutes!r}"
@@ -330,15 +348,24 @@ def _norm(value: Any) -> str:
     return " ".join(str(value).split()) if value is not None else ""
 
 
-def matches_assert(actual: Any, expected: Any, op: str = "equals") -> bool:
+def matches_assert(actual: Any, expected: Any, op: str = "equals",
+                   *, strict: bool = False) -> bool:
     """纯函数比较：actual 在算子 op 下是否满足 expected。只返回布尔，不抛异常。
 
     is_blank / is_not_blank 不用 expected；其余算子里 expected 为 None
     一律按空串处理（equals 空串是合法命题，但菜单侧要求显式勾选「允许空值」）。
     未知算子抛 ValueError —— 宁可生成时报错，也不让回放静默地不比。
+
+    strict=True 用于输入值 / 属性路径：**精确比较** —— 旧回放语义。
+    text 才做空白归一化；value/attribute 不归一，且保留「属性不存在」
+    （get_attribute 返回 None）与「属性为空」（""）的区别。显式扩展算子
+    （包含/前后缀/正则）在 strict 路径按原始字符串比，None 按「不含」处理。
     """
     if op in ("is_blank", "is_not_blank"):
-        blank = _norm(actual) == ""
+        if strict:
+            blank = actual is None or str(actual).strip() == ""
+        else:
+            blank = _norm(actual) == ""
         return blank if op == "is_blank" else not blank
     if op in ("greater_than", "less_than", "at_least", "at_most"):
         try:
@@ -352,6 +379,28 @@ def matches_assert(actual: Any, expected: Any, op: str = "equals") -> bool:
         if op == "at_least":
             return a >= e
         return a <= e    # at_most
+    if strict:
+        # 精确路径：无空白归一化、无 None→"" 换算。
+        if op == "equals":
+            return actual == expected
+        if op == "not_equals":
+            return actual != expected
+        text = None if actual is None else str(actual)
+        if op == "contains":
+            return text is not None and str(expected) in text
+        if op == "not_contains":
+            return text is None or str(expected) not in text
+        if op == "starts_with":
+            return text is not None and text.startswith(str(expected))
+        if op == "ends_with":
+            return text is not None and text.endswith(str(expected))
+        if op == "matches":
+            try:
+                return (text is not None
+                        and re.fullmatch(str(expected), text) is not None)
+            except re.error:
+                return False
+        raise ValueError(f"不支持的比较算子: {op!r}")
     a, e = _norm(actual), _norm(expected)
     if op == "equals":
         return a == e
@@ -375,21 +424,30 @@ def matches_assert(actual: Any, expected: Any, op: str = "equals") -> bool:
 
 def expect_value(locator, expected, op: str = "equals",
                  timeout: float = 5.0) -> Any:
-    """轮询输入框的 value 直到满足算子。对应 to_have_value，外加 contains 等。
+    """轮询输入框的 value 直到满足算子（精确语义，见 matches_assert strict）。
 
-    Playwright 的 to_have_value 只认等于/正则，「包含」在商用系统里是高频
-    需求（输入框残留的前缀、拼接的提示），这里补齐。
+    轮询中途元素 detached 会让 input_value() 抛错 —— 错误是诊断信息，
+    **不是观测值**：拿异常字符串参与比较会让 not_equals / is_not_blank
+    用错误消息「通过」（假通过）。所以只在成功读取后才比较，读取失败
+    在预算内重试，超时带最后异常明确失败。
     """
     deadline = time.monotonic() + timeout
     last = None
+    last_error = None
     while True:
         try:
             last = locator.input_value()
+            last_error = None
         except Exception as error:
-            last = f"{type(error).__name__}: {error}"
-        if matches_assert(last, expected, op):
+            last_error = error
+        if last_error is None and matches_assert(last, expected, op, strict=True):
             return last
         if time.monotonic() >= deadline:
+            if last_error is not None:
+                raise AssertionError(
+                    f"输入值断言失败: 读取持续失败 op={op!r} expected={expected!r}: "
+                    f"{type(last_error).__name__}: {last_error}"
+                ) from last_error
             raise AssertionError(
                 f"输入值断言失败: op={op!r} expected={expected!r} actual={last!r}"
             )
@@ -398,22 +456,29 @@ def expect_value(locator, expected, op: str = "equals",
 
 def expect_attribute(locator, name: str, expected, op: str = "equals",
                      timeout: float = 5.0) -> Any:
-    """轮询元素的某个属性直到满足算子。
+    """轮询元素的某个属性直到满足算子（精确语义）。
 
-    属性不存在时 get_attribute 返回 None —— equals 下按空串比，
-    所以「断言 href 等于空」和「断言 href 不存在」在这里无法区分，
-    需要区分就用 is_blank / not_equals。
+    属性不存在时 get_attribute 返回 None —— 精确比较下 None != ""，
+    「断言 href 等于空」和「断言 href 不存在」因此可区分。
+    读取抛错的处理同 expect_value：重试，超时带最后异常失败。
     """
     deadline = time.monotonic() + timeout
     last = None
+    last_error = None
     while True:
         try:
             last = locator.get_attribute(name)
+            last_error = None
         except Exception as error:
-            last = f"{type(error).__name__}: {error}"
-        if matches_assert(last, expected, op):
+            last_error = error
+        if last_error is None and matches_assert(last, expected, op, strict=True):
             return last
         if time.monotonic() >= deadline:
+            if last_error is not None:
+                raise AssertionError(
+                    f"属性断言失败: {name} 读取持续失败 op={op!r} expected={expected!r}: "
+                    f"{type(last_error).__name__}: {last_error}"
+                ) from last_error
             raise AssertionError(
                 f"属性断言失败: {name} op={op!r} expected={expected!r} actual={last!r}"
             )
@@ -427,21 +492,29 @@ def expect_count(locator, expected: int, op: str = "equals",
     at_least / at_most 是自加：「至少 1 条记录」「不超过 N 个候选」是商用
     系统里常见的数量断言。at_most 在 0 时也满足 —— 断「不超过 N」前请确认
     列表已经加载完（或再配一条内容断言），否则页面还没渲染就「通过」了。
+
+    count() 抛错（元素集 detached）不是「0 个」：读取失败只重试，
+    超时带最后异常失败 —— 否则 at_most 0 会拿 -1 假通过。
     """
     if not isinstance(expected, int) or isinstance(expected, bool):
         raise ValueError(f"count 断言的 expected 必须是整数: {expected!r}")
     deadline = time.monotonic() + timeout
-    last = -1
+    last = None
+    last_error = None
     while True:
         try:
             last = locator.count()
-        except Exception:
-            last = -1
-        if (op == "equals" and last == expected
-                or op == "at_least" and last >= expected
-                or op == "at_most" and last <= expected):
+            last_error = None
+        except Exception as error:
+            last_error = error
+        if last_error is None and matches_assert(last, expected, op):
             return last
         if time.monotonic() >= deadline:
+            if last_error is not None:
+                raise AssertionError(
+                    f"数量断言失败: 读取持续失败 op={op!r} expected={expected!r}: "
+                    f"{type(last_error).__name__}: {last_error}"
+                ) from last_error
             raise AssertionError(
                 f"数量断言失败: op={op!r} expected={expected!r} actual={last!r}"
             )
@@ -515,15 +588,24 @@ def expect_time_range(locator, prefix: str,
     """
     deadline = time.monotonic() + timeout
     last = None
+    last_error = None
     while True:
         try:
             last = locator.input_value() if read == "value" else locator.inner_text()
+            last_error = None
         except Exception as error:
-            last = f"{type(error).__name__}: {error}"
-        hits = matches_time_range(last, prefix, duration_seconds)
-        if hits:
-            return hits
+            # 读取异常不进比较（错误不是观测值），预算内重试
+            last_error = error
+        if last_error is None:
+            hits = matches_time_range(last, prefix, duration_seconds)
+            if hits:
+                return hits
         if time.monotonic() >= deadline:
+            if last_error is not None:
+                raise AssertionError(
+                    f"时间区间断言失败: 读取持续失败 prefix={prefix!r} "
+                    f"duration={duration_seconds!r}: {type(last_error).__name__}: {last_error}"
+                )
             raise AssertionError(
                 f"时间区间断言失败: prefix={prefix!r} "
                 f"duration={duration_seconds!r} actual={last!r} "

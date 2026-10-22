@@ -55,7 +55,7 @@ from playwright.sync_api import Page, expect
 from rec_assert import (
     ANY_NUM, ANY_STR, assert_subset, expect_local_time, expect_time_window,
     expect_count, expect_value, expect_attribute, expect_time_range,
-    local_time_value, poll_until,
+    local_time_value, poll_until, matches_assert,
 )
 from rec_helpers import dismiss_overlays, is_present, nth_request
 from rec_visual import visual_click
@@ -510,40 +510,64 @@ def generate_spec(steps, net, start_url, name):
             elif dyn.get("kind") == TIMETRANGE_KIND:
                 # 期望值是一段「时间区间」：[起点, 起点+时长) 半开区间，
                 # 比的是元素文本里时间记号的**值**（记号可在文本任意位置）。
-                duration = dyn.get("durationSeconds")
                 read = "value" if a == "value" else "text"
                 extra = f", read={_lit(read)}" if read == "value" else ""
-                dur_lit = _lit(duration) if duration else ""
-                lines.append(
-                    f"    expect_time_range({loc}, {_lit(exp)}, {dur_lit}{extra}){warn}"
-                )
+                duration = dyn.get("durationSeconds")
+                if (duration is not None
+                        and (isinstance(duration, bool)
+                             or not isinstance(duration, int)
+                             or not 1 <= duration <= 86400)):
+                    # 非法时长（0 / 非整数 / 越界）不能静默当缺省 —— 拒发。
+                    lines.append(f"    # ⚠ 时间区间时长非法 {_lit(duration)}，已拒发")
+                    problems.append(
+                        f"step#{i} (id={s.get('id')}): 时间区间时长非法 "
+                        f"{duration!r}（需 1–86400 的整数秒，或省略）")
+                else:
+                    # 缺省时长不写参数（helper 自己按起点粒度取 60/1 秒缺省）；
+                    # 空位置参数再接关键字参数是 SyntaxError。
+                    dur_arg = f", {duration}" if duration is not None else ""
+                    lines.append(
+                        f"    expect_time_range({loc}, {_lit(exp)}{dur_arg}{extra}){warn}"
+                    )
             elif a == "count":
                 op = s.get("op") or "equals"
                 lines.append(
                     f"    expect_count({loc}, {_lit(exp)}, op={_lit(op)}){warn}"
                 )
             elif a == "text":
+                # 语义对齐说明（2026-10-21 验收修正）：
+                #   * to_have_text(字符串) = 全串 + 空白归一化 —— equals/not_equals 直接用；
+                #   * to_contain_text = 归一化子串 —— contains/not_contains 直接用；
+                #   * 但 to_have_text(正则) 比的是**原始**文本（不归一化），裸
+                #     re.compile("abc") 还会按搜索语义放过 "prefix abc suffix"。
+                # 所以 starts_with / ends_with / matches / is_blank / is_not_blank
+                # 不走 Playwright 正则，而是读 inner_text 后走**与回放同一个**
+                # 纯比较 matches_assert（回放链 _assert_locator 的同款调用）——
+                # 两边共享一份 fullmatch / 前后缀 / 空白定义，判定必然一致。
                 op = s.get("op") or "equals"
                 if op == "equals":
-                    lines.append(f"    expect({loc}).to_have_text({_lit(exp)}){warn}")
+                    lines.append(f"    expect({loc}).to_have_text({_lit(exp)}, "
+                                 f"use_inner_text=True){warn}")
                 elif op == "not_equals":
-                    lines.append(f"    expect({loc}).not_to_have_text({_lit(exp)}){warn}")
+                    lines.append(f"    expect({loc}).not_to_have_text({_lit(exp)}, "
+                                 f"use_inner_text=True){warn}")
                 elif op == "contains":
-                    lines.append(f"    expect({loc}).to_contain({_lit(exp)}){warn}")
+                    lines.append(f"    expect({loc}).to_contain_text({_lit(exp)}, "
+                                 f"use_inner_text=True){warn}")
                 elif op == "not_contains":
-                    lines.append(f"    expect({loc}).not_to_contain({_lit(exp)}){warn}")
-                elif op == "starts_with":
-                    lines.append(f"    expect({loc}).to_have_text("
-                                 f"re.compile({_lit(r'^' + re.escape(str(exp)))})){warn}")
-                elif op == "ends_with":
-                    lines.append(f"    expect({loc}).to_have_text("
-                                 f"re.compile({_lit(re.escape(str(exp)) + r'$')})){warn}")
-                elif op == "matches":
-                    lines.append(f"    expect({loc}).to_have_text(re.compile({_lit(exp)})){warn}")
-                elif op == "is_blank":
-                    lines.append(f"    expect({loc}).to_have_text(re.compile(r'^\\s*$')){warn}")
-                elif op == "is_not_blank":
-                    lines.append(f"    expect({loc}).not_to_have_text(re.compile(r'^\\s*$')){warn}")
+                    lines.append(f"    expect({loc}).not_to_contain_text({_lit(exp)}, "
+                                 f"use_inner_text=True){warn}")
+                elif op in ("starts_with", "ends_with", "matches",
+                            "is_blank", "is_not_blank"):
+                    blank_no_expected = op in ("is_blank", "is_not_blank")
+                    expected_lit = "None" if blank_no_expected else _lit(exp)
+                    lines.append(
+                        f"    poll_until(lambda: matches_assert({loc}.inner_text(), "
+                        f"{expected_lit}, {_lit(op)}), True){warn}"
+                    )
+                    lines.append(
+                        f"    # ↑ 与回放链共用 matches_assert 的比较定义（见 rec_assert）"
+                    )
                 else:
                     lines.append(f"    # ⚠ 文本不支持算子 {_lit(op)}，已跳过")
                     problems.append(f"step#{i}: text 不支持算子 {op!r}")

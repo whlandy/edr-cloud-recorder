@@ -12,8 +12,8 @@ import json
 import pytest
 
 from rec_assert import (
-    expect_count, expect_value, matches_assert, matches_time_range,
-    parse_time_range,
+    expect_attribute, expect_count, expect_value, matches_assert,
+    matches_time_range, parse_time_range,
 )
 from replay_trace import replay_trace as _replay_trace
 from trace_v1 import to_v2
@@ -349,3 +349,72 @@ def test_e2e_failing_count_reports_diagnostic(browser_page):
     assert execution["status"] == "failed"
     dump = json.dumps(execution, ensure_ascii=False)
     assert "count" in dump
+
+# ────────────────────────── D1：读取异常不得进入比较 ──────────────────────────
+#
+# 验收反例：count() 抛错时按 -1 参与比较，「至多 0 个」假通过；
+# input_value()/get_attribute() 抛错时按异常字符串参与比较，
+# not_equals / is_not_blank 假通过。错误是诊断信息，不是观测值。
+
+
+class _BrokenLocator:
+    """detached 元素：每次读取都抛错。"""
+
+    def count(self):
+        raise RuntimeError("detached")
+
+    def input_value(self):
+        raise RuntimeError("detached")
+
+    def get_attribute(self, name):
+        raise RuntimeError("detached")
+
+    def inner_text(self):
+        raise RuntimeError("detached")
+
+
+def test_d1_helpers_fail_when_read_throws():
+    broken = _BrokenLocator()
+    # count：读不到就不存在「-1 ≤ 0」的假通过
+    with pytest.raises(AssertionError, match="detached"):
+        expect_count(broken, 0, "at_most", timeout=0.05)
+    # value：异常字符串 != "expected" 不构成 not_equals 通过
+    with pytest.raises(AssertionError, match="detached"):
+        expect_value(broken, "expected", "not_equals", timeout=0.05)
+    # attribute：异常字符串非空不构成 is_not_blank 通过
+    with pytest.raises(AssertionError, match="detached"):
+        expect_attribute(broken, "href", "", "is_not_blank", timeout=0.05)
+    # equals 场景：消息保留最后的读取异常（诊断），但按失败处理
+    with pytest.raises(AssertionError, match="detached"):
+        expect_value(broken, "x", timeout=0.05)
+
+
+def test_d1_replay_count_branch_fails_on_read_error():
+    class P:
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            return _BrokenLocator()
+
+    execution = replay_trace(P(), _trace(
+        {"assertion": "count", "expected": 0, "op": "at_least"}),
+        navigate=False, timeout_ms=150)
+    assert execution["status"] == "failed"
+    dump = json.dumps(execution, ensure_ascii=False)
+    assert "detached" in dump      # 最后异常留在诊断里
+
+
+def test_d1_replay_value_not_equals_fails_on_read_error():
+    class P:
+        def goto(self, url):
+            pass
+
+        def locator(self, selector):
+            return _BrokenLocator()
+
+    execution = replay_trace(P(), _trace(
+        {"assertion": "value", "expected": "expected", "op": "not_equals"}),
+        navigate=False, timeout_ms=150)
+    assert execution["status"] == "failed"
+    assert "detached" in json.dumps(execution, ensure_ascii=False)

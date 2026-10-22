@@ -29,11 +29,23 @@
 | 等于 | 归一化后完全相同 | 连续空白压成一个再比（与 Playwright to_have_text 一致）；**老录制的缺省语义，不写字段** |
 | 不等于 | 归一化后不同 | |
 | 包含 / 不包含 | 期望串是实际的子串 / 不是 | 空白同样先归一化 |
-| 开头是 / 结尾是 | 前缀 / 后缀 | 生成用例里自动转成正则全串匹配 |
+| 开头是 / 结尾是 | 前缀 / 后缀 | 读 inner_text 后走同一比较核心，不用 Playwright 正则（它比原始文本且是搜索语义） |
 | 正则匹配(全串) | 实际文本**整体**匹配正则 | 是 fullmatch 不是搜索：`err.*` 只放行「以 err 开头」的整段文本，`a err b` 不通过 |
 | 为空 / 非空 | 文本（归一化后）为空 / 非空 | 不需要期望值 |
 | 大于 / 小于(数值) | 两边解析成数字后比较 | 解析不出即失败 —— **不会退化成字符串字典序比较** |
 | 等于 / 至少 / 至多（数量） | count() 相等 / ≥ / ≤ | count 读 DOM：**隐藏元素也计入**。断「看不见」请用可见性=否，别用数量=0 去赌 |
+
+两条硬性规则（2026-10-21 验收后补的）：
+
+- **value / attribute 是精确比较**：空白不归一（输入框 `"a  b"` ≠ `"a b"`），
+  属性缺失（`None`）≠ 属性为空（`""`）——与 Playwright 的
+  to_have_value / to_have_attribute 一致，两条执行链同判。
+- **文本读取的是 inner_text**：`to_have_text` / `to_contain_text` 默认比
+  `textContent`（含 `display:none` 后代），与回放链的 `inner_text` 判定相反；
+  所以四条文本分支都显式 `use_inner_text=True`，隐藏后代不算文本；
+- **读取失败不是观测值**：轮询中元素 detached 让读取抛错时，错误不进比较
+  （否则 `not_equals` 会拿异常字符串假通过）；预算内重试，超时带最后
+  异常明确失败。
 
 数量断言的两个已知陷阱（写进用例注释，别忘）：
 
@@ -62,16 +74,29 @@
 ## 生成的用例长这样
 
 ```python
-expect(page.get_by_text("订单号")).to_have_text(re.compile("^abc\\."))  # 开头是
-expect(page.locator(".msg")).to_contain("err")                        # 包含
-expect_count(page.locator("tr.row"), 3, op="at_least")               # 至少 3 条
-expect(page.locator(".gone")).to_be_hidden()                          # 不出现
-expect_value(page.locator("#qty"), "5", op="greater_than")           # 数值大于
-expect_time_range(page.locator(".time"), "00:28:56", 1)              # 秒级区间
+expect(page.locator(".order")).to_have_text("订单号 abc.", use_inner_text=True)  # 等于（全串+归一化）
+expect(page.locator(".msg")).to_contain_text("err", use_inner_text=True)      # 包含
+poll_until(lambda: matches_assert(page.locator(".prefix").inner_text(),
+           "abc", "starts_with"), True)                         # 开头是
+poll_until(lambda: matches_assert(page.locator(".msg2").inner_text(),
+           "err.*", "matches"), True)                           # 正则全串
+expect_count(page.locator("tr.row"), 3, op="at_least")          # 至少 3 条
+expect(page.locator(".gone")).to_be_hidden()                     # 不出现
+expect_value(page.locator("#qty"), "5", op="greater_than")      # 数值大于
+expect_attribute(page.locator("a"), "href", "", op="is_not_blank")  # 属性非空
+expect_time_range(page.locator(".time"), "00:28:56", 1)         # 秒级区间
 ```
 
-回放侧（`replay_trace.py`）与生成用例走同一个比较核心（`rec_assert.matches_assert`），
-两条路径的判定结果一致 —— 本地回放绿，生成的 pytest 就不会红。
+回放侧（`replay_trace.py`）与生成用例走同一个比较核心（`rec_assert.matches_assert`）。
+文本的 开头/结尾/正则/为空 这几类，生成侧直接读 `inner_text()` 再调 `matches_assert`，
+与回放侧是**同一份代码** —— 两条路径对同一输入判定必然一致。
+（`to_have_text(字符串)` 与 `to_contain_text` 是 Playwright 原生、自带归一化，
+直接沿用；正则类若交给 Playwright 会按**原始文本+搜索**语义跑，归一化和全串都对不上，
+所以不走它。）
+
+本地回放绿，生成的 pytest 就不会红 —— 这条由
+`test/test_generated_execution.py` 用真实 Chromium 对同一录制跑两条链并对照，
+覆盖正例/反例/读异常/缺元素/非法配置。
 
 ## 兼容
 

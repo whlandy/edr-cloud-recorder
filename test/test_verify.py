@@ -675,7 +675,9 @@ def _(rec):
 
 @check("生成 toHaveText 且带 expected")
 def _(rec):
-    assert 'to_have_text("用户确认过的值")' in spec_of(rec)
+    # D6：文本断言必须显式 inner_text 语义（与回放链同读），默认 textContent
+    # 会把 display:none 后代算进文本，与 Trace 判定相反。
+    assert 'to_have_text("用户确认过的值", use_inner_text=True)' in spec_of(rec)
 
 
 @check("visible=false 生成 toBeHidden")
