@@ -76,6 +76,14 @@ class TraceFormatError(ValueError):
 
 
 def meta(trace: dict) -> dict:
+    # 非 dict 根（JSON 数组/字符串/数字/null/布尔）必须得到「格式错误」
+    # 级别的拒绝，而不是 AttributeError 这类实现泄漏 —— validate_trace /
+    # replay_check / evaluate_trace 三个入口都从这里过。消息保持含
+    # 「缺少 $meta」，validate_trace 的旧 v1 提示照常联动。
+    if not isinstance(trace, dict):
+        raise TraceFormatError(
+            f"轨迹不是 v2 对象（根类型 {type(trace).__name__}）—— "
+            f"缺少 {META_KEY} 节点")
     m = trace.get(META_KEY)
     if not isinstance(m, dict):
         raise TraceFormatError(f"轨迹缺少 {META_KEY} 节点 —— 不是 v2 格式？")

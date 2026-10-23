@@ -16,6 +16,7 @@ import json
 import re
 from urllib.parse import urlsplit
 
+from rec_assert import COUNT_OPS, VALUE_OPS
 from selector_py import SelectorError, to_python
 from rec_secrets import REDACTED, redact_sensitive_values
 
@@ -50,7 +51,7 @@ HEADER = '''import os
 import re
 from pathlib import Path
 
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect
 
 from rec_assert import (
     ANY_NUM, ANY_STR, assert_subset, expect_local_time, expect_time_window,
@@ -85,6 +86,12 @@ LOCALTIME_KIND = "localtime"
 TIMEWINDOW_KIND = "timewindow"
 TIMETRANGE_KIND = "timerange"
 LOGIN_ACTION = re.compile(r"login|sign[ -]?in|登录|登入", re.I)
+
+# 扩展文本算子（starts_with/ends_with/matches/is_blank/is_not_blank）轮询闭包里
+# 元素读取（inner_text）的显式短超时（毫秒）。读取失败按「本轮未观测到」处理，
+# 由 poll_until 的预算（默认 5s）决定失败总时长；不给短超时的话，一次读取就要
+# 烧掉页面默认超时（通常 30s），失败形态虽然是 AssertionError，代价却翻了数倍。
+ASSERT_READ_TIMEOUT_MS = 1000
 
 
 def prepare_steps(steps):
@@ -344,6 +351,7 @@ def generate_spec(steps, net, start_url, name):
     resp_seq = 0
     sw_seq = 0
     el_seq = 0
+    text_seq = 0
 
     def emit_action(action_expr, calls, warn):
         """一次操作；若触发了写请求，包成「等响应 + 断言」。"""
@@ -530,10 +538,19 @@ def generate_spec(steps, net, start_url, name):
                         f"    expect_time_range({loc}, {_lit(exp)}{dur_arg}{extra}){warn}"
                     )
             elif a == "count":
-                op = s.get("op") or "equals"
-                lines.append(
-                    f"    expect_count({loc}, {_lit(exp)}, op={_lit(op)}){warn}"
-                )
+                # op 缺省 equals 只对「字段不存在」成立（老录制没有该字段；
+                # 录制器也从不写空串/null —— 只在显式选了非 equals 时落字段）。
+                # 显式给坏的（空串/None/非字符串/未知）与 text 分支同构：
+                # 进 problems 拒发整份 spec，不能静默回退成 equals。
+                op = s["op"] if "op" in s else "equals"
+                if not (isinstance(op, str) and op in COUNT_OPS):
+                    lines.append(f"    # ⚠ count 不支持算子 {op!r}，已拒发")
+                    problems.append(
+                        f"step#{i} (id={s.get('id')}): count 不支持算子 {op!r}")
+                else:
+                    lines.append(
+                        f"    expect_count({loc}, {_lit(exp)}, op={_lit(op)}){warn}"
+                    )
             elif a == "text":
                 # 语义对齐说明（2026-10-21 验收修正）：
                 #   * to_have_text(字符串) = 全串 + 空白归一化 —— equals/not_equals 直接用；
@@ -561,19 +578,56 @@ def generate_spec(steps, net, start_url, name):
                             "is_blank", "is_not_blank"):
                     blank_no_expected = op in ("is_blank", "is_not_blank")
                     expected_lit = "None" if blank_no_expected else _lit(exp)
+                    # F9（评审 2026-10-23）：元素读取失败（缺失 / 轮询中途 detach，
+                    # Playwright 一律以 TimeoutError 呈现）不是观测值。旧模板把读取
+                    # 内联进 lambda，异常从 poll_until 直接冒泡 —— 生成链失败形态是
+                    # error，而回放链（replay_trace._assert_locator）捕获读取异常
+                    # 轮询到超时，是干净的 AssertionError，§7.1 的 failure_category
+                    # 归因因此分叉。修复：闭包**局部**捕获读取异常返回 False 哨兵，
+                    # 让 poll_until 继续轮询、超时后走既有 AssertionError 路径。
+                    # 约束：try 只包读取本身，比较（matches_assert）在 try 外 ——
+                    # 编程错误照常冒泡；哨兵在比较**之前**短路返回，is_not_blank
+                    # 不能拿哨兵当「非空」假通过。
+                    text_seq += 1
+                    closure = f"_text_assert_{text_seq}"
+                    lines.append(f"    def {closure}():")
+                    lines.append("        try:")
+                    lines.append(f"            text = {loc}.inner_text("
+                                 f"timeout={ASSERT_READ_TIMEOUT_MS})")
+                    lines.append("        except PlaywrightTimeoutError:")
+                    lines.append("            return False")
                     lines.append(
-                        f"    poll_until(lambda: matches_assert({loc}.inner_text(), "
-                        f"{expected_lit}, {_lit(op)}), True){warn}"
+                        f"        return matches_assert(text, {expected_lit}, {_lit(op)})"
+                    )
+                    diagnosis = (
+                        f"文本断言失败: op={op}"
+                        + ("" if blank_no_expected else f" expected={exp!r}")
+                        + f" locator={loc}: "
+                    )
+                    lines.append("    try:")
+                    lines.append(f"        poll_until({closure}, True){warn}")
+                    lines.append("    except AssertionError as e:")
+                    lines.append("        raise AssertionError(")
+                    lines.append(f"            {_lit(diagnosis)} + str(e)) from e")
+                    lines.append(
+                        "    # ↑ 与回放链共用 matches_assert 的比较定义（见 rec_assert）；"
+                        "读取失败按「本轮未满足」继续轮询"
                     )
                     lines.append(
-                        f"    # ↑ 与回放链共用 matches_assert 的比较定义（见 rec_assert）"
+                        "    #   （F9：失败形态与回放链对齐为 AssertionError）"
                     )
                 else:
                     lines.append(f"    # ⚠ 文本不支持算子 {_lit(op)}，已跳过")
                     problems.append(f"step#{i}: text 不支持算子 {op!r}")
             elif a == "value":
-                op = s.get("op") or "equals"
-                if op == "equals":
+                # 与 count 分支同构：坏算子（空串/None/非字符串/未知）进
+                # problems 拒发，不静默回退；合法面即 rec_assert.VALUE_OPS。
+                op = s["op"] if "op" in s else "equals"
+                if not (isinstance(op, str) and op in VALUE_OPS):
+                    lines.append(f"    # ⚠ value 不支持算子 {op!r}，已拒发")
+                    problems.append(
+                        f"step#{i} (id={s.get('id')}): value 不支持算子 {op!r}")
+                elif op == "equals":
                     lines.append(f"    expect({loc}).to_have_value({_lit(exp)}){warn}")
                 else:
                     lines.append(f"    expect_value({loc}, {_lit(exp)}, op={_lit(op)}){warn}")
@@ -593,8 +647,13 @@ def generate_spec(steps, net, start_url, name):
                 lines.append(f"    expect({loc}).to_be_checked(){warn}" if exp
                              else f"    expect({loc}).not_to_be_checked(){warn}")
             elif a == "attribute":
-                op = s.get("op") or "equals"
-                if op == "equals":
+                # 与 count/value 分支同构：坏算子进 problems 拒发。
+                op = s["op"] if "op" in s else "equals"
+                if not (isinstance(op, str) and op in VALUE_OPS):
+                    lines.append(f"    # ⚠ attribute 不支持算子 {op!r}，已拒发")
+                    problems.append(
+                        f"step#{i} (id={s.get('id')}): attribute 不支持算子 {op!r}")
+                elif op == "equals":
                     lines.append(f"    expect({loc}).to_have_attribute("
                                  f"{_lit(s.get('attribute'))}, {_lit(exp)}){warn}")
                 else:

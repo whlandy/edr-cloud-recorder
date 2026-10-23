@@ -50,7 +50,20 @@ ANY_NUM = _AnyOf((int, float), "ANY_NUM", exclude_bool=True)
 def _match(actual: Any, expected: Any, path: str, problems: list[str]) -> None:
     if isinstance(expected, _AnyOf):
         if expected != actual:
-            problems.append(f"{path}: 期望 {expected}，实际 {actual!r}")
+            # F6（评审 2026-10-23）：占位符（ANY_STR/ANY_NUM）失配只打类型/形状。
+            # 录制期标记 secret 的字段在期望侧被换成占位符（「只比类型不比值」），
+            # 走到这里时 actual 往往就是真实凭据；非字符串实际值（数字 PIN、
+            # None、嵌套结构、bytes）对占位符必然失配，值一旦回显就会写进
+            # AssertionError 并落入执行报告。所以消息只保留类型与容器长度，
+            # 任何分支都不出现 actual 的值内容。非占位符标量失配（下方分支）
+            # 仍回显值 —— 那是非敏感字段的既有调试行为，不在本修复范围。
+            if isinstance(actual, list):
+                shape = f"list(len={len(actual)})"
+            elif isinstance(actual, dict):
+                shape = f"dict(len={len(actual)})"
+            else:
+                shape = type(actual).__name__
+            problems.append(f"{path}: 期望 {expected}，实际类型 {shape}")
         return
     if isinstance(expected, dict):
         if not isinstance(actual, dict):
@@ -328,8 +341,15 @@ def local_time_value(fmt: str = "%Y-%m-%d", *, offset_days: int = 0,
 # 算子集对齐成熟商用系统的通用面（Playwright expect 的 toHaveText/
 # toContain/toHaveCount、Katalon 的 verify 关键字）：
 #
-#   * 字符串算子两边都按「连续空白压成一个」归一化再比（与 to_have_text 一致）；
-#   * matches 是正则 fullmatch（与 toHaveText(re) 一致），不是搜索；
+#   * 非 strict 的字符串算子（equals/not_equals/contains/not_contains/
+#     starts_with/ends_with）两边都经 _norm 归一化再比：连续空白压成一个
+#     + None→""（对齐 to_have_text）；strict 路径（value/attribute）是精确
+#     比较，不做空白归一化 ——「缺失(None)」与「空("")」必须可区分；
+#   * matches 是正则 fullmatch（与 toHaveText(re) 一样是全文匹配，不是搜索），
+#     但用**原始**文本：不做空白归一化（"line1\nline2" 原样参与匹配，e2e 有
+#     反例钉住）—— 这是与 toHaveText(re)（匹配前先归一化）的**有意**差异；
+#   * expected 为 None 一律按空串处理：在 matches_assert 入口统一归一
+#     （两条路径、全部算子；matches 亦然 —— 空模式只匹配空串）；
 #   * 数值算子（greater_than / less_than）只用于输入值：先解析成 float，
 #     解析不出就是断言失败而不是字符串比较 —— 静默的字符串比较会给出
 #     看起来对、其实一直在比字典序的「绿」；
@@ -359,8 +379,18 @@ def matches_assert(actual: Any, expected: Any, op: str = "equals",
     strict=True 用于输入值 / 属性路径：**精确比较** —— 旧回放语义。
     text 才做空白归一化；value/attribute 不归一，且保留「属性不存在」
     （get_attribute 返回 None）与「属性为空」（""）的区别。显式扩展算子
-    （包含/前后缀/正则）在 strict 路径按原始字符串比，None 按「不含」处理。
+    （包含/前后缀/正则）在 strict 路径按原始字符串比，actual=None 按
+    「不含/不匹配」处理；expected=None 已在入口统一归一为 ""（F4）。
     """
+    if expected is None:
+        # F4（评审 2026-10-23）：把 docstring 承诺的「expected 为 None 一律
+        # 按空串处理」落在入口 —— 在 strict/非 strict 分派之前统一归一，
+        # 全部算子看到同一个期望值。is_blank/is_not_blank 忽略 expected，
+        # 不受影响；数值算子两侧本就 fail-closed（float("None") 与 float("")
+        # 同为 ValueError → False），判定不变；strict 的 equals/not_equals
+        # 从「与 None 的原始比较」改为「与 "" 比较」—— expected 侧 None 与
+        # "" 同判，actual 侧「缺失 vs 空」的区分不受影响。
+        expected = ""
     if op in ("is_blank", "is_not_blank"):
         if strict:
             blank = actual is None or str(actual).strip() == ""
@@ -495,9 +525,15 @@ def expect_count(locator, expected: int, op: str = "equals",
 
     count() 抛错（元素集 detached）不是「0 个」：读取失败只重试，
     超时带最后异常失败 —— 否则 at_most 0 会拿 -1 假通过。
+    负数观测值同理：count 的合法域是非负整数，读取路径给出负数
+    （历史 D1 的 -1 形状）**不进比较**，预算内重试，超时带值失败；
+    expected 为负在入口即 ValueError。输入值（value）路径的负数是
+    合法观测，不受此限 —— 防线只在 count 层。
     """
-    if not isinstance(expected, int) or isinstance(expected, bool):
-        raise ValueError(f"count 断言的 expected 必须是整数: {expected!r}")
+    if (not isinstance(expected, int) or isinstance(expected, bool)
+            or expected < 0):
+        raise ValueError(
+            f"count 断言的 expected 必须是非负整数: {expected!r}")
     deadline = time.monotonic() + timeout
     last = None
     last_error = None
@@ -507,7 +543,8 @@ def expect_count(locator, expected: int, op: str = "equals",
             last_error = None
         except Exception as error:
             last_error = error
-        if last_error is None and matches_assert(last, expected, op):
+        if (last_error is None and last >= 0
+                and matches_assert(last, expected, op)):
             return last
         if time.monotonic() >= deadline:
             if last_error is not None:
@@ -515,6 +552,12 @@ def expect_count(locator, expected: int, op: str = "equals",
                     f"数量断言失败: 读取持续失败 op={op!r} expected={expected!r}: "
                     f"{type(last_error).__name__}: {last_error}"
                 ) from last_error
+            if last is not None and last < 0:
+                raise AssertionError(
+                    f"数量断言失败: 读取到非法负数计数 actual={last!r} "
+                    f"op={op!r} expected={expected!r}"
+                    "（count 的合法域是非负整数）"
+                )
             raise AssertionError(
                 f"数量断言失败: op={op!r} expected={expected!r} actual={last!r}"
             )

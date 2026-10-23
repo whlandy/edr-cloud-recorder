@@ -151,14 +151,69 @@ def test_a_web_trace_is_refused():
 
 
 @pytest.mark.skipif(not (EDR_WD / "recordings").is_dir(), reason="本机没有 edr-wd 录制")
+def _desktop_golden_is_replayable_from_dict(golden: dict) -> bool:
+    """录制是否处于可回放语料状态：ready 且有非空 steps/entry。
+
+    只过滤「还没录完/没导完」的条目（如 endcloud_demo_20261022：
+    status=incomplete、steps={}）；**ready 但损坏/无动作的录制不在
+    过滤之列**，进入判定后仍须失败 —— 不能用过滤掩盖真实断链。
+    """
+    return (golden.get("status") == "ready"
+            and bool(golden.get("steps"))
+            and golden.get("entry") is not None)
+
+
+def _desktop_golden_is_replayable(case) -> bool:
+    return _desktop_golden_is_replayable_from_dict(
+        json.loads(case.read_text(encoding="utf-8")))
+
+
+def _assert_replayable_actions(golden: dict, name: str) -> int:
+    """单条 ready 语料的转换判定（真实测试与反例共用同一函数）：
+
+    1. ready 但**无动作**（源步骤全无 actionId）→ fail —— 静默全
+       DoNothing 正是要堵的丢失形态；
+    2. 转换后真实动作数必须与源一致（不得静默变 DoNothing）。
+    """
+    trace = convert(golden)
+    actions = [node["action"]["type"] for _, node in ts.nodes(trace)]
+    source_actions = [s.get("actionId") for s in golden["steps"].values()]
+    expected_real = sum(1 for a in source_actions if a)
+    got_real = sum(1 for a in actions if a != "DoNothing")
+    if expected_real == 0:
+        pytest.fail(f"ready 录制没有任何可回放动作（全 DoNothing）: {name}")
+    assert got_real == expected_real, (name, actions)
+    return got_real
+
+
 def test_real_edr_wd_recordings_convert_and_keep_their_actions():
-    """真实语料：转换后不能出现「整条轨迹全是 DoNothing」这种静默丢失。"""
-    for case in sorted((EDR_WD / "recordings").glob("*/golden-trace.json")):
-        trace = convert(json.loads(case.read_text(encoding="utf-8")))
-        actions = [node["action"]["type"] for _, node in ts.nodes(trace)]
-        source_actions = [
-            s.get("actionId") for s in
-            json.loads(case.read_text(encoding="utf-8"))["steps"].values()]
-        expected_real = sum(1 for a in source_actions if a)
-        got_real = sum(1 for a in actions if a != "DoNothing")
-        assert got_real == expected_real, (case.parent.name, actions)
+    """真实语料：转换后不能出现「整条轨迹全是 DoNothing」这种静默丢失。
+
+    未就绪条目（非 ready / 零步 / 无 entry）逐条点名；**先跑完全部
+    有效语料再跳过**，避免首个未就绪条目中止整个用例。
+    """
+    cases = sorted((EDR_WD / "recordings").glob("*/golden-trace.json"))
+    skipped = [c.parent.name for c in cases
+               if not _desktop_golden_is_replayable(c)]
+    replayable = [c for c in cases if _desktop_golden_is_replayable(c)]
+    for case in replayable:
+        golden = json.loads(case.read_text(encoding="utf-8"))
+        _assert_replayable_actions(golden, case.parent.name)
+    if skipped:
+        pytest.skip("跳过未就绪录制（非 ready 或零步）: " + ", ".join(skipped))
+
+
+def test_ready_but_corrupt_recording_fails_not_skipped():
+    """F3 过滤边界：过滤只挡「非 ready / 零步 / 无 entry」；ready 但步骤
+    损坏（无 actionId 等形态）的录制**必须照常进入判定并失败**，
+    不得被过滤掩盖或静默全 DoNothing 放过。"""
+    ready_broken = {"schema": DESKTOP_SCHEMA, "status": "ready", "name": "x",
+                    "sourceRecording": {}, "catalog": {}, "environment": {},
+                    "entry": "s1",
+                    "steps": {"s1": {"status": "ready", "next": None,
+                                     "bogus": True}},
+                    "cleanup": []}
+    assert _desktop_golden_is_replayable_from_dict(ready_broken) is True
+    with pytest.raises(pytest.fail.Exception,
+                       match="ready 录制没有任何可回放动作"):
+        _assert_replayable_actions(ready_broken, "synthetic-ready-broken")
