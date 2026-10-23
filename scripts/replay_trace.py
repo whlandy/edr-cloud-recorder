@@ -463,13 +463,15 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
         raise TraceReplayError(f"不支持的比较算子: {op!r}")
     if assertion == "count":
         if (isinstance(expected, bool) or not isinstance(expected, int)
-                or op not in COUNT_OPS):
+                or expected < 0 or op not in COUNT_OPS):
             raise TraceReplayError(
-                f"count 断言要求整数期望值与算子 {'/'.join(COUNT_OPS)}: "
+                f"count 断言要求非负整数期望值与算子 {'/'.join(COUNT_OPS)}: "
                 f"expected={expected!r} op={op!r}")
         # 元素个数：读 DOM 数量，与「读一个元素的某个方面」不是一条路径。
         # locator.count() 正常时找不到就是 0（合法观测值）；**抛错**则不是
         # 「0 个」——读取失败不进比较，预算内重试，超时带最后异常失败。
+        # 负数观测值同理不进比较（count 的合法域是非负整数；历史 D1 的
+        # -1 形状），预算内重试，超时带值失败。
         deadline = time.monotonic() + timeout_ms / 1000
         last = None
         last_error = None
@@ -479,13 +481,19 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
                 last_error = None
             except Exception as error:
                 last_error = error
-            if last_error is None and matches_assert(last, expected, op):
+            if (last_error is None and last >= 0
+                    and matches_assert(last, expected, op)):
                 return
             if time.monotonic() >= deadline:
                 if last_error is not None:
                     raise AssertionError(
                         f"断言失败: count 读取持续失败 op={op!r} expected={expected!r}: "
                         f"{type(last_error).__name__}: {last_error}")
+                if last is not None and last < 0:
+                    raise AssertionError(
+                        f"断言失败: count 读取到非法负数计数 actual={last!r} "
+                        f"expected={expected!r} op={op!r}"
+                        "（count 的合法域是非负整数）")
                 raise AssertionError(
                     f"断言失败: count actual={last!r} expected={expected!r} op={op!r}"
                 )
@@ -1055,6 +1063,22 @@ def _check_cli(argv: list[str] | None = None) -> int:
         return 0
     except TraceReplayError as error:
         print(f"NOT REPLAYABLE  {args.trace}: {error}")
+        return 2
+    except OSError as error:
+        # F7（2026-10-23 评审）：目录/断链符号链接/不存在的深层路径/无权限等
+        # 输入在 load_trace 的 read_text 处抛 OSError，之前未被捕获会裸栈
+        # 崩溃。与 MCP 侧 replay_check 的 not-a-file 结构化处理对齐：沿用
+        # 上一分支同一条错误输出通道，一行稳定诊断（含路径与 OS 错误类别），
+        # 非 0 退出，不冒 traceback。
+        if isinstance(error, IsADirectoryError):
+            category = "路径是目录，不是文件"
+        elif isinstance(error, FileNotFoundError):
+            category = "文件不存在"
+        elif isinstance(error, PermissionError):
+            category = "没有读取权限"
+        else:
+            category = error.strerror or "读取失败"
+        print(f"NOT REPLAYABLE  {args.trace}: 轨迹文件读取失败（{category}）")
         return 2
 
 

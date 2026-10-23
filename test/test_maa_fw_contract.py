@@ -82,6 +82,16 @@ def test_the_checker_catches_a_character_split_next(recording, maa_fw):
 @pytest.mark.skipif(
     not (__import__("pathlib").Path.home() / "ai-projects/edr-wd/recordings").is_dir(),
     reason="本机没有 edr-wd 录制")
+def _golden_ready(case) -> bool:
+    """录制是否处于可回放语料状态：ready 且有非空 steps/entry（见
+    test_desktop_to_v2._desktop_golden_is_replayable 的同一约定）。"""
+    import json
+    golden = json.loads(case.read_text(encoding="utf-8"))
+    return (golden.get("status") == "ready"
+            and bool(golden.get("steps"))
+            and golden.get("entry") is not None)
+
+
 def test_exported_desktop_traces_survive_maa_fw(maa_fw):
     """桌面轨迹导出成 v2 之后，maa-fw 必须真的能加载并保住动作。
 
@@ -97,9 +107,18 @@ def test_exported_desktop_traces_survive_maa_fw(maa_fw):
     cases = sorted((Path.home() / "ai-projects/edr-wd/recordings").glob(
         "*/golden-trace.json"))
     assert cases, "没有可用的 edr-wd 录制"
-    for case in cases:
+    # 只回放语料状态 ready 且有非空 steps/entry 的录制；未就绪条目
+    # （如 status=incomplete、steps={}）逐条点名跳过 —— ready 但损坏/
+    # 无动作的录制不在过滤之列，仍须在此失败。先跑完全部有效语料，
+    # 再带名单跳过，避免首个未就绪条目中止整个用例。
+    skipped = [c.parent.name for c in cases if not _golden_ready(c)]
+    replayable = [c for c in cases if _golden_ready(c)]
+    assert replayable, "没有 ready 且非空的 edr-wd 录制"
+    for case in replayable:
         trace = convert(json.loads(case.read_text(encoding="utf-8")))
         assert contract_problems(trace) == [], case.parent.name
+    if skipped:
+        pytest.skip("跳过未就绪录制（非 ready 或零步）: " + ", ".join(skipped))
 
 
 # ── 链条真的走得通 ──
