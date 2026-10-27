@@ -9,26 +9,37 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
+# POSIX 才有 mode bits 语义；Windows 上 os.fchmod 不存在，且 chmod 只能
+# 摆弄只读位 —— 权限由所在目录的 Windows 账户 ACL 决定，不得伪装等价。
+# 测试可通过改写本常量模拟 Windows 分支（真实 Windows 证据待批次 B）。
+POSIX = os.name == "posix"
+
+
 def _write_private_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        path.parent.chmod(0o700)
-    except OSError:
-        pass
+    if POSIX:
+        try:
+            path.parent.chmod(0o700)
+        except OSError:
+            pass
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary)
     try:
-        os.fchmod(fd, 0o600)
+        if POSIX:
+            os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(value, handle, ensure_ascii=False, indent=1)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
+        if POSIX:
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
     finally:
+        # Windows 上未关闭的 fd 会让 unlink 失败（打开文件被锁定）——
+        # fdopen 的 with 块保证在 finally 之前关闭，unlink 因此可靠。
         temporary_path.unlink(missing_ok=True)
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -21,14 +22,21 @@ def check_untracked_whitespace() -> None:
         ("git", "ls-files", "--others", "--exclude-standard", "-z"),
         cwd=ROOT,
     ).decode().split("\0")
-    for path in filter(None, paths):
-        command = ("git", "diff", "--no-index", "--check", "--", "/dev/null", path)
-        print("+", " ".join(command), flush=True)
-        result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-        if result.returncode not in (0, 1):
-            print(result.stdout, end="", file=sys.stderr)
-            print(result.stderr, end="", file=sys.stderr)
-            raise subprocess.CalledProcessError(result.returncode, command)
+    # git diff --no-index 的空侧不能用系统空设备（Windows 无对应设备路径）；
+    # 用一个临时空文件，语义与退出码（0 干净 / 1 有空白问题）完全一致。
+    with tempfile.TemporaryDirectory(prefix="check_visual_") as tmp:
+        empty = Path(tmp) / "empty"
+        empty.touch()
+        for path in filter(None, paths):
+            command = ("git", "diff", "--no-index", "--check", "--",
+                       str(empty), path)
+            print("+", " ".join(command), flush=True)
+            result = subprocess.run(command, cwd=ROOT, capture_output=True,
+                                    text=True)
+            if result.returncode not in (0, 1):
+                print(result.stdout, end="", file=sys.stderr)
+                print(result.stderr, end="", file=sys.stderr)
+                raise subprocess.CalledProcessError(result.returncode, command)
 
 
 def main() -> int:

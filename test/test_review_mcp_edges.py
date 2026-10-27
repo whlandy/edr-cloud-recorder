@@ -38,6 +38,21 @@ def _verdict(result_json: str) -> dict:
     return json.loads(result_json)
 
 
+def _symlink_capable(tmp_path) -> bool:
+    """探测本机能否创建符号链接（Windows 未开 Developer Mode 时不能）。
+
+    不能时调用方 pytest.skip 点名原因；确定性反例由 mock 保留在
+    test_windows_compat.py（PermissionError / 文件不存在 → 结构化失败）。
+    """
+    try:
+        probe = tmp_path / "_symlink_probe_link"
+        probe.symlink_to(tmp_path / "_symlink_probe_target")
+        probe.unlink(missing_ok=True)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
 class TestReplayCheckPathForms:
     def test_directory_path_is_tool_error_not_ready(self, tmp_path):
         result = _verdict(replay_check(str(tmp_path)))
@@ -45,12 +60,18 @@ class TestReplayCheckPathForms:
         assert "not a file" in result["error"]
 
     def test_broken_symlink_is_tool_error(self, tmp_path):
+        if not _symlink_capable(tmp_path):
+            pytest.skip("本机无符号链接能力（如 Windows 未开 Developer "
+                        "Mode）；mock 反例见 test_windows_compat.py")
         link = tmp_path / "broken-link.json"
         link.symlink_to(tmp_path / "does-not-exist.json")
         result = _verdict(replay_check(str(link)))
         assert result["ok"] is False
 
     def test_valid_symlink_to_ready_trace_is_ready(self, tmp_path):
+        if not _symlink_capable(tmp_path):
+            pytest.skip("本机无符号链接能力（如 Windows 未开 Developer "
+                        "Mode）；mock 反例见 test_windows_compat.py")
         real = Path(_write(tmp_path, "real.json", _ready_trace()))
         link = tmp_path / "link.json"
         link.symlink_to(real)
@@ -181,6 +202,9 @@ class TestCheckCliContract:
             target = tmp_path / "adir"
             target.mkdir()
         elif kind == "symlink":
+            if not _symlink_capable(tmp_path):
+                pytest.skip("本机无符号链接能力（如 Windows 未开 Developer "
+                            "Mode）；mock 反例见 test_windows_compat.py")
             target = tmp_path / "broken-link.json"
             target.symlink_to(tmp_path / "no-such-target.json")
         else:
@@ -197,6 +221,10 @@ class TestCheckCliContract:
 
     def test_cli_unreadable_file_fails_cleanly(self, tmp_path, capsys):
         # chmod 0o000 的文件：无权限读取 → 结构化失败，不裸栈。
+        if os.name == "nt":
+            pytest.skip("Windows 的 chmod 只摆弄只读位，0o000『不可读』语义"
+                        "不成立；ACL 拒读反例由 test_windows_compat.py 的 "
+                        "mock 覆盖")
         p = tmp_path / "unreadable.json"
         p.write_text("{}", encoding="utf-8")
         os.chmod(p, 0o000)

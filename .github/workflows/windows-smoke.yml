@@ -1,0 +1,46 @@
+name: windows-smoke
+
+# 批次 B：Windows 无凭据本地 fixture 冒烟。
+# 硬约束：无任何 secrets / 真实凭据 / 真实业务系统访问；只跑本地 127.0.0.1 fixture。
+# 在真实 Windows 运行通过前，结论只能是「Windows 代码级兼容 / 批次 B 准备完成」。
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    steps:
+      # Pin third-party Actions to reviewed commits for reproducible public CI.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest playwright
+
+      - name: Install Chromium
+        run: python -m playwright install chromium
+
+      - name: Record environment facts
+        run: |
+          python --version
+          python -m playwright --version
+          python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print('chromium:', p.chromium.executable_path); p.stop()"
+
+      - name: Batch-A windows compat suite
+        run: python -m pytest test/test_windows_compat.py -v
+
+      - name: Batch-B credential-free smoke
+        run: python -m pytest test/test_windows_smoke.py -v -s
+
+      - name: Batch-A review files regression (all four)
+        run: python -m pytest test/test_review_assert_semantics.py test/test_review_generation_consistency.py test/test_review_trace_edges.py test/test_review_mcp_edges.py -v
+
+      - name: Batch-A visual regression
+        run: python scripts/check_visual.py
