@@ -68,7 +68,10 @@ The pytest generator:
 - widens volatile strings and large timestamp-like numbers without dropping structure
 - preserves unsupported selectors as visible warnings instead of aborting the whole draft
 - rejects a `start_url` origin that does not match any recorded absolute URL
-- keeps popup/new-tab screenshots and network events attached to the page that produced them
+- assigns every top-level page a stable `pageId`, records its `openerPageId` and origin, and keeps
+  popup/new-tab screenshots and network events attached to the page that produced them
+- pre-arms `expect_popup` around the causal click, switches later steps to that recorded page, and
+  waits for recorded same-page navigations instead of treating every URL change as the opener
 - records the complete nested frame chain (id/name/src/index) instead of only a frame URL tail
 - treats CSS as a locator strategy, never as evidence that a business action is optional
 

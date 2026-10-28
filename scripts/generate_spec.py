@@ -14,7 +14,7 @@
 
 import json
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from rec_assert import COUNT_OPS, VALUE_OPS
 from selector_py import SelectorError, to_python
@@ -58,7 +58,10 @@ from rec_assert import (
     expect_count, expect_value, expect_attribute, expect_time_range,
     local_time_value, poll_until, matches_assert,
 )
-from rec_helpers import dismiss_overlays, is_present, nth_request
+from rec_helpers import (
+    dismiss_overlays, is_present, nth_request, recorded_page_for,
+    wait_for_recorded_url,
+)
 from rec_visual import visual_click
 
 # 由 web-record 生成：{name}
@@ -326,6 +329,14 @@ def generate_spec(steps, net, start_url, name):
         except (ValueError, TypeError):
             return None
 
+    # 在丢掉登录步骤前记住初始页面。业务步骤可能全部发生在 popup；若等
+    # prepare_steps 后再猜，会把 popup 错绑到 recorded_page（opener）。
+    recorded_root_page_id = next(
+        (step.get("pageId") for step in steps
+         if step.get("pageId") and not step.get("openerPageId")),
+        None,
+    )
+
     # 修正 change/keydown 的事件顺序、折叠双击，并丢掉开头登录段。
     dropped, steps = prepare_steps(steps)
     gated_ids = {
@@ -342,9 +353,12 @@ def generate_spec(steps, net, start_url, name):
             tail = "  <密码，未记录>" if s.get("secret") else ""
             head.append(f"#   {s['type']} {s['sel']}{tail}")
 
+    root_page_id = recorded_root_page_id
     lines = [*head, "",
              f"def test_{_ident(name)}(recorded_page: Page):",
              "    page = recorded_page",
+             f"    recorded_pages = {{{_lit(root_page_id)}: page}}"
+             if root_page_id else "    recorded_pages = {}",
              f"    page.goto({_lit(strip(start_url) or '/')})",
              "    dismiss_overlays(page)"]
 
@@ -352,6 +366,7 @@ def generate_spec(steps, net, start_url, name):
     sw_seq = 0
     el_seq = 0
     text_seq = 0
+    popup_seq = 0
 
     def emit_action(action_expr, calls, warn):
         """一次操作；若触发了写请求，包成「等响应 + 断言」。"""
@@ -409,14 +424,21 @@ def generate_spec(steps, net, start_url, name):
                 out.append(f"    #   ↳ GET {strip(c['url'])} -> {c['status']}")
         return out
 
-    # 主文档地址，只由主文档里的步骤推进。
+    # 每个顶层 Page 独立推进自己的地址。把 popup 和 opener 共用一个 URL 基准
+    # 会把「新标签页里的第一步」误写成「当前 page 地址已变」。
     #
     # 录制器记的 url 是 `location.pathname + hash`，在 iframe 里就是**iframe 自己的**
     # 地址。拿它跟主文档地址比，会得出「地址变成 /login_frame.html 了」这种结论，
     # 进而建议人 page.goto("/login_frame.html") —— 那会把主页面整个换掉。
     # 而且 iframe 地址若留作下一步的比较基准，紧接着还会再误报一次。
     # 所以 in-frame 的步骤既不报变化，也不更新基准。
-    last_top_url = None
+    last_top_urls: dict[str, str] = {}
+    current_page_id = root_page_id
+
+    def step_page_url(step):
+        route = step.get("url")
+        origin = step.get("pageOrigin")
+        return urljoin(origin.rstrip("/") + "/", route) if origin and route else None
 
     # 无法如实转译的步骤：收集全部问题，最后统一拒发（SpecGenerationError）。
     # 注释照写 —— 错误文本里已有诊断，代码文本只是第二份证据。
@@ -426,12 +448,28 @@ def generate_spec(steps, net, start_url, name):
         calls = between(s["t"], hi)
 
         in_frame = bool(s.get("inFrame"))
+        page_key = s.get("pageId") or "__legacy__"
+        expected_page_url = step_page_url(s)
 
-        # 地址已变 —— 提示可以直接 goto，避开侧边栏菜单在小 viewport 下要滚动的问题
-        prev_url = last_top_url
+        if not in_frame and s.get("pageId") and s.get("pageId") != current_page_id:
+            if expected_page_url:
+                lines.append(
+                    "    page = recorded_page_for("
+                    f"recorded_page.context, recorded_pages, {_lit(s['pageId'])}, "
+                    f"expected_url={_lit(expected_page_url)}, "
+                    f"opener_id={_lit(s.get('openerPageId'))})"
+                )
+            current_page_id = s["pageId"]
+
+        # 同一个 Page 的地址变化必须等导航完成；不同 pageId 已在上面切换页面。
+        prev_url = last_top_urls.get(page_key)
         if not in_frame and s.get("url"):
-            last_top_url = s["url"]
+            last_top_urls[page_key] = s["url"]
         if not in_frame and prev_url and s.get("url") and s["url"] != prev_url:
+            if expected_page_url:
+                lines.append(
+                    f"    wait_for_recorded_url(page, {_lit(expected_page_url)})"
+                )
             lines.append(f"    #   ⇢ 地址已变为 {s['url']}")
             lines.append(f"    #     若前面几步只是为了导航到这里，可换成 "
                          f"page.goto({_lit(s['url'])})，")
@@ -777,7 +815,25 @@ def generate_spec(steps, net, start_url, name):
                 "回放会少做这一步，拒发而不是静默跳过")
             continue
 
-        lines.extend(emit_action(action, calls, warn))
+        next_step = steps[i + 1] if i + 1 < len(steps) else None
+        opens_popup = bool(
+            t in ("click", "dblclick")
+            and s.get("pageId")
+            and next_step
+            and next_step.get("pageId") != s.get("pageId")
+            and next_step.get("openerPageId") == s.get("pageId")
+        )
+        emitted = emit_action(action, calls, warn)
+        if opens_popup:
+            popup_seq += 1
+            info = f"popup{popup_seq}_info"
+            lines.append(f"    with page.expect_popup() as {info}:")
+            lines.extend("    " + line for line in emitted)
+            lines.append(
+                f"    recorded_pages[{_lit(next_step['pageId'])}] = {info}.value"
+            )
+        else:
+            lines.extend(emitted)
 
     # P3a：业务与清理**结构隔离**（平台规范 §6.6）。
     # 业务段进 try 先行定案；清理在独立函数、finally 里独立运行，

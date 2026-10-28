@@ -2,14 +2,73 @@
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Pattern
+from urllib.parse import urlsplit
 
 from playwright.sync_api import Locator, Page
 
 from rec_assert import poll_until
 
 DEFAULT_CONFIRM = re.compile(r"确认|确定|OK")
+
+
+def _same_recorded_url(actual: str, expected: str) -> bool:
+    """Compare the complete browser route, including origin."""
+    got, want = urlsplit(actual), urlsplit(expected)
+    return (
+        (got.scheme, got.netloc, got.path or "/", got.query, got.fragment)
+        == (want.scheme, want.netloc, want.path or "/", want.query, want.fragment)
+    )
+
+
+def wait_for_recorded_url(page: Page, expected_url: str,
+                          timeout_ms: int = 20_000) -> Page:
+    """Wait for a same-page navigation observed during recording."""
+    page.wait_for_url(
+        lambda url: _same_recorded_url(str(url), expected_url),
+        timeout=timeout_ms,
+    )
+    return page
+
+
+def recorded_page_for(context, pages: dict[str, Page], page_id: str, *,
+                      expected_url: str, opener_id: str | None = None,
+                      timeout_ms: int = 20_000) -> Page:
+    """Resolve a recorded popup/new tab without confusing it with its opener.
+
+    ``pages`` is the generated test's stable recording-id → live Page map.  A
+    newly opened page may remain ``about:blank`` briefly, so selection waits for
+    both its opener relationship and the complete recorded URL.
+    """
+    known = pages.get(page_id)
+    if known is not None and not known.is_closed():
+        return wait_for_recorded_url(known, expected_url, timeout_ms)
+
+    opener = pages.get(opener_id) if opener_id else None
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        for candidate in context.pages:
+            if candidate.is_closed() or candidate in pages.values():
+                continue
+            try:
+                opener_attr = candidate.opener
+                candidate_opener = opener_attr() if callable(opener_attr) else opener_attr
+            except Exception:
+                candidate_opener = None
+            if opener is not None and candidate_opener is not opener:
+                continue
+            if _same_recorded_url(candidate.url, expected_url):
+                pages[page_id] = candidate
+                return candidate
+        alive = next((item for item in context.pages if not item.is_closed()), None)
+        if alive is None or time.monotonic() >= deadline:
+            break
+        alive.wait_for_timeout(50)
+    raise AssertionError(
+        f"未找到录制页面 {page_id}: expected={expected_url}, opener={opener_id}"
+    )
 
 
 def click_if_present(target: Locator) -> bool:

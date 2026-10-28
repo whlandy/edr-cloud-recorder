@@ -8,7 +8,7 @@ from generate_trace import generate_trace
 import trace_schema as ts
 from rec_assert import ANY_NUM, ANY_STR, matches_time_window
 from rec_config import load_config
-from rec_helpers import dismiss_overlays
+from rec_helpers import dismiss_overlays, recorded_page_for
 from record import (
     _artifact_paths,
     _capture_storage,
@@ -756,6 +756,59 @@ def test_select_source_pre_frame_never_borrows_another_pages_screenshot():
 
     assert selected == {"data": b"popup", "t": 1450}
     assert _select_source_pre_frame(histories, {}, action_t=1500) is None
+
+
+def test_generated_spec_switches_to_recorded_popup_and_waits_same_page_navigation():
+    steps = [
+        {"id": "a", "t": 1, "type": "click", "kind": "role",
+         "sel": 'getByRole("link", { name: "Bilibili" })',
+         "url": "/search", "pageOrigin": "https://www.baidu.com",
+         "pageId": "page-0001",
+         "ui": {"templates": {"element": {"path": "assets/a.png"}}}},
+        {"id": "b", "t": 2, "type": "click", "kind": "role",
+         "sel": 'getByRole("link", { name: "Video" })',
+         "url": "/video/BV1", "pageOrigin": "https://www.bilibili.com",
+         "pageId": "page-0002", "openerPageId": "page-0001"},
+        {"id": "c", "t": 3, "type": "click", "kind": "role",
+         "sel": 'getByRole("button", { name: "Play" })',
+         "url": "/video/BV2", "pageOrigin": "https://www.bilibili.com",
+         "pageId": "page-0002", "openerPageId": "page-0001"},
+    ]
+
+    spec = generate_spec(steps, [], start_url="https://www.baidu.com/", name="popup")
+
+    assert 'recorded_pages = {"page-0001": page}' in spec
+    assert "with page.expect_popup() as popup1_info:" in spec
+    assert "visual_click(page," in spec
+    assert 'recorded_pages["page-0002"] = popup1_info.value' in spec
+    assert "recorded_page_for(" in spec
+    assert 'expected_url="https://www.bilibili.com/video/BV1"' in spec
+    assert 'opener_id="page-0001"' in spec
+    assert 'wait_for_recorded_url(page, "https://www.bilibili.com/video/BV2")' in spec
+
+
+def test_recorded_page_for_uses_origin_and_opener_not_route_alone():
+    class Page:
+        def __init__(self, url, opener=None):
+            self.url, self.opener = url, opener
+
+        def is_closed(self):
+            return False
+
+    opener = Page("https://search.example/home")
+    wrong_origin = Page("https://other.example/video/BV1", opener)
+    popup = Page("https://video.example/video/BV1", opener)
+    context = type("Context", (), {"pages": [opener, wrong_origin, popup]})()
+    pages = {"page-0001": opener}
+
+    selected = recorded_page_for(
+        context, pages, "page-0002",
+        expected_url="https://video.example/video/BV1",
+        opener_id="page-0001", timeout_ms=0,
+    )
+
+    assert selected is popup
+    assert pages["page-0002"] is popup
 
 
 def test_describe_frame_chain_keeps_each_nested_frame_identity():

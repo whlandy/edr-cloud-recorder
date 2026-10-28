@@ -134,6 +134,11 @@ def _node_route(node: dict) -> tuple[str, str, str] | None:
     return parsed.path or "/", parsed.query, parsed.fragment
 
 
+def _node_origin(node: dict) -> str | None:
+    value = ts.provenance(node).get("pageOrigin")
+    return value.rstrip("/") if isinstance(value, str) and value else None
+
+
 def _page_route(page) -> tuple[str, str, str] | None:
     actual = getattr(page, "url", None)
     if not isinstance(actual, str) or not actual:
@@ -142,18 +147,70 @@ def _page_route(page) -> tuple[str, str, str] | None:
     return parsed.path or "/", parsed.query, parsed.fragment
 
 
-def _page_for_node(page, node: dict):
-    """Select an opener or popup by the route recorded for this node."""
+def _page_matches_node(page, node: dict) -> bool:
+    if _page_route(page) != _node_route(node):
+        return False
+    expected_origin = _node_origin(node)
+    if expected_origin is None:
+        return True
+    actual = urlsplit(getattr(page, "url", ""))
+    return f"{actual.scheme}://{actual.netloc}" == expected_origin
+
+
+def _wait_page_matches(page, node: dict, timeout_ms: int) -> bool:
+    deadline = time.monotonic() + timeout_ms / 1000
+    while not _page_matches_node(page, node):
+        if time.monotonic() >= deadline or not hasattr(page, "wait_for_timeout"):
+            return False
+        page.wait_for_timeout(50)
+    return True
+
+
+def _page_for_node(page, node: dict, page_map: dict | None = None,
+                   timeout_ms: int = 0):
+    """Select a stable recorded page; URL is validation, not page identity."""
+    provenance = ts.provenance(node)
+    page_id = provenance.get("pageId")
+    opener_id = provenance.get("openerPageId")
+    if page_map is not None and page_id:
+        known = page_map.get(page_id)
+        if known is not None:
+            _wait_page_matches(known, node, timeout_ms)
+            return known
+        if not opener_id and not page_map:
+            page_map[page_id] = page
+            return page
+
     want_route = _node_route(node)
-    if want_route is None or _page_route(page) == want_route:
+    if want_route is None or _page_matches_node(page, node):
+        if page_map is not None and page_id:
+            page_map[page_id] = page
         return page
     context = getattr(page, "context", None)
-    candidates = [
-        candidate for candidate in (getattr(context, "pages", None) or [])
-        if _page_route(candidate) == want_route
-    ]
-    if len(candidates) == 1:
-        return candidates[0]
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        candidates = []
+        for candidate in (getattr(context, "pages", None) or []):
+            if not _page_matches_node(candidate, node):
+                continue
+            if page_map is not None and opener_id and page_map.get(opener_id) is not None:
+                try:
+                    opener_attr = candidate.opener
+                    candidate_opener = (
+                        opener_attr() if callable(opener_attr) else opener_attr
+                    )
+                    if candidate_opener is not page_map[opener_id]:
+                        continue
+                except Exception:
+                    continue
+            candidates.append(candidate)
+        if len(candidates) == 1:
+            if page_map is not None and page_id:
+                page_map[page_id] = candidates[0]
+            return candidates[0]
+        if time.monotonic() >= deadline or not hasattr(page, "wait_for_timeout"):
+            break
+        page.wait_for_timeout(50)
     return page
 
 
@@ -163,7 +220,7 @@ def _assert_node_page(page, node: dict) -> None:
     got_route = _page_route(page)
     if want_route is None or got_route is None:
         return
-    if want_route != got_route:
+    if not _page_matches_node(page, node):
         expected_text = want_route[0]
         if want_route[1]:
             expected_text += f"?{want_route[1]}"
@@ -769,6 +826,7 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
     pending_optional: list[tuple[str, dict]] = []
     # 因为挡路而被提前做掉的关浮层步骤：轨迹走到它时会发现已经没得关
     performed_early: set[str] = set()
+    recorded_pages: dict[str, object] = {}
     for node_id in order:
         node = golden[node_id]
         started = time.perf_counter()
@@ -782,7 +840,7 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
         }
         node_page = page
         try:
-            node_page = _page_for_node(page, node)
+            node_page = _page_for_node(page, node, recorded_pages, timeout_ms)
             _assert_node_page(node_page, node)
             node_focus = focused_selector if node_page is focused_page else None
             result["target"], result["responses"] = _perform(
@@ -808,7 +866,8 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                 while pending_optional:
                     skipped_id, skipped_result = pending_optional.pop(0)
                     try:
-                        skipped_page = _page_for_node(page, golden[skipped_id])
+                        skipped_page = _page_for_node(
+                            page, golden[skipped_id], recorded_pages, timeout_ms)
                         skipped_focus = (
                             focused_selector if skipped_page is focused_page else None
                         )
@@ -828,7 +887,8 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                     if not ts.dismisses_overlay(golden[later_id]):
                         continue
                     try:
-                        later_page = _page_for_node(page, golden[later_id])
+                        later_page = _page_for_node(
+                            page, golden[later_id], recorded_pages, timeout_ms)
                         later_focus = focused_selector if later_page is focused_page else None
                         _perform(later_page, golden[later_id], root, targeting,
                                  timeout_ms, runtime_env, later_focus)
@@ -841,7 +901,8 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                     result["retries"] += 1
                     result["recoveredOptional"] = recovered
                     try:
-                        node_page = _page_for_node(page, node)
+                        node_page = _page_for_node(
+                            page, node, recorded_pages, timeout_ms)
                         _assert_node_page(node_page, node)
                         node_focus = focused_selector if node_page is focused_page else None
                         result["target"], result["responses"] = _perform(

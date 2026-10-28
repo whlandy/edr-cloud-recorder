@@ -17,6 +17,7 @@ import trace_schema as ts
 
 PROVENANCE_FLAGS = (
     "optional", "dismissesOverlay", "sourceStepId", "sourceStepIds", "pageUrl",
+    "pageId", "openerPageId", "pageOrigin",
 )
 
 

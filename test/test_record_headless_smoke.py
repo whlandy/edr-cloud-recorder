@@ -40,6 +40,27 @@ def _serve():
     return srv
 
 
+def _serve_popup():
+    opener = (b"<!doctype html><a id='open' target='_blank' href='/popup'>open</a>")
+    popup = (b"<!doctype html><button id='inside' onclick='this.dataset.hit=1'>inside</button>")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = popup if self.path == "/popup" else opener
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 @pytest.mark.timeout(45)
 def test_record_headless_without_driver_self_terminates_and_writes_trace(tmp_path):
     srv = _serve()
@@ -59,3 +80,38 @@ def test_record_headless_without_driver_self_terminates_and_writes_trace(tmp_pat
     )
     trace = json.loads(trace_file.read_text(encoding="utf-8"))
     assert trace is not None
+
+
+@pytest.mark.timeout(45)
+def test_recording_persists_popup_page_identity_and_opener(tmp_path):
+    srv = _serve_popup()
+
+    def drive(page, pump):
+        pump()
+        with page.expect_popup() as popup_info:
+            page.click("#open")
+        popup = popup_info.value
+        popup.wait_for_load_state("domcontentloaded")
+        pump()
+        popup.click("#inside")
+        pump()
+
+    try:
+        base = f"http://127.0.0.1:{srv.server_port}/"
+        result = record_session(
+            start_url=base, name="popup-smoke", out_dir=str(tmp_path),
+            headless=True, on_ready=drive,
+        )
+    finally:
+        srv.shutdown()
+
+    opener_step = next(s for s in result["steps"] if s.get("label") == "open")
+    popup_step = next(s for s in result["steps"] if s.get("label") == "inside")
+    assert opener_step["pageId"] == "page-0001"
+    assert "openerPageId" not in opener_step
+    assert popup_step["pageId"] == "page-0002"
+    assert popup_step["openerPageId"] == "page-0001"
+    assert popup_step["pageOrigin"] == base.rstrip("/")
+    spec = result["spec_file"].read_text(encoding="utf-8")
+    assert "expect_popup()" in spec
+    assert 'recorded_pages["page-0002"]' in spec

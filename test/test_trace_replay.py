@@ -1190,6 +1190,32 @@ def test_replay_selects_the_popup_that_matches_the_recorded_route():
     assert _page_for_node(opener, node) is popup
 
 
+def test_replay_page_identity_rejects_same_route_on_wrong_origin():
+    class Context:
+        pages = []
+
+    class Page:
+        context = Context()
+
+        def __init__(self, url, opener=None):
+            self.url, self.opener = url, opener
+
+    opener = Page("https://search.example/home")
+    wrong = Page("https://other.example/video/BV1", opener)
+    popup = Page("https://video.example/video/BV1", opener)
+    Context.pages = [opener, wrong, popup]
+    node = node_to_v2({
+        "selector": {"sel": 'locator("#play")'},
+        "action": {"type": "Click", "param": {}},
+        "pageUrl": "/video/BV1", "pageOrigin": "https://video.example",
+        "pageId": "page-0002", "openerPageId": "page-0001",
+    })
+    page_map = {"page-0001": opener}
+
+    assert _page_for_node(opener, node, page_map) is popup
+    assert page_map["page-0002"] is popup
+
+
 # ── 起点校验 ──────────────────────────────────────────────────────────
 # 登录态失效时页面会被踢到登录页，于是每一步 DOM 都找不到元素、视觉又匹配不到，
 # 最终报「视觉匹配分数不足」—— 整条链路没有一处提到「你没登录」。

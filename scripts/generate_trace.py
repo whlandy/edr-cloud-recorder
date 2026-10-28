@@ -339,6 +339,9 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
         }
         if not step.get("inFrame") and step.get("url"):
             provenance["pageUrl"] = step["url"]
+        for key in ("pageId", "openerPageId", "pageOrigin"):
+            if step.get(key):
+                provenance[key] = step[key]
         if step.get("_sourceStepIds"):
             provenance["sourceStepIds"] = step["_sourceStepIds"]
         if order:

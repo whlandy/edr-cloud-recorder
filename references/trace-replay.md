@@ -195,10 +195,13 @@ Selector shape is never optionality evidence. In particular, a CSS fallback can 
 spot, custom control, or destructive icon. Only recorder-observed overlay dismissal and explicitly
 gated follow-up steps become optional.
 
-Before each web replay node, the runner checks the recorded top-level path/query/fragment. A route
-mismatch fails before the action instead of clicking a coincidentally similar element on the wrong
-page. Nested frame targets are resolved through the recorded outer-to-inner frame chain; `framePath`
-remains a compatibility fallback for older recordings.
+Before each web replay node, the runner selects the stable recorded `pageId`, verifies its opener,
+and waits for its full origin/path/query/fragment. This distinguishes a popup from same-page
+navigation and prevents two origins with the same route from colliding. Older traces without page
+identity retain route-only selection. A mismatch fails before the action instead of clicking a
+coincidentally similar element on the wrong page. Nested frame targets are resolved through the
+recorded outer-to-inner frame chain; `framePath` remains a compatibility fallback for older
+recordings.
 
 ### Switches Behind A Confirmation Dialog
 

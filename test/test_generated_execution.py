@@ -192,3 +192,38 @@ def test_d5_default_duration_compiles_runs_and_rejects_zero(page):
     execution = replay_trace(page, trace, navigate=False, timeout_ms=300)
     assert execution["status"] == "failed"
     assert "时长非法" in json.dumps(execution, ensure_ascii=False)
+
+
+def test_generated_spec_follows_real_popup_and_runs_next_step(page):
+    opener_html = """<!doctype html><meta charset=utf-8>
+      <a href="https://video.invalid/video/BV1" target="_blank">Bilibili</a>"""
+    popup_html = """<!doctype html><meta charset=utf-8>
+      <div id="state">popup ready</div>"""
+    steps = [
+        {"id": "open", "t": 1, "type": "click", "kind": "role",
+         "sel": 'getByRole("link", { name: "Bilibili" })', "url": "/",
+         "pageOrigin": "https://search.invalid", "pageId": "page-0001"},
+        {"id": "verify", "t": 2, "type": "assert", "kind": "id",
+         "sel": 'locator("#state")', "assertion": "text", "expected": "popup ready",
+         "url": "/video/BV1", "pageOrigin": "https://video.invalid",
+         "pageId": "page-0002", "openerPageId": "page-0001"},
+    ]
+    spec = generate_spec(steps, [], start_url="https://search.invalid/", name="popup")
+    ns = {"__file__": str(Path(__file__))}
+    exec(compile(spec, "generated-popup.py", "exec"), ns)
+    test = ns["test_popup"]
+
+    context = page.context.browser.new_context(base_url="https://search.invalid/")
+
+    def fulfill(route):
+        body = popup_html if "/video/BV1" in route.request.url else opener_html
+        route.fulfill(status=200, content_type="text/html", body=body)
+
+    try:
+        context.route("**", fulfill)
+        opener = context.new_page()
+        test(opener)
+        assert len(context.pages) == 2
+        assert context.pages[1].url == "https://video.invalid/video/BV1"
+    finally:
+        context.close()

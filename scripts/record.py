@@ -373,7 +373,43 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
     origin = "{0.scheme}://{0.netloc}".format(urlsplit(start_url))
 
     steps, seen, net, pending_visual, pending_context = [], set(), [], [], []
+    pending_page_context: list[tuple[dict, dict]] = []
     frame_histories: dict[object, list[dict]] = {}
+    page_ids: dict[object, str] = {}
+    page_sequence = {"n": 0}
+
+    def page_id(target) -> str:
+        if target not in page_ids:
+            page_sequence["n"] += 1
+            page_ids[target] = f"page-{page_sequence['n']:04d}"
+        return page_ids[target]
+
+    def attach_page_identity(step: dict, source: dict | None) -> None:
+        """Assign the stable id now; defer Playwright calls outside binding callbacks."""
+        target = (source or {}).get("page")
+        if target is None:
+            return
+        step["pageId"] = page_id(target)
+        pending_page_context.append((source, step))
+
+    def resolve_page_identity(source: dict, step: dict) -> None:
+        """Persist opener/origin when sync Playwright re-entry is safe."""
+        target = source.get("page")
+        if target is None:
+            return
+        try:
+            opener_attr = target.opener
+            opener = opener_attr() if callable(opener_attr) else opener_attr
+        except Exception:
+            opener = None
+        if opener is not None:
+            step["openerPageId"] = page_id(opener)
+        try:
+            parsed = urlsplit(target.url)
+            if parsed.scheme and parsed.netloc:
+                step["pageOrigin"] = f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            pass
 
     def accept(step, source=None):
         if not step or not step.get("id"):
@@ -413,6 +449,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         if step["id"] in seen:
             return                                  # 双通道上报，按 id 去重
         seen.add(step["id"])
+        attach_page_identity(step, source)
         steps.append(step)
         if source and step.get("inFrame"):
             # Binding callbacks cannot call sync Playwright APIs. Resolve the frame
@@ -432,6 +469,12 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
 
     def capture_pending():
         # binding 回调内不能调用同步 Playwright API，否则会重入死锁。
+        while pending_page_context:
+            source, step = pending_page_context.pop(0)
+            try:
+                resolve_page_identity(source, step)
+            except Exception:
+                pass
         while pending_context:
             source, step = pending_context.pop(0)
             try:
@@ -543,6 +586,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         def listen_page(target):
             if target in listened_pages:
                 return
+            page_id(target)
             listened_pages.add(target)
             frame_histories.setdefault(target, [])
             target.on("request", on_request)
