@@ -680,14 +680,22 @@ def _(rec):
     assert 'to_have_text("用户确认过的值", use_inner_text=True)' in spec_of(rec)
 
 
-@check("visible=false 生成 toBeHidden")
+@check("visible=false 生成带稳定窗口的负状态断言")
 def _(rec):
-    assert "to_be_hidden()" in spec_of(rec)
+    # P0（common-web-assertion-design §6）：负断言（不可见）默认带稳定窗口，防
+    # 「先缺席后出现」的中间态抢跑。toBeHidden 表达不了稳定窗口，所以生成
+    # expect_state(..., False, "visible") 并带上 stable 参数 —— 语义仍是不可见，
+    # 但加了「连续保持」要求（比 toBeHidden 更强，不是弱化）。
+    import re as _re
+    assert _re.search(r'expect_state\([^\n]*?, False, "visible"', spec_of(rec))
+    assert "stable=" in spec_of(rec)
 
 
-@check("checked=false 生成 not.toBeChecked")
+@check("checked=false 生成带稳定窗口的负状态断言")
 def _(rec):
-    assert re.search(r"(not_)?to_be_checked\(\)", spec_of(rec))
+    import re as _re
+    assert _re.search(r'expect_state\([^\n]*?, False, "checked"', spec_of(rec))
+    assert "stable=" in spec_of(rec)
 
 
 # ── 易变值放宽：稳定值必须保留 ──

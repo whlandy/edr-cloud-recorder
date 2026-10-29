@@ -589,9 +589,12 @@ def drive(chrome: str | None = None) -> dict:
             page.wait_for_timeout(300)
 
             # 5) 文本断言，直接用默认值 —— 元素本身就是按这段文本找到的，
-            #    「文本等于自己」是同义反复
+            #    「文本等于自己」是同义反复。
+            # P0：expected 预填自当前值，未修改必须勾选「确认使用当前值」才能保存。
             page.get_by_text("待删除的资产", exact=True).click(button="right")
             page.wait_for_timeout(300)
+            sh("#confirm").check()
+            page.wait_for_timeout(100)
             sh("#ok").click()
             page.wait_for_timeout(300)
 
