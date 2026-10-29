@@ -15,6 +15,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
+from playwright.sync_api import Browser
 
 from record import record_session
 
@@ -115,3 +116,58 @@ def test_recording_persists_popup_page_identity_and_opener(tmp_path):
     spec = result["spec_file"].read_text(encoding="utf-8")
     assert "expect_popup()" in spec
     assert 'recorded_pages["page-0002"]' in spec
+
+
+@pytest.mark.timeout(45)
+def test_record_start_restores_state_without_playwright_storage_page(
+        tmp_path, monkeypatch):
+    """录制启动恢复登录态时，不得把 storage_state 交给 Playwright。
+
+    Playwright 会为 state.json 里的每个 localStorage origin 创建并关闭内部页面；
+    headed Windows 下它会表现为标签页闪开闪关。产品自己的恢复器使用 cookies +
+    init script，不创建页面，并且在没有 session-storage.json 时也必须生效。
+    """
+    srv = _serve()
+    base = f"http://127.0.0.1:{srv.server_port}/"
+    origin = base.rstrip("/")
+    state_dir = tmp_path / ".auth"
+    state_dir.mkdir()
+    (state_dir / "state.json").write_text(json.dumps({
+        "cookies": [{
+            "name": "record_start", "value": "restored",
+            "domain": "127.0.0.1", "path": "/",
+        }],
+        "origins": [{
+            "origin": origin,
+            "localStorage": [{"name": "record_start", "value": "restored"}],
+        }],
+    }), encoding="utf-8")
+
+    new_context_options = []
+    original_new_context = Browser.new_context
+
+    def observe_new_context(browser, **kwargs):
+        new_context_options.append(dict(kwargs))
+        return original_new_context(browser, **kwargs)
+
+    monkeypatch.setattr(Browser, "new_context", observe_new_context)
+    restored = {}
+
+    def inspect_restored_state(page):
+        restored["local"] = page.evaluate(
+            "localStorage.getItem('record_start')")
+        restored["cookie"] = page.evaluate("document.cookie")
+
+    try:
+        record_session(
+            start_url=base, name="restore-without-temp-page",
+            out_dir=str(tmp_path / "recordings"), state_dir=str(state_dir),
+            headless=True, on_ready=inspect_restored_state,
+        )
+    finally:
+        srv.shutdown()
+
+    assert len(new_context_options) == 1
+    assert "storage_state" not in new_context_options[0]
+    assert restored["local"] == "restored"
+    assert "record_start=restored" in restored["cookie"]

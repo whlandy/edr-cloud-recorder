@@ -492,7 +492,6 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         print(f"浏览器: {chrome_bin.replace(str(Path.home()), '~')}")
 
     state_file = state_dir / "state.json"
-    ss_file = state_dir / "session-storage.json"
 
     snapshot = {"state": None, "session": None, "session_origin": None}
     saved_origins = {}
@@ -515,11 +514,15 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         # 底部的操作按钮（应用/保存/提交）可能被挤到可视区外，看起来像「按钮不见了」。
         # 回放时该由 conftest.py 决定 viewport，录制阶段不该替它做主。
         ctx_opts = {"ignore_https_errors": True, "no_viewport": True}
-        if state_file.exists():
-            ctx_opts["storage_state"] = str(state_file)
-            print("已载入 cookies / localStorage")
-
         context = browser.new_context(**ctx_opts)
+
+        # 不能把完整 state.json 作为 storage_state 交给 new_context。只要其中含有
+        # localStorage origin，Playwright 就会在 context 初始化期间创建一个内部页面，
+        # 逐个访问 origin 后再关闭；headed Windows Chrome 会把这个临时标签页直接
+        # 显示出来，严重时还会扰乱录制窗口。统一走 cookie + init script 恢复，既能
+        # 在首个业务页面脚本运行前还原 Web Storage，也完全不需要临时页面。
+        if state_file.exists() and restore_context_session(context, state_dir):
+            print("已载入 cookies / localStorage / sessionStorage")
 
         # 步骤上报通道。必须在 add_init_script 之前建立，这样页面里 __recPush 一定存在。
         # 页面产生一步就立刻推过来，不等轮询 —— 否则「点完就跳转」的步骤
@@ -527,15 +530,6 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         context.expose_binding("__recPush", lambda source, step: accept(step, source))
 
         context.add_init_script(script=recorder_source())
-
-        # storage_state 不含 sessionStorage。有些站点把登录态放在 sessionStorage 里，
-        # 那就必须在页面脚本执行**之前**注回去，否则 SPA 启动时读不到会立刻跳登录页。
-        #
-        # 注意 Python 的 add_init_script **没有 arg 参数**（JS 的 addInitScript(fn, arg)
-        # 有），数据只能内联进脚本字符串，用 json.dumps 转义。
-        if ss_file.exists():
-            restore_context_session(context, state_dir)
-            print("已载入 sessionStorage")
 
         def wanted(req) -> bool:
             if req.resource_type not in ("xhr", "fetch"):
