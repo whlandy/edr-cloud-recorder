@@ -916,6 +916,9 @@ export const RECORDER = () => {
         <div class="row" id="confirmRow" style="display:none"><label></label>
           <span class="empty"><input type="checkbox" id="confirm"><label for="confirm"
             style="flex:none;cursor:pointer">确认使用当前值</label></span></div>
+        <div class="row" id="confirmBoolRow" style="display:none"><label></label>
+          <span class="empty"><input type="checkbox" id="confirmBool"><label for="confirmBool"
+            style="flex:none;cursor:pointer">确认该布尔值</label></span></div>
         <div class="hint" id="hint"></div>
         <div class="acts">
           <span class="empty"><input type="checkbox" id="allowEmpty"><label for="allowEmpty"
@@ -957,6 +960,10 @@ export const RECORDER = () => {
     // 不是用户意图 —— 只有用户改了值或勾了「确认使用当前值」才算确认（§4.2）。
     let expectedEdited = false;
     let prefilledExpected = '';
+    // F3（审查 2026-10-29）：布尔断言的 true/false 也是 expected，需显式确认。
+    // 预填的布尔默认值只是「读到的东西」，用户改了或勾选确认后才算确认。
+    let prefilledBool = null;
+    let boolEdited = false;
     const fillOps = (key) => {
       const ops = opsFor(key);
       if (!ops) { $('opRow').style.display = 'none'; return; }
@@ -1024,7 +1031,11 @@ export const RECORDER = () => {
       else if (isRange) $('esLabel').textContent = '区间起点';
       else $('esLabel').textContent = 'Expected';
       if (isTime || !isRange) $('fmt').value = guessTimeFormat(a.of(el));
-      if (a.kind === 'bool') $('eb').value = String(a.of(el));
+      // 切换到 bool 类型时预填当前状态；记录预填值用于确认判断
+      if (a.kind === 'bool') {
+        $('eb').value = String(a.of(el));
+        prefilledBool = $('eb').value;
+      }
       else if (a.kind === 'count') $('es').value = '';
       else if (isRange) {
         // 区间起点必须是纯时间值（HH:MM / HH:MM:SS），从显示文本里抠出来。
@@ -1043,8 +1054,11 @@ export const RECORDER = () => {
       }
       // 切换断言类型会重置 expected 的确认状态（预填值跟着变了）
       expectedEdited = false;
+      boolEdited = false;
       $('confirmRow').style.display = a.kind === 'string' ? 'flex' : 'none';
       $('confirm').checked = false;
+      $('confirmBoolRow').style.display = a.kind === 'bool' ? 'flex' : 'none';
+      $('confirmBool').checked = false;
       // P0（§4.2 目标预览）：元素范围内预显选择器 + 匹配数量；页面范围预显
       // 当前 URL / 标题。pageId 由 record.py 落盘时分配，页面内拿不到。
       if (scope === 'page') {
@@ -1140,12 +1154,33 @@ export const RECORDER = () => {
       if (!bad && a.kind === 'string' && !opNeedsNoExpected
               && !confirmed && $('es').value && $('es').value === prefilledExpected)
         bad = 'Expected 预填自当前元素值。修改它，或勾选「确认使用当前值」';
+      // F3（审查 2026-10-29）：布尔断言的 true/false 也是 expected，必须显式确认。
+      // 预填的默认布尔值不是用户意图；未修改、未勾选确认前保存被禁用。
+      const boolConfirmed = $('confirmBool').checked || boolEdited;
+      if (!bad && a.kind === 'bool' && !boolConfirmed
+              && String($('eb').value) === String(prefilledBool))
+        bad = '布尔 expected 预填自当前状态。改选它，或勾选「确认该布尔值」';
+      // F4（审查 2026-10-29）：editable/selected 只适用于对应的目标元素。
+      // editable 只对输入类可编辑元素成立（Playwright is_editable 对普通 div 抛错）；
+      // selected 只对选项元素成立。对不适用目标断言保存被禁用，避免录制期假绿。
+      const chosenType = $('t').value;
+      if (!bad && a.kind === 'bool') {
+        const tag = el.tagName;
+        if (chosenType === 'editable') {
+          const editableTag = ['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)
+            || el.isContentEditable;
+          if (!editableTag)
+            bad = 'editable 只适用于输入框 / 文本域 / 下拉 / contenteditable';
+        }
+      }
       $('hint').textContent = bad;
       $('ok').disabled = !!bad;
     };
     sh.addEventListener('input', validate);
     // P0：用户在 expected 框里亲手输入 = 确认这是命题（与「勾选确认」等价）
     $('es').addEventListener('input', () => { expectedEdited = true; });
+    // F3：用户改选布尔值（true↔false）即显式确认
+    $('eb').addEventListener('change', () => { boolEdited = true; });
     $('dur').addEventListener('input', () => { rangeDurTouched = true; });
     $('t').addEventListener('change', sync);
     // 预设只是快捷填配置：应用后把预设选择框还原为「— 自选 —」，避免重复选择
@@ -1166,7 +1201,13 @@ export const RECORDER = () => {
         || (type === 'count' && Number(expected) === 0);
       const wait = { timeoutMs: 5000, pollMs: 100, stableMs: negative ? 300 : 0 };
       // 文本/输入值要确认「读取值」；其余类型用户亲手填/选即显式确认
-      const confirmed = a.kind !== 'string' || $('confirm').checked || expectedEdited;
+      // P0/F3（审查 2026-10-29）：expected 一律要确认 —— string 勾「确认使用当前值」
+      // 或改值；bool 勾「确认该布尔值」或改选 true/false。其余类型用户亲手填/选即显式确认。
+      const confirmed = (a.kind === 'string')
+        ? ($('confirm').checked || expectedEdited)
+        : (a.kind === 'bool')
+          ? ($('confirmBool').checked || boolEdited)
+          : true;
       if (scope === 'page') {
         // 页面级断言（url/title）：无 DOM 选择器，绑定当前页面（§5 scope=page）
         const step = pushPageAssert(type, expected, op, wait, confirmed);

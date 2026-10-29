@@ -112,8 +112,9 @@ from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, ex
 from rec_assert import (
     ANY_NUM, ANY_STR, COUNT_OPS, STRING_OPS, VALUE_OPS, assert_subset,
     expect_local_time, expect_time_window, expect_count, expect_value,
-    expect_attribute, expect_time_range, expect_state, expect_page_url,
-    expect_page_title, local_time_value, poll_until, matches_assert,
+    expect_attribute, expect_time_range, expect_state, expect_text,
+    expect_page_url, expect_page_title, local_time_value, poll_until,
+    matches_assert,
 )
 from rec_helpers import (
     dismiss_overlays, is_present, nth_request, recorded_page_for,
@@ -733,15 +734,22 @@ def generate_spec(steps, net, start_url, name):
                 if op == "equals":
                     lines.append(f"    expect({loc}).to_have_text({_lit(exp)}, "
                                  f"use_inner_text=True){warn}")
-                elif op == "not_equals":
-                    lines.append(f"    expect({loc}).not_to_have_text({_lit(exp)}, "
-                                 f"use_inner_text=True){warn}")
                 elif op == "contains":
                     lines.append(f"    expect({loc}).to_contain_text({_lit(exp)}, "
                                  f"use_inner_text=True){warn}")
-                elif op == "not_contains":
-                    lines.append(f"    expect({loc}).not_to_contain_text({_lit(exp)}, "
-                                 f"use_inner_text=True){warn}")
+                elif op in ("not_equals", "not_contains"):
+                    # F2（审查 2026-10-29）：负文本断言（not_equals/not_contains）
+                    # 不能走 Playwright 立即负断言（not_to_have_text /
+                    # not_to_contain_text）—— 那表达不了 §6 的稳定窗口，会与回放链
+                    # 分叉、且「先缺席后出现」的中间态会假通过。改走共享的
+                    # expect_text（matches_assert + 统一 deadline/stable 轮询），
+                    # 与回放链同一比较核心；负断言默认带 stable（_wait_kwargs 兜底
+                    # 300ms，或录制端显式 wait）。
+                    w_args = _wait_kwargs(s, default_stable_ms=300)
+                    arg = f", {w_args}" if w_args else ""
+                    lines.append(
+                        f"    expect_text({loc}, {_lit(exp)}, op={_lit(op)}{arg}){warn}"
+                    )
                 elif op in ("starts_with", "ends_with", "matches",
                             "is_blank", "is_not_blank"):
                     blank_no_expected = op in ("is_blank", "is_not_blank")

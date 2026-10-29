@@ -40,6 +40,7 @@ OCR_THRESHOLD = 0.3
 # edr-wd 的动作 → maa-fw 的动作。左边这些是实测语料里出现过的全部。
 ACTIONS = {
     "gui.click": "Click",
+    "gui.type_text": "InputText",
     "pointer.right_click": "RightClick",
     "pointer.double_click": "DoubleClick",
     "pointer.scroll": "Scroll",
@@ -88,6 +89,9 @@ def _action(step: dict) -> tuple[dict, str | None]:
         param = {"direction": "down" if clicks >= 0 else "up", "clicks": abs(clicks)}
     elif mapped == "Drag":
         param = {"endSelector": step.get("endSelector"), **args}
+    elif mapped == "InputText":
+        # gui.type_text：把要输入的文本带进 param.text（与 web fill 同一形状）。
+        param = {"text": str(args.get("text") or "")}
     else:
         param = {"target": True, "target_offset": [0, 0, 0, 0]}
         point = ((step.get("selector") or {}).get("visual") or {}).get("relativePoint")

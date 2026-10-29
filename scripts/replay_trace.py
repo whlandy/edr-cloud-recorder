@@ -103,6 +103,26 @@ def validate_trace(trace: dict) -> list[str]:
     ]
     if problems:
         raise TraceReplayError("轨迹不符合 maa-fw 的节点约定：\n  " + "\n  ".join(problems))
+    # F6（审查 2026-10-29）：因果校验 —— 断言绑定了 afterStepId（录制时的触发步骤）。
+    # 它在回放顺序里必须排在那个触发步骤**之后**；若找不到触发节点或排在它前面，
+    # 说明断言会抢跑在触发动作之前求值（可能假通过），直接拒绝。
+    src_to_node = {
+        ts.provenance(trace[node_id]).get("sourceStepId"): node_id
+        for node_id in order
+    }
+    pos = {node_id: i for i, node_id in enumerate(order)}
+    for node_id in order:
+        after = ts.provenance(trace[node_id]).get("afterStepId")
+        if not after:
+            continue
+        trigger_node = src_to_node.get(after)
+        if trigger_node is None:
+            raise TraceReplayError(
+                f"{node_id} 的 afterStepId={after!r} 指向不存在的录制步骤 —— 因果断裂")
+        if pos[trigger_node] >= pos[node_id]:
+            raise TraceReplayError(
+                f"{node_id} 的断言出现在其因果前置步骤 {after!r}（{trigger_node}）"
+                "**之前** —— 断言会在触发动作还没发生时求值，拒绝回放")
     return order
 
 
@@ -480,14 +500,44 @@ def _validate_response(response, expected: dict) -> dict:
     return actual
 
 
+def _split_wait(param: dict, default_timeout_ms: int) -> tuple[float, float, float]:
+    """把断言参数里的 wait 拆成 (timeout, poll, stable) 秒。
+
+    wait 缺省时的语义（§6 统一 deadline + 稳定）：
+      * timeout  用调用方默认（timeout_ms）
+      * poll     100ms（不是 0.1ms —— 那是 busy-poll，会空转 CPU）
+      * stable   0（首次满足即通过）
+    显式传 poll/stable/timeout 才覆盖默认。
+    """
+    wait = param.get("wait") or {}
+    timeout = (wait.get("timeoutMs") if "timeoutMs" in wait else default_timeout_ms) / 1000
+    poll = (wait.get("pollMs") if "pollMs" in wait else 100) / 1000
+    stable = (wait.get("stableMs") if "stableMs" in wait else 0) / 1000
+    return timeout, poll, stable
+
+
+def _reject_unconfirmed(param: dict) -> None:
+    """P0（§5/§6）：需要静态 expected 的断言，expected 必须已确认；显式
+    expectedConfirmed=false 即使绕过生成门直接喂回放也要独立拒绝 —— 系统不得把
+    「当前看到什么」当作用户意图。老 trace 缺字段视为已确认（兼容）。
+    """
+    assertion = param.get("assertion")
+    op = param.get("op")
+    if param.get("expectedFrom"):
+        return                       # 动态期望值无「预填自当前值」问题
+    if op in ("is_blank", "is_not_blank"):
+        return                       # 这类算子不需要 expected
+    if param.get("expectedConfirmed") is False:
+        raise TraceReplayError(
+            f"断言 {assertion!r} 需要 expected 但 expectedConfirmed=false —— "
+            "expected 未获用户确认，拒绝回放而不是当作意图")
+
+
 def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
     assertion, expected = param.get("assertion"), param.get("expected")
-    # 每条断言的等待预算与稳定窗口：wait.timeoutMs 是总预算，不让每层重试各耗一份
-    # （§6 统一 deadline）；负断言在录制时已默认 stableMs=300，回放照单执行。
-    wait = param.get("wait") or {}
-    timeout = (wait.get("timeoutMs") or timeout_ms) / 1000
-    stable = (wait.get("stableMs") or 0) / 1000
-    poll = (wait.get("pollMs") or 0.1) / 1000
+    _reject_unconfirmed(param)
+    # 每条断言的等待预算与稳定窗口：_split_wait 处理缺省（F5：默认 poll 100ms）
+    timeout, poll, stable = _split_wait(param, timeout_ms)
     dynamic = param.get("expectedFrom") or {}
     if dynamic.get("kind") == LOCALTIME_KIND:
         # 期望值由回放此刻的时钟决定。轮询里每次重算 —— 页面可能几秒后才刷新出
@@ -615,10 +665,8 @@ def _assert_page(page, param: dict, timeout_ms: int) -> None:
     统一 deadline/stable 轮询），并照单执行录制的 wait 预算与稳定窗口。
     """
     assertion, expected = param.get("assertion"), param.get("expected")
-    wait = param.get("wait") or {}
-    timeout = (wait.get("timeoutMs") or timeout_ms) / 1000
-    stable = (wait.get("stableMs") or 0) / 1000
-    poll = (wait.get("pollMs") or 0.1) / 1000
+    _reject_unconfirmed(param)
+    timeout, poll, stable = _split_wait(param, timeout_ms)
     op = param.get("op") or "equals"
     if assertion not in ("url", "title"):
         raise TraceReplayError(f"不支持的页面断言: {assertion!r}")

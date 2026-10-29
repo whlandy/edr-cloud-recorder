@@ -673,6 +673,33 @@ def expect_state(locator, expected: bool, kind: str, *,
     )
 
 
+def expect_text(locator, expected, op: str = "equals", *,
+                timeout: float = 5.0, poll: float = 0.1,
+                stable: float = 0.0) -> str:
+    """重新轮询元素 inner_text 直到满足算子（text 非 strict 语义，与 matches_assert
+    一致：空白归一化后比）。供负文本断言（not_equals/not_contains）等需要在
+    「首次满足后连续保持 stable 秒」的算子使用 —— Playwright 的
+    not_to_have_text / not_to_contain_text 是立即负断言，表达不了稳定窗口。
+
+    读取失败（元素缺失/轮询中途 detach）不是观测值：重试，超时带最后异常失败，
+    绝不拿异常字符串参与 not_* 比较（否则会假通过）。
+    """
+    def err(last, last_error):
+        if last_error is not None:
+            return AssertionError(
+                f"文本断言失败: 读取持续失败 op={op!r} expected={expected!r}: "
+                f"{type(last_error).__name__}: {last_error}"
+            )
+        return AssertionError(
+            f"文本断言失败: actual={last!r} expected={expected!r} op={op!r}"
+        )
+    return _poll_stable(
+        lambda: locator.inner_text(),
+        lambda v: matches_assert(v, expected, op),
+        timeout=timeout, poll=poll, stable=stable, make_error=err,
+    )
+
+
 # ────────────────────────── 时间区间（前缀 + 时长） ──────────────────────────
 #
 # 与桌面侧 edr-wd 的 window_text_time_range 同一套语义（两边录制器要能

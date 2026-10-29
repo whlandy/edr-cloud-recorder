@@ -195,6 +195,10 @@ def _assertion_spec(step: dict) -> dict:
     # 等待策略/稳定窗口（P0 §5）：断言自身的预算与负断言稳定窗口，回放照单执行
     if step.get("wait"):
         spec["wait"] = step["wait"]
+    # F1（审查 2026-10-29）：把 expectedConfirmed 也带进 trace —— 这样即使绕过
+    # 生成门直接把 trace 喂回放，回放侧也能独立拒绝未确认的 expected（§5/§6）。
+    if "expectedConfirmed" in step:
+        spec["expectedConfirmed"] = step["expectedConfirmed"]
     return spec
 
 
@@ -353,6 +357,10 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
                 provenance[key] = step[key]
         if step.get("_sourceStepIds"):
             provenance["sourceStepIds"] = step["_sourceStepIds"]
+        # F6（审查 2026-10-29）：把断言的因果前置步骤（afterStepId）带进 trace，
+        # 供 validate_trace 校验「断言不得抢跑在触发动作之前」。
+        if step.get("afterStepId"):
+            provenance["afterStepId"] = step["afterStepId"]
         if order:
             provenance.update(
                 templates=templates,

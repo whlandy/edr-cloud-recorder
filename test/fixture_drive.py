@@ -571,11 +571,13 @@ def drive(chrome: str | None = None) -> dict:
             unblocked = not sh("#ok").is_disabled()
             sh("#cancel").click()
 
-            # 3) 勾选状态断言：expected 用布尔
+            # 3) 勾选状态断言：expected 用布尔。F3：bool 的 true/false 也要显式确认。
             page.locator("#agree").click(button="right")
             page.wait_for_timeout(300)
             sh("#t").select_option("checked")
             page.wait_for_timeout(200)
+            sh("#confirmBool").check()
+            page.wait_for_timeout(100)
             sh("#ok").click()
             page.wait_for_timeout(300)
 

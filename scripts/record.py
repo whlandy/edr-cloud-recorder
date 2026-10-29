@@ -54,7 +54,9 @@ except ImportError:
     )
 
 from chrome_path import resolve_chrome                      # noqa: E402
-from generate_spec import _ident, generate_spec             # noqa: E402
+from generate_spec import (
+    SpecGenerationError, _ident, artifact_assert_consistency, generate_spec,
+)                                        # noqa: E402
 from generate_trace import POSITIONAL_STEP_TYPES, generate_trace  # noqa: E402
 from rec_config import ConfigError, load_config, with_defaults  # noqa: E402
 from rec_session import restore_context_session, write_session_snapshot  # noqa: E402
@@ -749,16 +751,26 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
          "steps": steps, "net": net},
         ensure_ascii=False, indent=1), encoding="utf-8")
 
+    # F1（审查 2026-10-29）：三产物原子写 —— 先全部生成 + 一致性校验，全部通过才
+    # 落盘。原来先写 trace 再 generate_spec；若 spec 生成/一致性拒绝，trace 已经
+    # 落在盘上，产物集处于「半套」状态（回放能跑、pytest 却不存在）。
     trace_file = artifacts["trace_file"]
     trace = generate_trace(steps, net, name=name, start_url=start_url)
-    trace_file.write_text(json.dumps(
-        trace, ensure_ascii=False, indent=1), encoding="utf-8")
-
+    spec_text = generate_spec(steps, net, start_url=start_url, name=name)
+    # P0（§8）三产物断言 id/数量一致性自检：任何一处被删/被换都硬拒。
+    consistency = artifact_assert_consistency(steps, spec_text, trace)
+    problems = list(consistency)
     # 回放就绪自检：validate_trace 跑的是回放器真实的门槛（格式/无环/契约），
     # status 由 _replayability 经 ts.meta()（即 $meta.attach.status）读取。
     trace_ready, trace_reason = _replayability(trace)
-
-    spec_text = generate_spec(steps, net, start_url=start_url, name=name)
+    if not trace_ready:
+        problems.append(f"trace 不可回放：{trace_reason}")
+    if problems:
+        # 不落盘半套产物：宁可一个都不写，也不写「trace 在、pytest 缺」的集合。
+        raise SpecGenerationError(problems)
+    # 全部生成 + 校验通过才统一写。
+    trace_file.write_text(json.dumps(trace, ensure_ascii=False, indent=1),
+                          encoding="utf-8")
     # pytest 只收集 test_*.py，文件名必须带前缀，而且得是合法模块名
     spec_file = artifacts["spec_file"]
     spec_file.write_text(spec_text, encoding="utf-8")

@@ -237,19 +237,22 @@ def test_menu_shows_selector_and_match_count(rec_page):
 
 
 def test_enabled_menu_records_bool(rec_page):
-    """P1：新的布尔状态断言 enabled —— 可操作性。"""
+    """P1：新的布尔状态断言 enabled —— 可操作性。F3：bool 也要显式确认。"""
     menu = _open_menu(rec_page, "#en")
     menu.locator("#t").select_option("enabled")
     assert menu.locator("#eb").input_value() == "true"
+    menu.locator("#confirmBool").check()
     menu.get_by_role("button", name="添加断言").click()
     step = _last_assert_step(rec_page)
     assert step["assertion"] == "enabled" and step["expected"] is True
+    assert step["expectedConfirmed"] is True
 
 
 def test_enabled_negative_defaults_to_stable(rec_page):
     menu = _open_menu(rec_page, "#dis")
     menu.locator("#t").select_option("enabled")
     assert menu.locator("#eb").input_value() == "false"
+    menu.locator("#confirmBool").check()
     menu.get_by_role("button", name="添加断言").click()
     step = _last_assert_step(rec_page)
     assert step["assertion"] == "enabled" and step["expected"] is False
@@ -260,6 +263,7 @@ def test_editable_readonly_is_false(rec_page):
     menu = _open_menu(rec_page, "#ro")
     menu.locator("#t").select_option("editable")
     assert menu.locator("#eb").input_value() == "false"
+    menu.locator("#confirmBool").check()
     menu.get_by_role("button", name="添加断言").click()
     step = _last_assert_step(rec_page)
     assert step["assertion"] == "editable" and step["expected"] is False
@@ -270,6 +274,7 @@ def test_selected_menu_records(rec_page):
     # selected=true 的正例由 test_generated_execution 的两链步骤覆盖。
     menu = _open_menu(rec_page, "#sel")
     menu.locator("#t").select_option("selected")
+    menu.locator("#confirmBool").check()
     menu.get_by_role("button", name="添加断言").click()
     step = _last_assert_step(rec_page)
     assert step["assertion"] == "selected"
@@ -360,3 +365,53 @@ def test_preset_toastGone_sets_negative_with_stable_window(rec_page):
     step = _last_assert_step(rec_page)
     assert step["assertion"] == "visible" and step["expected"] is False
     assert step["wait"]["stableMs"] == 300
+
+
+def test_bool_expected_requires_explicit_confirmation(rec_page):
+    """F3（review）：布尔断言（可见性/勾选/enabled/editable/selected）的
+    true/false 也是 expected，必须由用户明确确认 —— 不得把「读到默认值」自动当
+    true/false。未确认前保存被禁用。"""
+    # visible 默认预填 true，未确认应被禁用
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#t").select_option("visible")
+    assert menu.locator("#eb").input_value() == "true"
+    assert menu.get_by_role("button", name="添加断言").is_disabled(), \
+        "布尔 expected 未确认前不得保存"
+    menu.locator("#confirmBool").check()
+    assert menu.get_by_role("button", name="添加断言").is_enabled()
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["assertion"] == "visible" and step["expected"] is True
+    assert step["expectedConfirmed"] is True
+
+
+def test_bool_changed_by_user_is_confirmed(rec_page):
+    """F3：用户把布尔 expected 从默认改成别的（例如 true→false），算显式确认。"""
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#t").select_option("visible")
+    menu.locator("#eb").select_option("false")
+    # 用户显式选了 false = 确认命题
+    assert menu.get_by_role("button", name="添加断言").is_enabled()
+
+
+def test_editable_target_must_be_editable_element(rec_page):
+    """F4（review）：editable 只适用于可编辑目标（input/textarea/[contenteditable]）。
+    对普通 div 选 editable 必须被阻止（或预填不假称为可编辑），不能静默 expected=true。"""
+    menu = _open_menu(rec_page, "#msg")   # #msg 是普通 div
+    menu.locator("#t").select_option("editable")
+    # 普通 div 不是可编辑元素 → 保存被禁用（或预填 false 而非 true）
+    assert menu.get_by_role("button", name="添加断言").is_disabled(), \
+        "对普通 div 断言 editable 应被阻止"
+
+
+def test_editable_target_is_enabled_on_input(rec_page):
+    """F4：editable 在真正的输入框上是合法断言。"""
+    menu = _open_menu(rec_page, "#ed")
+    menu.locator("#t").select_option("editable")
+    # 输入框可编辑 → 预填 true 且可选
+    assert menu.locator("#eb").input_value() == "true"
+    menu.locator("#confirmBool").check()
+    assert menu.get_by_role("button", name="添加断言").is_enabled()
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["assertion"] == "editable" and step["expected"] is True
