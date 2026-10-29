@@ -1,4 +1,4 @@
-"""断言菜单的实机回归：新算子 / 数量 / 时间区间在真实右键菜单里可用且落对步骤。
+"""断言菜单的实机回归：右键和 Alt/Option+左键入口可用且落对步骤。
 
 菜单在独立 iframe 里（事件树与业务页分离），测试侧用 frame_locator 操作。
 """
@@ -40,6 +40,28 @@ def _open_menu(page, sel):
 def _last_assert_step(page):
     steps = page.evaluate("() => window.__rec.steps")
     return [s for s in steps if s["type"] == "assert"][-1]
+
+
+def test_alt_click_opens_menu_without_clicking_page_or_recording_action(rec_page):
+    rec_page.evaluate("""() => {
+      window.__businessEvents = [];
+      for (const kind of ['pointerdown', 'mousedown', 'click']) {
+        document.querySelector('#msg').addEventListener(
+          kind, () => { window.__businessEvents.push(kind); });
+      }
+    }""")
+    before = rec_page.evaluate(
+        "() => window.__rec.steps.filter((s) => s.type === 'click').length")
+
+    rec_page.locator("#msg").click(modifiers=["Alt"])
+    menu = rec_page.frame_locator(MENU)
+    menu.locator("#t").wait_for(state="visible")
+
+    assert rec_page.evaluate("window.__businessEvents") == []
+    after = rec_page.evaluate(
+        "() => window.__rec.steps.filter((s) => s.type === 'click').length")
+    assert after == before
+    menu.get_by_role("button", name="取消").click()
 
 
 def test_text_menu_shows_operator_select(rec_page):

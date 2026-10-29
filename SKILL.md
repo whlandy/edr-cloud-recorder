@@ -67,7 +67,10 @@ Configuration, regeneration, and artifact rules are in
 
 ### 3. Add Intent While Recording
 
-Right-click an element to add a manual assertion. Each assertion separates **what** is
+Right-click an element to add a manual assertion. If the page, remote desktop, or pointing
+device suppresses the context menu, hold **Alt** (**Option** on macOS) and left-click the
+element instead. The shortcut click must only select the assertion target: it must not reach
+the page or be recorded as an ordinary click. Each assertion separates **what** is
 checked (text, input value, attribute, visibility, checked state, element count, or one of
 three time kinds) from **how** it is compared (equals, contains, starts/ends with, regex,
 blank/non-blank, numeric greater/less, count at-least/at-most). The full table of types,

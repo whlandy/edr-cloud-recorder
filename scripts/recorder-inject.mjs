@@ -1279,6 +1279,31 @@ export const RECORDER = () => {
   // fromMenu 兼容检查；iframe 版的内部事件不会离开自己的 window。
   const fromMenu = (e) => e.composedPath?.().some((n) => n?.id === MENU_ID);
 
+  // 有些网页、远程桌面和触控板会吞掉 contextmenu，右键不是可靠的唯一入口。
+  // Alt（macOS 上显示为 Option）+ 左键提供同一能力。必须在 window 捕获阶段
+  // 拦住 mousedown 和 click：只拦 click 已经太晚，业务页可能在 pointerdown /
+  // mousedown 就导航或修改状态；只拦 mousedown 又可能让随后生成的 click 被录成
+  // 普通操作。两段都拦，才能保证“选断言目标”本身不改变被测页面，也不污染轨迹。
+  const assertionShortcut = (e) => e.altKey && e.button === 0 && !fromMenu(e);
+  window.addEventListener('pointerdown', (e) => {
+    if (!assertionShortcut(e)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    openMenu(e.target, e.clientX, e.clientY);
+  }, true);
+  window.addEventListener('mousedown', (e) => {
+    if (!assertionShortcut(e)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    // 老浏览器没有 Pointer Events 时从这里开；现代浏览器已在 pointerdown 打开。
+    if (!document.getElementById(MENU_ID)) openMenu(e.target, e.clientX, e.clientY);
+  }, true);
+  window.addEventListener('click', (e) => {
+    if (!assertionShortcut(e)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
+
   // window 是事件捕获链的最上游。录制器由 init script 先于页面脚本
   // 注册在这里，所以即使业务页后续在 window 禁用右键，菜单也能先打开。
   window.addEventListener('contextmenu', (e) => {

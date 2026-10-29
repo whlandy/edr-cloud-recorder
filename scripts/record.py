@@ -608,6 +608,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
                 print("要录业务操作请用人工模式，或经 on_ready 提供脚本驱动。\n")
             else:
                 print("需要登录就在这个窗口里登录（密码不会被记录）。")
+                print("添加断言：右键网页元素；若右键被页面拦截，按住 Alt/Option 再左键。")
                 print("操作完成后直接关闭浏览器窗口，脚本自动生成。\n")
 
         try:
