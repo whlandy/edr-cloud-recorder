@@ -18,6 +18,7 @@
 """
 
 import re
+import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -25,8 +26,9 @@ import pytest
 import rec_assert
 from rec_assert import (
     ANY_NUM, ANY_STR, assert_subset, expect_attribute, expect_count,
-    expect_value, local_time_candidates, matches_assert, matches_local_time,
-    matches_time_range, matches_time_window, parse_time_range, poll_until,
+    expect_state, expect_value, local_time_candidates, matches_assert,
+    matches_local_time, matches_time_range, matches_time_window,
+    parse_time_range, poll_until,
 )
 
 
@@ -678,3 +680,58 @@ class TestNegativeCountGuard:
         assert matches_assert(0, -1, "at_least") is True
         assert matches_assert(-5, -1, "greater_than") is False
         assert matches_assert(-0.5, 0, "less_than") is True
+
+
+class TestNegativeStableWindow:
+    """P0（§6）：负断言必须满足稳定窗口，防「先缺席后出现」的中间态抢跑。
+    生成链与回放链共用 expect_state / _poll_stable 的同一稳定语义。"""
+
+    def test_absent_then_present_cannot_pass_negative(self):
+        class _Flap:
+            def __init__(self):
+                self.t0 = time.monotonic()
+
+            def is_visible(self):
+                return time.monotonic() - self.t0 > 0.2   # 0.2s 后出现
+
+        # stable=0.3：元素在稳定窗口内出现 → 条件不再持续满足 → 必须失败
+        with pytest.raises(AssertionError):
+            expect_state(_Flap(), False, "visible",
+                         timeout=0.6, poll=0.02, stable=0.3)
+
+    def test_invisible_that_stays_invisible_passes(self):
+        class _Gone:
+            def is_visible(self):
+                return False
+
+        assert expect_state(_Gone(), False, "visible",
+                            timeout=0.5, poll=0.02, stable=0.3) is False
+
+    def test_visible_that_stays_visible_passes(self):
+        class _On:
+            def is_visible(self):
+                return True
+
+        assert expect_state(_On(), True, "visible",
+                            timeout=0.5, poll=0.02, stable=0.3) is True
+
+    def test_unknown_state_kind_rejected(self):
+        class _Dummy:
+            def is_visible(self):
+                return False
+
+        with pytest.raises(ValueError, match="无法识别|不支持的布尔状态"):
+            expect_state(_Dummy(), True, "nonexistent")
+
+    def test_negative_state_read_failure_is_not_observation(self):
+        # 读取抛错（如元素 detached）不是「满足」，稳定窗口内重试，超时带异常失败
+        class _Err:
+            calls = 0
+
+            def is_visible(self):
+                self.calls += 1
+                raise RuntimeError("detached")
+
+        with pytest.raises(AssertionError, match="读取持续失败"):
+            expect_state(_Err(), False, "visible",
+                         timeout=0.3, poll=0.02, stable=0.3)

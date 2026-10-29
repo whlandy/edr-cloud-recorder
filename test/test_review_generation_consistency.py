@@ -28,8 +28,10 @@ error 形态）；比较（matches_assert）留在 try 外，编程错误照常�
 """
 
 import ast
+import copy
 import functools
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -38,7 +40,10 @@ from playwright.sync_api import (
 )
 
 from chrome_path import resolve_chrome
-from generate_spec import SpecGenerationError, _lit, generate_spec
+from generate_spec import (
+    SpecGenerationError, _lit, artifact_assert_consistency, generate_spec,
+    pytest_assert_ids,
+)
 from generate_trace import generate_trace
 from rec_assert import COUNT_OPS, VALUE_OPS, expect_value, poll_until
 from replay_trace import replay_trace
@@ -310,6 +315,51 @@ class TestExpectedUnconfirmedRejectsWholeSpec:
         step["expectedConfirmed"] = False
         spec = generate_spec([step], [], start_url=URL, name="dyn")
         compile(spec, "generated.py", "exec")
+
+
+class TestThreeArtifactAssertConsistency:
+    """P0（§8）：recording / pytest / trace 三处断言的 id 与数量必须一一对应。
+    故意删除或改写任一产物的断言，校验必须失败。"""
+
+    @staticmethod
+    def _artifacts():
+        steps = [
+            {**_assert_step("text", "x"), "id": "a1"},
+            {**_assert_step("count", 2, op="at_least"), "id": "a2",
+             "sel": 'locator("#rows tr")'},
+        ]
+        steps[0]["sel"] = 'locator("#x")'
+        spec = generate_spec(steps, [], start_url=URL, name="cc")
+        trace = generate_trace(steps, [], name="cc", start_url=URL)
+        return steps, spec, trace
+
+    def test_consistent_by_construction(self):
+        steps, spec, trace = self._artifacts()
+        assert artifact_assert_consistency(steps, spec, trace) == []
+        # 两处断言数量都对得上
+        assert len(pytest_assert_ids(spec)) == 2
+
+    def test_delete_pytest_assertion_fails(self):
+        steps, spec, trace = self._artifacts()
+        tampered = re.sub(r" *# rec-assert: a2.*", "", spec, count=1, flags=re.S)
+        problems = artifact_assert_consistency(steps, tampered, trace)
+        assert problems and "pytest 断言" in problems[0]
+
+    def test_rewrite_trace_assertion_id_fails(self):
+        steps, spec, trace = self._artifacts()
+        tr = copy.deepcopy(trace)
+        target = next(k for k in tr if k != "$meta")  # 第一个节点
+        tr[target]["attach"]["provenance"]["sourceStepId"] = "a9"
+        problems = artifact_assert_consistency(steps, spec, tr)
+        # 数量没变（还是 2 条）但 id 被换走 —— 决不能算「一致」
+        assert problems and "trace 断言" in problems[0]
+
+    def test_extra_recording_assertion_fails(self):
+        steps, spec, trace = self._artifacts()
+        jammed = [*steps, {**_assert_step("text", "y"), "id": "a3",
+                           "sel": 'locator("#y")'}]
+        problems = artifact_assert_consistency(jammed, spec, trace)
+        assert problems and "pytest 断言" in problems[0]
 
 
 # ── 2b. 生成调用的方法必须真实存在（AST 结构检查） ───────────────────

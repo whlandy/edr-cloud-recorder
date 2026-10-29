@@ -36,6 +36,11 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
 line2</div>
   <div id="hid">shown<span style="display:none">hidden</span></div>
   <div id="dynbox">base<span id="dyn" style="display:none"> dyn</span></div>
+  <button id="en">go</button>
+  <button id="dis" disabled>no</button>
+  <input id="ed">
+  <input id="ro" value="x" readonly>
+  <select id="sel"><option value="a" selected>A</option><option value="b">B</option></select>
   <script>setTimeout(function(){var d=document.getElementById('dyn');
     if(d){d.style.display='';}},150);</script>
 </body>"""
@@ -138,6 +143,16 @@ CASES = [
     ("D6 not_equals 含隐藏 正例", _item("text", "shownhidden", "#hid", op="not_equals"), True),
     ("动态显隐 contains 正例", _item("text", "dyn", "#dynbox", op="contains"), True),
     ("动态显隐 equals 正例", _item("text", "base dyn", "#dynbox"), True),
+    # P1：布尔状态断言 enabled / editable / selected（正反例两链同判）
+    ("enabled 正例", _item("enabled", True, "#en"), True),
+    ("enabled 反例(禁用)", _item("enabled", True, "#dis"), False),
+    ("enabled 为否 正例(禁用)", _item("enabled", False, "#dis"), True),
+    ("editable 正例", _item("editable", True, "#ed"), True),
+    ("editable 反例(readonly)", _item("editable", True, "#ro"), False),
+    ("editable 为否 正例(readonly)", _item("editable", False, "#ro"), True),
+    ("selected 正例", _item("selected", True, "#sel option:nth-child(1)"), True),
+    ("selected 反例(未选)", _item("selected", True, "#sel option:nth-child(2)"), False),
+    ("selected 为否 正例(未选)", _item("selected", False, "#sel option:nth-child(2)"), True),
 ]
 
 
@@ -227,3 +242,88 @@ def test_generated_spec_follows_real_popup_and_runs_next_step(page):
         assert context.pages[1].url == "https://video.invalid/video/BV1"
     finally:
         context.close()
+
+
+# ── P1：页面级断言（scope=page）两链同判 ───────────────────────────────
+#
+# URL / 标题比较的是页面自身（页面的 url / title），无 DOM 选择器。生成链
+# 走 expect_page_url / expect_page_title（helper），回放链读同一 helper ——
+# 同一 matches_assert + 统一 deadline/stable 轮询，判定必然一致。
+
+
+def _page_item(assertion, expected, **extra):
+    return {
+        "id": "page-1", "t": 100, "type": "assert", "scope": "page",
+        "assertion": assertion, "expected": expected,
+        "expectedConfirmed": True, **extra,
+    }
+
+
+PAGE_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>示例页面</title></head>
+<body><div id="msg">页面内容</div></body></html>"""
+
+PAGE_URL = "https://page-assert.invalid/docs/intro"
+
+
+@pytest.fixture()
+def page_scope_page(page):
+    """页面级断言用的真实 Chromium 页（URL/标题可断言）。
+
+    复用 `page` fixture 的浏览器（同一 sync_playwright 上下文），只另开一个
+    context —— 不能再嵌套一个 sync_playwright()（会被判 "inside asyncio loop"）。
+    """
+    context = page.context.browser.new_context(base_url=PAGE_URL)
+    pg = context.new_page()
+    pg.route("**",
+             lambda route: route.fulfill(status=200, content_type="text/html",
+                                         body=PAGE_HTML))
+    pg.set_default_timeout(1500)
+    yield pg
+    context.close()
+
+
+def _page_generated_outcome(pg, item):
+    # 生成链以录制起始页为基准；页面断言比较的是 goto 后的当前 page
+    spec = generate_spec([item], [], start_url=PAGE_URL, name="pg")
+    ns = {"__file__": str(Path(__file__))}
+    exec(compile(spec, "generated.py", "exec"), ns)
+    test = next(v for k, v in ns.items() if k.startswith("test_") and callable(v))
+    try:
+        pg.goto(PAGE_URL)
+        test(pg)
+        return "success"
+    except Exception as error:
+        return f"failed: {type(error).__name__}: {str(error).splitlines()[0]}"
+
+
+def _page_replay_outcome(pg, item):
+    trace = generate_trace([item], [], name="pg", start_url=PAGE_URL)
+    pg.goto(PAGE_URL)
+    execution = replay_trace(pg, trace, navigate=False, timeout_ms=800)
+    if execution["status"] == "success":
+        return "success"
+    step = execution["steps"][0] if execution["steps"] else {}
+    return f"failed: {step.get('error') or step.get('status')}"
+
+
+PAGE_CASES = [
+    # (标签, 步骤, 两链都该 success 吗)
+    ("url equals 正例", _page_item("url", "https://page-assert.invalid/docs/intro"), True),
+    ("url contains 正例", _page_item("url", "/docs", op="contains"), True),
+    ("url contains 反例", _page_item("url", "/admin", op="contains"), False),
+    ("url starts_with 正例", _page_item("url", "https://page-assert.invalid/docs", op="starts_with"), True),
+    ("title equals 正例", _page_item("title", "示例页面"), True),
+    ("title contains 反例", _page_item("title", "不存在", op="contains"), False),
+    ("title matches 正例", _page_item("title", "示例.*", op="matches"), True),
+]
+
+
+@pytest.mark.parametrize("label,item,should_pass", PAGE_CASES, ids=[c[0] for c in PAGE_CASES])
+def test_page_scope_two_chains_agree(page_scope_page, label, item, should_pass):
+    gen = _page_generated_outcome(page_scope_page, item)
+    rep = _page_replay_outcome(page_scope_page, item)
+    gen_pass = gen == "success"
+    rep_pass = rep == "success"
+    assert gen_pass == should_pass, f"{label}: 生成链 {gen!r}"
+    assert rep_pass == should_pass, f"{label}: 回放链 {rep!r}"
+    assert gen_pass == rep_pass, f"{label}: 两链不一致 生成={gen!r} 回放={rep!r}"

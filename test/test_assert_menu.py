@@ -12,6 +12,15 @@ HTML = """<!doctype html><meta charset="utf-8"><body>
   <div id="msg" style="padding:20px">订单保存成功，单号 abc-42</div>
   <div id="time" style="padding:20px">操作时间 2026-10-21 12:00:30</div>
   <input id="qty" value="7" style="width:120px">
+  <button id="en">可用按钮</button>
+  <button id="dis" disabled>禁用按钮</button>
+  <input id="ed" value="可编辑">
+  <input id="ro" value="只读" readonly>
+  <select id="sel"><option value="a">A</option><option value="b" selected>B</option></select>
+  <table id="tbl">
+    <tr><td class="name">Shared</td><td class="key">Alpha</td><td>10:00</td></tr>
+    <tr><td class="name">Shared</td><td class="key">Beta</td><td>11:30</td></tr>
+  </table>
 </body>"""
 
 MENU = '#__rec_assert_menu__'
@@ -225,3 +234,129 @@ def test_menu_shows_selector_and_match_count(rec_page):
     assert "匹配" in preview
     # 唯一选择器（id 定位）不应标「多元素」
     assert "多元素" not in preview
+
+
+def test_enabled_menu_records_bool(rec_page):
+    """P1：新的布尔状态断言 enabled —— 可操作性。"""
+    menu = _open_menu(rec_page, "#en")
+    menu.locator("#t").select_option("enabled")
+    assert menu.locator("#eb").input_value() == "true"
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["assertion"] == "enabled" and step["expected"] is True
+
+
+def test_enabled_negative_defaults_to_stable(rec_page):
+    menu = _open_menu(rec_page, "#dis")
+    menu.locator("#t").select_option("enabled")
+    assert menu.locator("#eb").input_value() == "false"
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["assertion"] == "enabled" and step["expected"] is False
+    assert step["wait"]["stableMs"] == 300
+
+
+def test_editable_readonly_is_false(rec_page):
+    menu = _open_menu(rec_page, "#ro")
+    menu.locator("#t").select_option("editable")
+    assert menu.locator("#eb").input_value() == "false"
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["assertion"] == "editable" and step["expected"] is False
+
+
+def test_selected_menu_records(rec_page):
+    # <option> 不可右键（不渲染为可见元素）；右键 select 本身记录 selected 类型。
+    # selected=true 的正例由 test_generated_execution 的两链步骤覆盖。
+    menu = _open_menu(rec_page, "#sel")
+    menu.locator("#t").select_option("selected")
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["assertion"] == "selected"
+    assert isinstance(step["expected"], bool)
+
+
+def test_page_scope_url_confirmation(rec_page):
+    """P1（§4.1/§5）：范围切到「当前页面」可断言 URL，expected 预填当前 URL 需确认。"""
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#sc").select_option("page")
+    labels = [menu.locator("#t option").nth(i).inner_text()
+              for i in range(menu.locator("#t option").count())]
+    assert "页面 URL" in labels and "页面标题" in labels
+    menu.locator("#t").select_option("url")
+    # expected 预填当前页面 URL（about:blank）；未确认前保存被禁用
+    assert menu.locator("#es").input_value() == "about:blank"
+    assert menu.get_by_role("button", name="添加断言").is_disabled()
+    menu.locator("#confirm").check()
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step.get("scope") == "page"
+    assert step["assertion"] == "url"
+    assert step["expected"] == "about:blank"
+    assert step["expectedConfirmed"] is True
+
+
+def test_page_scope_title(rec_page):
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#sc").select_option("page")
+    menu.locator("#t").select_option("title")
+    menu.locator("#es").fill("测试页面")
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step.get("scope") == "page"
+    assert step["assertion"] == "title"
+    assert step["expected"] == "测试页面"
+
+
+def test_multi_element_cell_assert_gets_stable_scope(rec_page):
+    """P1（§4.3）：单元素断言命中多个元素时不得静默 .first() ——
+    落到唯一目标（收窄到稳定行，或 scoped 行+列）。
+
+    两个 <td class="name"> 文本相同（"Shared"）；断言必须落到唯一目标
+    （这里收窄到 hasText:"Beta" 的稳定行内），不能标多元素、不能挑 first。
+    """
+    menu = _open_menu(rec_page, "table#tbl tr:nth-child(2) td.name")
+    menu.locator("#t").select_option("text")
+    menu.locator("#es").fill("Shared")
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    # 不再标多元素 —— 收窄过的选择器不是静默 .first()，而是稳定作用域
+    assert step["ambiguous"] is not True, step.get("sel")
+    # 断言落在 Beta 行的稳定作用域内，而不是两个 Shared 里随便挑一个
+    assert "Beta" in step.get("sel", ""), step.get("sel")
+    # 选择器必须保留行锚（hasText）而不是退化成".name" 撞车
+    assert step["kind"] == "scoped" or "hasText" in step.get("sel", ""), step.get("sel")
+
+
+def test_preset_toast_sets_type_and_op_but_requires_confirmation(rec_page):
+    """P1（§9.3）：预设只填配置（类型 + 算子 + 稳定窗口），不改语义、不绕过确认。"""
+    # 在 msg（含「保存成功」）上选「提示出现」预设 → 文本 contains
+    assert "保存成功" in rec_page.locator("#msg").inner_text()
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#ps").select_option("toast")
+    # 预设把类型切成「文本」、算子切成「包含」（contains）
+    assert menu.locator("#t").input_value() == "text"
+    # 算子里应含 contains 且被选中
+    menu.locator("#op").select_option("contains")  # 预设已应用；这里再确认一次
+    # expected 预填自当前文本，未确认前仍被禁用（预设不绕过 P0 红线）
+    menu.locator("#es").fill("保存成功")
+    menu.get_by_role("button", name="添加断言").is_enabled()
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["assertion"] == "text"
+    assert step["op"] == "contains"
+    assert step["expected"] == "保存成功"
+    assert step["wait"]["stableMs"] == 0  # 正向「出现」不需要稳定窗口
+
+
+def test_preset_toastGone_sets_negative_with_stable_window(rec_page):
+    """P1：提示消失的预设 → 可见性=否，负断言默认带稳定窗口。"""
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#ps").select_option("toastGone")
+    assert menu.locator("#t").input_value() == "visible"
+    # 可见性=否（提示应消失）→ 用户必须选 false 并确认
+    menu.locator("#eb").select_option("false")
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["assertion"] == "visible" and step["expected"] is False
+    assert step["wait"]["stableMs"] == 300

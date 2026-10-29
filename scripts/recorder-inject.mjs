@@ -742,6 +742,11 @@ export const RECORDER = () => {
     visible:   { label: '可见性', kind: 'bool',   of: () => true },
     checked:   { label: '勾选状态', kind: 'bool',   of: (e) => !!e.checked },
     attribute: { label: '属性',   kind: 'attr',   of: () => '' },
+    // P1：可操作性 / 可编辑 / 选中状态 —— 布尔状态断言，回放走 expect_state
+    enabled:   { label: '可操作性(可点)', kind: 'bool', of: (e) => !e.disabled },
+    editable:  { label: '可编辑', kind: 'bool',
+                 of: (e) => !e.disabled && e.readOnly !== true },
+    selected:  { label: '选中状态', kind: 'bool', of: (e) => !!e.selected },
     // 元素数量：断言的是「匹配该选择器的元素有几个」，用于列表条数、
     // 候选项个数。隐藏元素也算（DOM 里的），要断言看不见请用可见性。
     count:     { label: '元素数量', kind: 'count', of: () => '' },
@@ -762,6 +767,18 @@ export const RECORDER = () => {
                    ? String(e.value ?? '') : txt(e) },
   };
 
+  // 页面级断言（P1）：比较当前页面自身的 URL / 标题，而非某个 DOM 元素。
+  // 与元素断言共用同一套 expected 确认 + 统一轮询语义。
+  const PAGE_ASSERTIONS = {
+    url:   { label: '页面 URL',  kind: 'string', of: () => String(location.href || '') },
+    title: { label: '页面标题',  kind: 'string', of: () => String(document.title || '') },
+  };
+
+  // 断言范围：目标元素 / 当前页面（§4.1/§4.2）。页面范围内类型换成 url/title。
+  let scope = 'element';
+
+  const assertionSet = () => (scope === 'page' ? PAGE_ASSERTIONS : ASSERTIONS);
+
   // 比较算子：对齐商用测试系统的通用面（Playwright expect / Katalon 的
   // verify 关键字）。缺省「等于」与旧录制逐字节兼容 —— 老步骤没有 op 字段
   // 时回放端仍按严格等于处理。
@@ -775,7 +792,9 @@ export const RECORDER = () => {
   const opsFor = (key) =>
     key === 'value' ? VALUE_OPS
     : key === 'count' ? COUNT_OPS
-    : key === 'text' || key === 'attribute' ? STRING_OPS : null;
+    // url / title 用字符串算子集（equals/contains/starts_with/matches 等）
+    : (key === 'text' || key === 'attribute' || key === 'url' || key === 'title')
+        ? STRING_OPS : null;
 
   // 时间显示在哪：输入框在 value 上，inner_text 恒为空 —— 读错了断言永远不通过。
   const timeSourceOf = (e) =>
@@ -817,6 +836,8 @@ export const RECORDER = () => {
 
   const openMenu = (el, x, y) => {
     closeMenu();
+    // 每次打开都回到元素范围 —— 范围是「这一次断言的交互选择」，不跨菜单记忆
+    scope = 'element';
     // 用 iframe 而不是普通 div + Shadow DOM。Shadow DOM 只能隔离 CSS，事件仍会
     // 经过业务页的 window 捕获监听；页面一旦 stopImmediatePropagation，菜单
     // 就会出现但按钮、下拉框全都失灵。iframe 的事件树与业务页彻底分离。
@@ -862,9 +883,19 @@ export const RECORDER = () => {
       </style>
       <div class="box">
         <div class="target" id="targetPreview"></div>
+        <div class="row"><label>范围</label>
+          <select id="sc"><option value="element">目标元素</option>
+            <option value="page">当前页面</option></select></div>
+        <div class="row" id="presetRow"><label>预设</label>
+          <select id="ps">
+            <option value="">— 自选 —</option>
+            <option value="toast">提示出现</option>
+            <option value="toastGone">提示消失</option>
+            <option value="loadingGone">加载完成(loading 消失)</option>
+            <option value="formError">表单错误出现</option>
+          </select></div>
         <div class="row"><label>断言类型</label>
-          <select id="t">${Object.entries(ASSERTIONS)
-            .map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></div>
+          <select id="t"></select></div>
         <div class="row" id="attrRow" style="display:none"><label>属性名</label>
           <input type="text" id="attr" placeholder="如 href、data-state"></div>
         <div class="row" id="opRow" style="display:none"><label>比较方式</label>
@@ -935,8 +966,44 @@ export const RECORDER = () => {
       if ($('op').value) $('op').value = 'equals';
       $('op').dispatchEvent(new Event('change'));
     };
+    // 让 #t 的选项符合当前范围（元素/页面）。范围变化时才重排；同一范围内
+    // 切换类型不重排（否则会把用户刚选的类型打回第一个）。
+    const ensureTypeOptions = () => {
+      const set = assertionSet();
+      const keys = Object.keys(set);
+      const current = Array.from($('t').options).map((o) => o.value);
+      if (current.join(',') !== keys.join(',')) {
+        const prev = $('t').value;
+        $('t').innerHTML = keys
+          .map((k) => `<option value="${k}">${set[k].label}</option>`).join('');
+        $('t').value = keys.includes(prev) ? prev : keys[0];
+      }
+    };
+    // 预设（P1 §9.3）：只填「断言类型 + 比较方式 + 稳定窗口」这些配置，不改底层语义。
+    // expected 仍走统一确认门槛（P0）—— 预设不绕过「期望值由用户确认」这条红线。
+    const PRESETS = {
+      toast:       { type: 'text', op: 'contains' },
+      toastGone:   { type: 'visible', op: 'equals' },      // expected=false，需确认
+      loadingGone: { type: 'visible', op: 'equals' },      // expected=false，需确认
+      formError:   { type: 'text', op: 'contains' },
+    };
+    const applyPreset = (key) => {
+      const p = PRESETS[key];
+      if (!p) return;
+      const set = assertionSet();
+      if (!set[p.type]) return;                    // 页面范围没有这些类型则不应用
+      $('t').value = p.type;
+      const opSelExists = Array.from($('op').options).some((o) => o.value === p.op);
+      if (opSelExists) { $('op').value = p.op; }
+      sync();
+    };
     const sync = () => {
-      const a = ASSERTIONS[$('t').value];
+      ensureTypeOptions();
+      const set = assertionSet();
+      const a = set[$('t').value] || Object.values(set)[0];
+      if (!$('t').value || !set[$('t').value]) $('t').value = Object.keys(set)[0];
+      // 预设只对元素范围有意义（url/title 没有这些业务场景快捷键）
+      $('presetRow').style.display = scope === 'page' ? 'none' : 'flex';
       const isTime = a.kind === 'time' || a.kind === 'timewindow';
       const isRange = a.kind === 'timerange';
       $('attrRow').style.display = a.kind === 'attr' ? 'flex' : 'none';
@@ -978,20 +1045,26 @@ export const RECORDER = () => {
       expectedEdited = false;
       $('confirmRow').style.display = a.kind === 'string' ? 'flex' : 'none';
       $('confirm').checked = false;
-      // P0（§4.2 目标预览）：选择器 + 匹配数量，让用户确认读的是哪个目标。
-      // pageId 由 record.py 落盘时分配，页面内拿不到，这里只预显选择器与命中数。
-      try {
-        const s = selectorFor(meaningful(el));
-        const count = (s.matches ?? '?');
-        $('targetPreview').textContent =
-          `${s.code}${s.ambiguous ? ' ⚠ 多元素' : ''} · 匹配 ${count}`;
-      } catch { $('targetPreview').textContent = '无法预览目标'; }
+      // P0（§4.2 目标预览）：元素范围内预显选择器 + 匹配数量；页面范围预显
+      // 当前 URL / 标题。pageId 由 record.py 落盘时分配，页面内拿不到。
+      if (scope === 'page') {
+        const label = a.label;
+        $('targetPreview').textContent = `${label}（当前）—— ${String(a.of(el))}`;
+      } else {
+        try {
+          const s = selectorFor(meaningful(el));
+          const count = (s.matches ?? '?');
+          $('targetPreview').textContent =
+            `${s.code}${s.ambiguous ? ' ⚠ 多元素' : ''} · 匹配 ${count}`;
+        } catch { $('targetPreview').textContent = '无法预览目标'; }
+      }
       if (a.kind === 'timewindow') $('es').value = valueByTimeFormat(a.of(el), $('fmt').value);
       validate();
       fit();                     // 控件行数变了，高度跟着变，得重新收边
     };
     const validate = () => {
-      const a = ASSERTIONS[$('t').value];
+      const set = assertionSet();
+      const a = set[$('t').value] || Object.values(set)[0];
       let bad = '';
       if (a.kind === 'time') {
         const fmt = $('fmt').value.trim() || TIME_FORMAT_DEFAULT;
@@ -1075,10 +1148,16 @@ export const RECORDER = () => {
     $('es').addEventListener('input', () => { expectedEdited = true; });
     $('dur').addEventListener('input', () => { rangeDurTouched = true; });
     $('t').addEventListener('change', sync);
+    // 预设只是快捷填配置：应用后把预设选择框还原为「— 自选 —」，避免重复选择
+    $('ps').addEventListener('change', () => {
+      applyPreset($('ps').value);
+      $('ps').value = '';
+    });
+    $('sc').addEventListener('change', () => { scope = $('sc').value; sync(); });
     $('cancel').addEventListener('click', closeMenu);
     $('ok').addEventListener('click', () => {
       const type = $('t').value;
-      const a = ASSERTIONS[type];
+      const a = assertionSet()[type];
       const expected = a.kind === 'bool' ? $('eb').value === 'true' : $('es').value;
       const op = opsFor(type) ? $('op').value : null;
       // P0：负断言需要稳定窗口（§6）—— 不可见 / 不包含 / 不等于 / count=0
@@ -1088,6 +1167,12 @@ export const RECORDER = () => {
       const wait = { timeoutMs: 5000, pollMs: 100, stableMs: negative ? 300 : 0 };
       // 文本/输入值要确认「读取值」；其余类型用户亲手填/选即显式确认
       const confirmed = a.kind !== 'string' || $('confirm').checked || expectedEdited;
+      if (scope === 'page') {
+        // 页面级断言（url/title）：无 DOM 选择器，绑定当前页面（§5 scope=page）
+        const step = pushPageAssert(type, expected, op, wait, confirmed);
+        closeMenu();
+        return;
+      }
       if (a.kind === 'time') {
         // 断言类型仍然是 text —— 变的只是「期望值从哪来」。
         // 这样回放侧读取文本的那套逻辑一行都不用改。
@@ -1168,10 +1253,16 @@ export const RECORDER = () => {
     try {
       const t = meaningful(el);
       let sel = selectorFor(t);
-      // 期望值动态算的断言：选择器若把录到的那段文本包在里面，回放必然找不到元素。
-      // 换成「稳定行 + 第几列」；换不到就保留原样，让生成器把问题说出来。
+      // 单元素断言（非 count）命中多个元素时，绝不静默 .first()（§4.3）。
+      // 优先用「稳定行 + 列号」收窄回单个目标；换不到就保留歧义选择器，
+      // 让生成器/回放把歧义如实报出来而不是悄悄挑第一个。
       let cellAnchor;
+      const singleElement = assertion !== 'count';
       if (expectedFrom && expected && String(sel.code).includes(String(expected))) {
+        // 期望值动态算的断言：选择器若把录到的那段文本包在里面，回放必然找不到元素。
+        const cell = stableCellSelector(t);
+        if (cell) { sel = cell; cellAnchor = cell.anchor; }
+      } else if (singleElement && sel.ambiguous) {
         const cell = stableCellSelector(t);
         if (cell) { sel = cell; cellAnchor = cell.anchor; }
       }
@@ -1194,6 +1285,33 @@ export const RECORDER = () => {
       // 录下来的 expected 保留作证据（当时看到的是什么），但回放时不用它比对
       if (expectedFrom) step.expectedFrom = expectedFrom;
       if (cellAnchor) step.cellAnchor = cellAnchor;
+      steps.push(step);
+      if (typeof window.__recPush === 'function') {
+        try { window.__recPush(step); } catch { /* 页面正在卸载 */ }
+      }
+      return step;
+    } catch { /* 录制出错不能影响用户操作 */ }
+    return null;
+  };
+
+  /**
+   * 页面级断言（P1）：比较当前页面自身的 url / title，无 DOM 选择器。
+   * scope=page，绑定当前页面；pageId 由 record.py 落盘时分配给当前页面。
+   */
+  const pushPageAssert = (assertion, expected, op, wait, confirmed) => {
+    try {
+      const step = {
+        id: `${tag}-${++seq}`, t: Date.now(),
+        type: 'assert', scope: 'page', assertion, expected,
+        url: location.pathname + location.search + location.hash,
+        inFrame: window !== window.top,
+        framePath: window !== window.top ? location.pathname : undefined,
+        afterStepId: steps[steps.length - 1]?.id,
+        expectedConfirmed: !!confirmed,
+        wait: wait || undefined,
+      };
+      if (!step.afterStepId) delete step.afterStepId;
+      if (op && op !== 'equals') step.op = op;
       steps.push(step);
       if (typeof window.__recPush === 'function') {
         try { window.__recPush(step); } catch { /* 页面正在卸载 */ }

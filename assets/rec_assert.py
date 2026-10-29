@@ -452,8 +452,44 @@ def matches_assert(actual: Any, expected: Any, op: str = "equals",
     raise ValueError(f"不支持的比较算子: {op!r}")
 
 
+def _poll_stable(read, satisfied, *, timeout: float, poll: float, stable: float,
+                 make_error):
+    """统一 deadline + stable 轮询核心，生成链与回放链共用（P0，§6）。
+
+    read() 读取观测值，抛错即「本轮读取失败」—— 错误不是观测值，记录最后
+    异常并继续到预算结束，绝不拿异常字符串去比较（否则 not_equals 会假通过）。
+    条件满足后必须**连续保持** stable 秒才通过：负断言（不可见/count=0 等）默认
+    带稳定窗口，避免「先缺席后出现」的中间态抢跑。
+    """
+    deadline = time.monotonic() + timeout
+    last_actual = None
+    last_error = None
+    stable_since = None
+    while True:
+        try:
+            last_actual = read()
+            last_error = None
+        except Exception as error:
+            last_error = error
+            stable_since = None
+        ok = last_error is None and satisfied(last_actual)
+        if ok:
+            if stable <= 0:
+                return last_actual
+            if stable_since is None:
+                stable_since = time.monotonic()
+            elif time.monotonic() - stable_since >= stable:
+                return last_actual
+        else:
+            stable_since = None
+        if time.monotonic() >= deadline:
+            raise make_error(last_actual, last_error)
+        time.sleep(poll)
+
+
 def expect_value(locator, expected, op: str = "equals",
-                 timeout: float = 5.0) -> Any:
+                 timeout: float = 5.0, *, poll: float = 0.1,
+                 stable: float = 0.0) -> Any:
     """轮询输入框的 value 直到满足算子（精确语义，见 matches_assert strict）。
 
     轮询中途元素 detached 会让 input_value() 抛错 —— 错误是诊断信息，
@@ -461,62 +497,50 @@ def expect_value(locator, expected, op: str = "equals",
     用错误消息「通过」（假通过）。所以只在成功读取后才比较，读取失败
     在预算内重试，超时带最后异常明确失败。
     """
-    deadline = time.monotonic() + timeout
-    last = None
-    last_error = None
-    while True:
-        try:
-            last = locator.input_value()
-            last_error = None
-        except Exception as error:
-            last_error = error
-        if last_error is None and matches_assert(last, expected, op, strict=True):
-            return last
-        if time.monotonic() >= deadline:
-            if last_error is not None:
-                raise AssertionError(
-                    f"输入值断言失败: 读取持续失败 op={op!r} expected={expected!r}: "
-                    f"{type(last_error).__name__}: {last_error}"
-                ) from last_error
-            raise AssertionError(
-                f"输入值断言失败: op={op!r} expected={expected!r} actual={last!r}"
+    def err(last, last_error):
+        if last_error is not None:
+            return AssertionError(
+                f"输入值断言失败: 读取持续失败 op={op!r} expected={expected!r}: "
+                f"{type(last_error).__name__}: {last_error}"
             )
-        time.sleep(0.1)
+        return AssertionError(
+            f"输入值断言失败: op={op!r} expected={expected!r} actual={last!r}"
+        )
+    return _poll_stable(
+        lambda: locator.input_value(),
+        lambda v: matches_assert(v, expected, op, strict=True),
+        timeout=timeout, poll=poll, stable=stable, make_error=err,
+    )
 
 
 def expect_attribute(locator, name: str, expected, op: str = "equals",
-                     timeout: float = 5.0) -> Any:
+                     timeout: float = 5.0, *, poll: float = 0.1,
+                     stable: float = 0.0) -> Any:
     """轮询元素的某个属性直到满足算子（精确语义）。
 
     属性不存在时 get_attribute 返回 None —— 精确比较下 None != ""，
     「断言 href 等于空」和「断言 href 不存在」因此可区分。
     读取抛错的处理同 expect_value：重试，超时带最后异常失败。
     """
-    deadline = time.monotonic() + timeout
-    last = None
-    last_error = None
-    while True:
-        try:
-            last = locator.get_attribute(name)
-            last_error = None
-        except Exception as error:
-            last_error = error
-        if last_error is None and matches_assert(last, expected, op, strict=True):
-            return last
-        if time.monotonic() >= deadline:
-            if last_error is not None:
-                raise AssertionError(
-                    f"属性断言失败: {name} 读取持续失败 op={op!r} expected={expected!r}: "
-                    f"{type(last_error).__name__}: {last_error}"
-                ) from last_error
-            raise AssertionError(
-                f"属性断言失败: {name} op={op!r} expected={expected!r} actual={last!r}"
+    def err(last, last_error):
+        if last_error is not None:
+            return AssertionError(
+                f"属性断言失败: {name} 读取持续失败 op={op!r} expected={expected!r}: "
+                f"{type(last_error).__name__}: {last_error}"
             )
-        time.sleep(0.1)
+        return AssertionError(
+            f"属性断言失败: {name} op={op!r} expected={expected!r} actual={last!r}"
+        )
+    return _poll_stable(
+        lambda: locator.get_attribute(name),
+        lambda v: matches_assert(v, expected, op, strict=True),
+        timeout=timeout, poll=poll, stable=stable, make_error=err,
+    )
 
 
 def expect_count(locator, expected: int, op: str = "equals",
-                 timeout: float = 5.0) -> int:
+                 timeout: float = 5.0, *, poll: float = 0.1,
+                 stable: float = 0.0) -> int:
     """断言匹配到的元素**个数**满足算子（Playwright to_have_count 只有等于）。
 
     at_least / at_most 是自加：「至少 1 条记录」「不超过 N 个候选」是商用
@@ -534,34 +558,120 @@ def expect_count(locator, expected: int, op: str = "equals",
             or expected < 0):
         raise ValueError(
             f"count 断言的 expected 必须是非负整数: {expected!r}")
-    deadline = time.monotonic() + timeout
-    last = None
-    last_error = None
-    while True:
-        try:
-            last = locator.count()
-            last_error = None
-        except Exception as error:
-            last_error = error
-        if (last_error is None and last >= 0
-                and matches_assert(last, expected, op)):
-            return last
-        if time.monotonic() >= deadline:
-            if last_error is not None:
-                raise AssertionError(
-                    f"数量断言失败: 读取持续失败 op={op!r} expected={expected!r}: "
-                    f"{type(last_error).__name__}: {last_error}"
-                ) from last_error
-            if last is not None and last < 0:
-                raise AssertionError(
-                    f"数量断言失败: 读取到非法负数计数 actual={last!r} "
-                    f"op={op!r} expected={expected!r}"
-                    "（count 的合法域是非负整数）"
-                )
-            raise AssertionError(
-                f"数量断言失败: op={op!r} expected={expected!r} actual={last!r}"
+    def err(last, last_error):
+        if last_error is not None:
+            return AssertionError(
+                f"数量(count)断言失败: 读取持续失败 op={op!r} expected={expected!r}: "
+                f"{type(last_error).__name__}: {last_error}"
             )
-        time.sleep(0.1)
+        if last is not None and last < 0:
+            return AssertionError(
+                f"数量(count)断言失败: 读取到非法负数计数 actual={last!r} "
+                f"op={op!r} expected={expected!r}"
+                "（count 的合法域是非负整数）"
+            )
+        return AssertionError(
+            f"数量(count)断言失败: op={op!r} expected={expected!r} actual={last!r}"
+        )
+    return _poll_stable(
+        lambda: locator.count(),
+        lambda v: _last_ok(v, expected, op),
+        timeout=timeout, poll=poll, stable=stable, make_error=err,
+    )
+
+
+def _last_ok(actual, expected, op) -> bool:
+    return actual >= 0 and matches_assert(actual, expected, op)
+
+
+# ────────────────────────── 页面级断言（P1：URL / 标题） ─────────────────────
+#
+# 生成链与回放链共用同一套 deadline+stable 轮询与 matches_assert 比较，
+# 与元素断言同核心。比较的是页面自身的 url / title 字符串（非 strict，作
+# 空白归一化后按算子比 —— equals/contains/starts_with/matches 全走 matches_assert）。
+
+
+def _page_value_err(kind, last, last_error, expected, op):
+    if last_error is not None:
+        return AssertionError(
+            f"{kind} 断言失败: 读取持续失败 op={op!r} expected={expected!r}: "
+            f"{type(last_error).__name__}: {last_error}"
+        )
+    return AssertionError(
+        f"{kind} 断言失败: actual={last!r} expected={expected!r} op={op!r}"
+    )
+
+
+def expect_page_url(page, expected, op: str = "equals", *,
+                    timeout: float = 5.0, poll: float = 0.1,
+                    stable: float = 0.0) -> str:
+    """轮询页面 URL 直到满足算子（页面级断言）。"""
+    return _poll_stable(
+        lambda: page.url,
+        lambda u: matches_assert(u, expected, op),
+        timeout=timeout, poll=poll, stable=stable,
+        make_error=lambda last, le: _page_value_err(
+            "页面URL", last, le, expected, op),
+    )
+
+
+def expect_page_title(page, expected, op: str = "equals", *,
+                      timeout: float = 5.0, poll: float = 0.1,
+                      stable: float = 0.0) -> str:
+    """轮询页面标题直到满足算子（页面级断言）。"""
+    return _poll_stable(
+        lambda: page.title(),
+        lambda t: matches_assert(t, expected, op),
+        timeout=timeout, poll=poll, stable=stable,
+        make_error=lambda last, le: _page_value_err(
+            "页面标题", last, le, expected, op),
+    )
+
+
+# ────────────────────────── 布尔状态断言（P1：enabled/editable/selected 等） ──
+#
+# visible / checked / enabled / editable / selected 五类布尔状态统一走这一个
+# 入口。生成链（生成 spec 里 emit expect_state(...)）与回放链（_assert_locator）
+# 共用同一份轮询与稳定语义 —— 避免每条链各自写一遍 is_* 的 deadline 循环。
+
+_STATE_READERS = {
+    "visible": lambda loc: loc.is_visible(),
+    "checked": lambda loc: loc.is_checked(),
+    "enabled": lambda loc: loc.is_enabled(),
+    "editable": lambda loc: loc.is_editable(),
+    # Playwright Locator 没有 is_selected；option 的选中态从元素属性读取
+    "selected": lambda loc: loc.evaluate("(el) => !!el.selected"),
+}
+
+
+def expect_state(locator, expected: bool, kind: str, *,
+                 timeout: float = 5.0, poll: float = 0.1,
+                 stable: float = 0.0) -> bool:
+    """轮询某个布尔 UI 状态（visible/enabled/checked/editable/selected）直到
+    等于 expected，满足后按需连续保持 stable 秒。
+
+    expected=False（负断言）默认由调用方传入稳定窗口，防「先缺席后出现」抢跑；
+    kind 必须是 _STATE_READERS 的键，未知立即 ValueError（不猜）。
+    读取抛错不是观测值：重试，超时带最后异常明确失败。
+    """
+    reader = _STATE_READERS.get(kind)
+    if reader is None:
+        raise ValueError(f"不支持的布尔状态: {kind!r}")
+    def err(last, last_error):
+        if last_error is not None:
+            return AssertionError(
+                f"{kind} 状态断言失败: 读取持续失败 expected={expected!r}: "
+                f"{type(last_error).__name__}: {last_error}"
+            )
+        return AssertionError(
+            f"{kind} 状态断言失败: expected={expected!r} actual={last!r}"
+        )
+    return _poll_stable(
+        lambda: reader(locator),
+        lambda v: bool(v) is bool(expected),
+        timeout=timeout, poll=poll, stable=stable, make_error=err,
+    )
+
 
 # ────────────────────────── 时间区间（前缀 + 时长） ──────────────────────────
 #

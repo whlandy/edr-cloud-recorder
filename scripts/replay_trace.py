@@ -16,7 +16,8 @@ from rec_assert import (
     LOCALTIME_KIND, TIMEWINDOW_KIND, TIMETRANGE_KIND, ANY_STR, assert_subset,
     expect_local_time, expect_time_window, local_time_value,
     expect_count, expect_value, expect_attribute, expect_time_range,
-    matches_assert, COUNT_OPS, VALUE_OPS,
+    expect_page_url, expect_page_title, expect_state, matches_assert,
+    COUNT_OPS, STRING_OPS, VALUE_OPS, _poll_stable,
 )
 from rec_session import restore_context_session
 from rec_secrets import REDACTED
@@ -40,6 +41,11 @@ SUPPORTED_ACTIONS = {
     "Click", "DoubleClick", "InputText", "Check", "Uncheck",
     "SetSwitch", "PressKey", "DoNothing",
 }
+
+# 布尔 UI 状态断言：统一走 rec_assert.expect_state（与生成链同核心同稳定语义）
+_STATE_ASSERTIONS = frozenset({
+    "visible", "checked", "enabled", "editable", "selected",
+})
 
 
 class TraceReplayError(RuntimeError):
@@ -476,6 +482,12 @@ def _validate_response(response, expected: dict) -> dict:
 
 def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
     assertion, expected = param.get("assertion"), param.get("expected")
+    # 每条断言的等待预算与稳定窗口：wait.timeoutMs 是总预算，不让每层重试各耗一份
+    # （§6 统一 deadline）；负断言在录制时已默认 stableMs=300，回放照单执行。
+    wait = param.get("wait") or {}
+    timeout = (wait.get("timeoutMs") or timeout_ms) / 1000
+    stable = (wait.get("stableMs") or 0) / 1000
+    poll = (wait.get("pollMs") or 0.1) / 1000
     dynamic = param.get("expectedFrom") or {}
     if dynamic.get("kind") == LOCALTIME_KIND:
         # 期望值由回放此刻的时钟决定。轮询里每次重算 —— 页面可能几秒后才刷新出
@@ -485,7 +497,7 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
             match=dynamic.get("match") or "contains",
             # 输入框的时间在 value 上，inner_text 恒为空
             read="value" if assertion == "value" else "text",
-            timeout=timeout_ms / 1000,
+            timeout=timeout,
         )
         return
     if dynamic.get("kind") == TIMEWINDOW_KIND:
@@ -493,7 +505,7 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
             locator, expected, dynamic.get("format") or "%H:%M",
             fluctuation_minutes=dynamic.get("fluctuationMinutes") or 0,
             read="value" if assertion == "value" else "text",
-            timeout=timeout_ms / 1000,
+            timeout=timeout,
         )
         return
     if dynamic.get("kind") == TIMETRANGE_KIND:
@@ -508,13 +520,13 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
         expect_time_range(
             locator, expected, duration,
             read="value" if assertion == "value" else "text",
-            timeout=timeout_ms / 1000,
+            timeout=timeout,
         )
         return
     op = param.get("op") or "equals"
     # 快速失败：算子/期望值形状不对是录制或生成侧的错，轮询等满超时才报错，
     # 排障的人只会看到一条含糊的「断言失败」。
-    if assertion in ("visible", "checked") and op != "equals":
+    if assertion in _STATE_ASSERTIONS and op not in ("equals", "not_equals"):
         raise TraceReplayError(f"{assertion} 断言不支持算子 {op!r}")
     if assertion in ("text", "value", "attribute") and op not in VALUE_OPS:
         raise TraceReplayError(f"不支持的比较算子: {op!r}")
@@ -524,72 +536,40 @@ def _assert_locator(locator, param: dict, timeout_ms: int) -> None:
             raise TraceReplayError(
                 f"count 断言要求非负整数期望值与算子 {'/'.join(COUNT_OPS)}: "
                 f"expected={expected!r} op={op!r}")
-        # 元素个数：读 DOM 数量，与「读一个元素的某个方面」不是一条路径。
-        # locator.count() 正常时找不到就是 0（合法观测值）；**抛错**则不是
-        # 「0 个」——读取失败不进比较，预算内重试，超时带最后异常失败。
-        # 负数观测值同理不进比较（count 的合法域是非负整数；历史 D1 的
-        # -1 形状），预算内重试，超时带值失败。
-        deadline = time.monotonic() + timeout_ms / 1000
-        last = None
-        last_error = None
-        while True:
-            try:
-                last = locator.count()
-                last_error = None
-            except Exception as error:
-                last_error = error
-            if (last_error is None and last >= 0
-                    and matches_assert(last, expected, op)):
-                return
-            if time.monotonic() >= deadline:
-                if last_error is not None:
-                    raise AssertionError(
-                        f"断言失败: count 读取持续失败 op={op!r} expected={expected!r}: "
-                        f"{type(last_error).__name__}: {last_error}")
-                if last is not None and last < 0:
-                    raise AssertionError(
-                        f"断言失败: count 读取到非法负数计数 actual={last!r} "
-                        f"expected={expected!r} op={op!r}"
-                        "（count 的合法域是非负整数）")
-                raise AssertionError(
-                    f"断言失败: count actual={last!r} expected={expected!r} op={op!r}"
-                )
-            time.sleep(0.1)
-    readers = {
-        "visible": lambda: locator.is_visible(),
-        "text": lambda: locator.inner_text(),
-        "value": lambda: locator.input_value(),
-        "checked": lambda: locator.is_checked(),
-        "attribute": lambda: locator.get_attribute(param.get("attribute")),
-    }
-    if assertion not in readers:
+        expect_count(locator, expected, op,
+                     timeout=timeout, poll=poll, stable=stable)
+        return
+    if assertion in _STATE_ASSERTIONS:
+        # 布尔状态统一走 rec_assert.expect_state —— 与生成链共用同一轮询/稳定
+        want = bool(expected)
+        if op == "not_equals":
+            want = not want
+        expect_state(locator, want, assertion,
+                     timeout=timeout, poll=poll, stable=stable)
+        return
+    if assertion in ("value", "attribute"):
+        if assertion == "value":
+            expect_value(locator, expected, op,
+                         timeout=timeout, poll=poll, stable=stable)
+        else:
+            expect_attribute(locator, param.get("attribute"), expected, op,
+                             timeout=timeout, poll=poll, stable=stable)
+        return
+    if assertion != "text":
         raise TraceReplayError(f"不支持的断言: {assertion!r}")
-    # text 保留空白归一化；value/attribute/visible/checked 走精确比较
-    # （旧回放语义：属性缺失 None 与空串 "" 必须可区分）。
-    strict = assertion != "text"
-
-    deadline = time.monotonic() + timeout_ms / 1000
-    last_actual = None
-    last_error = None
-    while True:
-        try:
-            last_actual = readers[assertion]()
-            last_error = None
-        except Exception as error:
-            # 读取失败不进比较：错误不是观测值。拿异常字符串参与比较会让
-            # not_equals / is_not_blank 用错误消息「通过」（假通过）。
-            last_error = error
-        if last_error is None and matches_assert(last_actual, expected, op, strict=strict):
-            return
-        if time.monotonic() >= deadline:
-            if last_error is not None:
-                raise AssertionError(
-                    f"断言失败: {assertion} 读取持续失败 op={op!r} expected={expected!r}: "
-                    f"{type(last_error).__name__}: {last_error}")
-            raise AssertionError(
-                f"断言失败: {assertion} actual={last_actual!r} expected={expected!r} op={op!r}"
-            )
-        time.sleep(0.1)
+    # text：保留空白归一化（非 strict），与生成链扩展算子共用同一比较定义
+    err = (lambda last, last_error:
+           (AssertionError(
+               f"断言失败: text 读取持续失败 op={op!r} expected={expected!r}: "
+               f"{type(last_error).__name__}: {last_error}")
+            if last_error is not None else
+            AssertionError(
+                f"断言失败: text actual={last!r} expected={expected!r} op={op!r}")))
+    _poll_stable(
+        lambda: locator.inner_text(),
+        lambda v: matches_assert(v, expected, op),
+        timeout=timeout, poll=poll, stable=stable, make_error=err,
+    )
 
 
 def _switch_reader(locator, via: dict):
@@ -628,11 +608,36 @@ def _set_switch(locator, param: dict, timeout_ms: int) -> bool:
     return True
 
 
+def _assert_page(page, param: dict, timeout_ms: int) -> None:
+    """页面级断言（scope="page"，P1）：URL / 标题，无 DOM 选择器。
+
+    与生成链共用 expect_page_url / expect_page_title（同一 matches_assert +
+    统一 deadline/stable 轮询），并照单执行录制的 wait 预算与稳定窗口。
+    """
+    assertion, expected = param.get("assertion"), param.get("expected")
+    wait = param.get("wait") or {}
+    timeout = (wait.get("timeoutMs") or timeout_ms) / 1000
+    stable = (wait.get("stableMs") or 0) / 1000
+    poll = (wait.get("pollMs") or 0.1) / 1000
+    op = param.get("op") or "equals"
+    if assertion not in ("url", "title"):
+        raise TraceReplayError(f"不支持的页面断言: {assertion!r}")
+    if not isinstance(op, str) or op not in STRING_OPS:
+        raise TraceReplayError(f"{assertion} 不支持算子 {op!r}")
+    helper = expect_page_url if assertion == "url" else expect_page_title
+    helper(page, expected, op, timeout=timeout, poll=poll, stable=stable)
+
+
 def _execute_action(page, node: dict, template_root: Path, targeting: str,
                     timeout_ms: int, env: dict,
                     focused_selector: str | None) -> dict:
     action = node["action"]
     action_type, param = action["type"], action.get("param") or {}
+    assertion = ts.assertion_of(node)
+    # 页面级断言无需 DOM 定位：直接读当前 page 的 url / title
+    if assertion and assertion.get("scope") == "page":
+        _assert_page(page, assertion, timeout_ms)
+        return {"mode": "verifier", "scope": "page"}
     mode, locator, visual, dom_error = _target(
         page, node, template_root, targeting, timeout_ms, focused_selector
     )
@@ -649,7 +654,6 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
             point={"x": visual.x, "y": visual.y},
         )
 
-    assertion = ts.assertion_of(node)
     if assertion:
         _assert_locator(locator, assertion, timeout_ms)
     elif action_type == "PressKey":

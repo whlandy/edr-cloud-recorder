@@ -16,12 +16,68 @@ import json
 import re
 from urllib.parse import urljoin, urlsplit
 
-from rec_assert import COUNT_OPS, VALUE_OPS
+from rec_assert import COUNT_OPS, STRING_OPS, VALUE_OPS
 from selector_py import SelectorError, to_python
 from rec_secrets import REDACTED, redact_sensitive_values
 
 
 class SpecGenerationError(ValueError):
+    """生成失败：有步骤无法被**如实**转译。
+
+    宁可整份不生成，也不生成一份少了断言/动作的 spec —— 断言不存在的
+    用例跑绿是最危险的一种假绿（录制者以为守住了，其实没守）。
+    问题在收集阶段**一次报全**，不 fail-fast：半份诊断不如全份诊断。
+    """
+
+    def __init__(self, problems: list[str]):
+        self.problems = list(problems)
+        super().__init__(
+            f"生成失败（{len(self.problems)} 步无法转译）：\n  "
+            + "\n  ".join(self.problems)
+        )
+
+
+_ASSERT_MARKER = re.compile(r"^ *# rec-assert: (\S+)")
+
+
+def pytest_assert_ids(spec_text: str) -> list:
+    """从生成 spec 里按序提取每条断言的录制 id（见生成处的 `# rec-assert:` 标记）。"""
+    return [m.group(1) for line in spec_text.splitlines()
+            for m in [re.match(_ASSERT_MARKER, line)] if m]
+
+
+def recording_assert_ids(steps) -> list:
+    """recording 里断言步骤的 id 序列（按录制顺序）。"""
+    return [s.get("id") for s in steps
+            if s.get("type") == "assert" and s.get("id")]
+
+
+def _trace_assert_ids(trace) -> list:
+    """trace 里断言节点对应的 recording id 序列（按节点顺序）。"""
+    from trace_schema import assertion_of, nodes, provenance
+    return [provenance(node).get("sourceStepId")
+            for _, node in nodes(trace)
+            if assertion_of(node) and provenance(node).get("sourceStepId")]
+
+
+def artifact_assert_consistency(recording_steps, spec_text, trace) -> list:
+    """三产物断言 id/数量一致性（P0 §8）。
+
+    返回问题列表；空列表 = recording / pytest / trace 三处断言 id 与数量一一对应。
+    任何一处被删除或改写都必然落进列表，调用方据此硬拒 —— 只给数量对得上、
+    但断言被换走的「假一致」不在话下：比较的是 id 序列本身。
+    """
+    rec = recording_assert_ids(recording_steps)
+    spec = pytest_assert_ids(spec_text)
+    tr = _trace_assert_ids(trace)
+    problems = []
+    if rec != spec:
+        problems.append(
+            f"pytest 断言与 recording 不一致: recording={rec} pytest={spec}")
+    if rec != tr:
+        problems.append(
+            f"trace 断言与 recording 不一致: recording={rec} trace={tr}")
+    return problems
     """生成失败：有步骤无法被**如实**转译。
 
     宁可整份不生成，也不生成一份少了断言/动作的 spec —— 断言不存在的
@@ -54,9 +110,10 @@ from pathlib import Path
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect
 
 from rec_assert import (
-    ANY_NUM, ANY_STR, assert_subset, expect_local_time, expect_time_window,
-    expect_count, expect_value, expect_attribute, expect_time_range,
-    local_time_value, poll_until, matches_assert,
+    ANY_NUM, ANY_STR, COUNT_OPS, STRING_OPS, VALUE_OPS, assert_subset,
+    expect_local_time, expect_time_window, expect_count, expect_value,
+    expect_attribute, expect_time_range, expect_state, expect_page_url,
+    expect_page_title, local_time_value, poll_until, matches_assert,
 )
 from rec_helpers import (
     dismiss_overlays, is_present, nth_request, recorded_page_for,
@@ -95,6 +152,27 @@ LOGIN_ACTION = re.compile(r"login|sign[ -]?in|登录|登入", re.I)
 # 由 poll_until 的预算（默认 5s）决定失败总时长；不给短超时的话，一次读取就要
 # 烧掉页面默认超时（通常 30s），失败形态虽然是 AssertionError，代价却翻了数倍。
 ASSERT_READ_TIMEOUT_MS = 1000
+
+
+def _wait_kwargs(step: dict, *, default_stable_ms: float = 0.0) -> str:
+    """把录制的等待策略（§5 wait）落成 helper 关键字参数串。
+
+    老录制没有 wait 字段 → 返回空串（helper 用各自缺省）；新录制用
+    timeoutMs/pollMs/stableMs。default_stable_ms 用于负断言的无字段兜底
+    （§6：负断言默认稳定窗口）。stableMs 单位毫秒，这里换成秒。
+    """
+    w = step.get("wait") or {}
+    if not w:
+        if not default_stable_ms:
+            return ""
+        return f"stable={default_stable_ms / 1000:g}"
+    timeout_s = (w.get("timeoutMs") or 5000) / 1000
+    poll_s = (w.get("pollMs") or 100) / 1000
+    stable_ms = w.get("stableMs")
+    if stable_ms is None:
+        stable_ms = default_stable_ms
+    return (f"timeout={timeout_s:g}, poll={poll_s:g}, "
+            f"stable={stable_ms / 1000:g}")
 
 
 def prepare_steps(steps):
@@ -505,6 +583,40 @@ def generate_spec(steps, net, start_url, name):
             tail = s["framePath"].split("/")[-1]
             root = f'page.frame_locator({_lit(f"iframe[src*=\x22{tail}\x22]")})'
 
+        # ── 页面级断言（scope="page"，P1）：URL / 标题，无 DOM 选择器 ──
+        # 绑定当前 pageId（前面已 page = recorded_page_for(...)），比较的是页面
+        # 自身 url / title，与元素断言同为 matches_assert + 统一轮询（§8 两链同判）。
+        if s["type"] == "assert" and s.get("scope") == "page":
+            a, exp = s.get("assertion"), s.get("expected")
+            op0 = s.get("op")
+            if (a in ("url", "title") and op0 not in ("is_blank", "is_not_blank")
+                    and s.get("expectedConfirmed") is False):
+                lines.append("    # ⚠ 页面断言需要 expected 但 expectedConfirmed=false，已拒发")
+                problems.append(
+                    f"step#{i} (id={s.get('id')}): 页面断言 expected 未确认，拒发而不是少断言")
+                continue
+            if a in ("url", "title"):
+                op = op0 or "equals"
+                if not isinstance(op, str) or op not in STRING_OPS:
+                    lines.append(f"    # ⚠ {a} 不支持算子 {op!r}，已拒发")
+                    problems.append(
+                        f"step#{i} (id={s.get('id')}): {a} 不支持算子 {op!r}")
+                else:
+                    helper = "expect_page_url" if a == "url" else "expect_page_title"
+                    w_args = _wait_kwargs(s)
+                    arg = f", {w_args}" if w_args else ""
+                    lines.append(
+                        f"    {helper}(page, {_lit(exp)}, op={_lit(op)}{arg}){warn}")
+            else:
+                lines.append(f"    # ⚠ 未知页面断言类型 {_lit(a)}，已拒发")
+                problems.append(
+                    f"step#{i} (id={s.get('id')}): 未知页面断言类型 {_lit(a)}")
+            if s.get("id"):
+                lines.append(f"    # rec-assert: {s['id']}")
+            for c in calls:
+                lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
+            continue
+
         try:
             sel = to_python(s["sel"])
         except SelectorError as e:
@@ -602,8 +714,10 @@ def generate_spec(steps, net, start_url, name):
                     problems.append(
                         f"step#{i} (id={s.get('id')}): count 不支持算子 {op!r}")
                 else:
+                    w_args = _wait_kwargs(s, default_stable_ms=300 if exp == 0 else 0)
+                    arg = f", {w_args}" if w_args else ""
                     lines.append(
-                        f"    expect_count({loc}, {_lit(exp)}, op={_lit(op)}){warn}"
+                        f"    expect_count({loc}, {_lit(exp)}, op={_lit(op)}{arg}){warn}"
                     )
             elif a == "text":
                 # 语义对齐说明（2026-10-21 验收修正）：
@@ -684,7 +798,9 @@ def generate_spec(steps, net, start_url, name):
                 elif op == "equals":
                     lines.append(f"    expect({loc}).to_have_value({_lit(exp)}){warn}")
                 else:
-                    lines.append(f"    expect_value({loc}, {_lit(exp)}, op={_lit(op)}){warn}")
+                    w_args = _wait_kwargs(s)
+                    arg = f", {w_args}" if w_args else ""
+                    lines.append(f"    expect_value({loc}, {_lit(exp)}, op={_lit(op)}{arg}){warn}")
             elif a == "visible":
                 if s.get("_wasTextTautology"):
                     lines.append(
@@ -695,11 +811,32 @@ def generate_spec(steps, net, start_url, name):
                         "    # 断言它的文本等于自己，只有元素消失才会失败。"
                         "如实生成存在性断言"
                     )
-                lines.append(f"    expect({loc}).to_be_visible(){warn}" if exp
-                             else f"    expect({loc}).to_be_hidden(){warn}")
+                if exp:
+                    lines.append(f"    expect({loc}).to_be_visible(){warn}")
+                else:
+                    # 负断言（不可见）：稳定窗口防「先缺席后出现」的中间态抢跑（§6）
+                    w_args = _wait_kwargs(s, default_stable_ms=300)
+                    arg = f", {w_args}" if w_args else ""
+                    lines.append(
+                        f"    expect_state({loc}, False, \"visible\"{arg}){warn}"
+                    )
             elif a == "checked":
-                lines.append(f"    expect({loc}).to_be_checked(){warn}" if exp
-                             else f"    expect({loc}).not_to_be_checked(){warn}")
+                if exp:
+                    lines.append(f"    expect({loc}).to_be_checked(){warn}")
+                else:
+                    # 负断言（未勾选）同样需要稳定窗口
+                    w_args = _wait_kwargs(s, default_stable_ms=300)
+                    arg = f", {w_args}" if w_args else ""
+                    lines.append(
+                        f"    expect_state({loc}, False, \"checked\"{arg}){warn}"
+                    )
+            elif a in ("enabled", "editable", "selected"):
+                # P1：布尔状态断言统一定位到 expect_state（与回放链同核心）
+                w_args = _wait_kwargs(s, default_stable_ms=0)
+                arg = f", {w_args}" if w_args else ""
+                lines.append(
+                    f"    expect_state({loc}, {_lit(exp)}, {_lit(a)}{arg}){warn}"
+                )
             elif a == "attribute":
                 # 与 count/value 分支同构：坏算子进 problems 拒发。
                 op = s["op"] if "op" in s else "equals"
@@ -711,13 +848,21 @@ def generate_spec(steps, net, start_url, name):
                     lines.append(f"    expect({loc}).to_have_attribute("
                                  f"{_lit(s.get('attribute'))}, {_lit(exp)}){warn}")
                 else:
-                    lines.append(f"    expect_attribute({loc}, {_lit(s.get('attribute'))}, "
-                                 f"{_lit(exp)}, op={_lit(op)}){warn}")
+                    w_args = _wait_kwargs(s)
+                    arg = f", {w_args}" if w_args else ""
+                    lines.append(
+                        f"    expect_attribute({loc}, {_lit(s.get('attribute'))}, "
+                        f"{_lit(exp)}, op={_lit(op)}{arg}){warn}"
+                    )
             else:
                 lines.append(f"    # ⚠ 未知断言类型 {_lit(a)}，已跳过")
                 problems.append(
                     f"step#{i} (id={s.get('id')}): 未知断言类型 {_lit(a)} —— "
                     "这条断言在生成的用例里不存在，拒发而不是少断言")
+            # P0（§8）：成功生成的 spec 里每条断言都带上它的录制 id，供三产物
+            # （recording / pytest / trace）断言 id 与数量的一致性校验读取。
+            if s.get("id"):
+                lines.append(f"    # rec-assert: {s['id']}")
             for c in calls:
                 lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
             continue

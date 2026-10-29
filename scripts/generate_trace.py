@@ -106,6 +106,9 @@ def _assert_recognition(step: dict) -> dict | None:
     """
     if step.get("expectedFrom"):
         return None
+    if step.get("scope") == "page":
+        # 页面级断言（url/title）没有可 OCR 的元素文本 —— 只能由 web 回放读页面
+        return None
     text = _asserted_text(step)
     if not text:
         return None
@@ -178,6 +181,9 @@ def _assertion_spec(step: dict) -> dict:
         "assertion": step.get("assertion"),
         "expected": step.get("expected"),
     }
+    # 页面级断言（P1）：scope=page，比较的是页面 url/title 而非 DOM 元素
+    if step.get("scope"):
+        spec["scope"] = step["scope"]
     # 比较算子：缺省 equals（不写字段，与旧录制兼容）；显式选了别的才落。
     if step.get("op"):
         spec["op"] = step["op"]
@@ -186,6 +192,9 @@ def _assertion_spec(step: dict) -> dict:
     # 期望值在回放那一刻算，录制里的 expected 只作证据 —— 见 rec_assert 的说明
     if step.get("expectedFrom"):
         spec["expectedFrom"] = step["expectedFrom"]
+    # 等待策略/稳定窗口（P0 §5）：断言自身的预算与负断言稳定窗口，回放照单执行
+    if step.get("wait"):
+        spec["wait"] = step["wait"]
     return spec
 
 
@@ -387,8 +396,10 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
             mapped = _assert_recognition(step)
             if mapped is not None:
                 recognition = mapped
-            else:
-                # 桌面侧没有对应能力，显式标出来，别让它以为验过了
+            elif spec.get("scope") != "page":
+                # 桌面侧没有对应能力，显式标出来，别让它以为验过了。
+                # 页面级断言（scope=page）由我们自己的回放链读页面 url/title 校验，
+                # 不是「桌面验证不了」的 web-only —— 保留录制时的 scope=page。
                 spec["scope"] = VERIFY_SCOPE_WEB
             verification["assertion"] = spec
 
