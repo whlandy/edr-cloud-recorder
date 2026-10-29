@@ -147,3 +147,81 @@ def test_blank_op_requires_no_expected(rec_page):
     step = _last_assert_step(rec_page)
     assert step["op"] == "is_blank"
     assert step["expected"] == ""
+
+
+def test_string_expected_prefilled_requires_confirmation(rec_page):
+    """P0：文本/输入值断言的 expected 预填自当前值，未确认前不能保存。
+
+    菜单不得把「当前看到什么」直接当作用户意图 —— 必须修改或勾选
+    「确认使用当前值」后保存才可用（references/common-web-assertion-design.md §4.2/§6）。
+    """
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#t").select_option("text")
+    # expected 预填自元素当前文本
+    assert menu.locator("#es").input_value() == "订单保存成功，单号 abc-42"
+    # 未修改也未勾选确认 → 保存被禁用
+    assert menu.get_by_role("button", name="添加断言").is_disabled()
+    # 勾选确认后可用
+    menu.locator("#confirm").check()
+    assert menu.get_by_role("button", name="添加断言").is_enabled()
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step.get("expectedConfirmed") is True
+
+
+def test_string_expected_edited_counts_as_confirmation(rec_page):
+    """P0：用户把预填值改成别的内容，即实打实的命题，无需再勾选确认。"""
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#t").select_option("text")
+    menu.locator("#es").fill("abc-42")          # 修改预填值
+    assert menu.get_by_role("button", name="添加断言").is_enabled()
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["expected"] == "abc-42"
+    assert step.get("expectedConfirmed") is True
+
+
+def test_assert_records_after_step_id_and_wait(rec_page):
+    """P0：断言记录直接因果前置步骤 id（afterStepId）与等待策略（wait）。
+
+    先录一个普通点击作为前置动作，随后的断言必须带上该步骤 id ——
+    生成器据此保证不把断言移到触发动作之前（§7 因果顺序）。
+    """
+    rec_page.click("#msg")
+    before = [s for s in rec_page.evaluate("() => window.__rec.steps")
+              if s["type"] == "click"]
+    assert before, "普通点击没被录成步骤"
+    trigger_id = before[-1]["id"]
+
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#t").select_option("text")
+    menu.locator("#es").fill("保存成功")
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["afterStepId"] == trigger_id
+    assert step["expectedConfirmed"] is True
+    wait = step["wait"]
+    assert wait["timeoutMs"] > 0 and wait["pollMs"] > 0
+    # 文本「包含/等于」是非负断言 → 默认无稳定窗口；负断言才要求稳定
+    assert wait["stableMs"] == 0
+
+
+def test_negative_assert_defaults_to_stable_window(rec_page):
+    """P0：负断言（不包含 / 不可见 / count=0）默认带稳定窗口，防动画中间态抢跑。"""
+    # count=0（断言「列表空」）
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#t").select_option("count")
+    menu.locator("#es").fill("0")
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["assertion"] == "count" and step["expected"] == 0
+    assert step["wait"]["stableMs"] == 300
+
+
+def test_menu_shows_selector_and_match_count(rec_page):
+    """P0（§4.2 目标预览）：菜单显示目标选择器与匹配数量，后者用于消歧提示。"""
+    menu = _open_menu(rec_page, "#msg")
+    preview = menu.locator("#targetPreview").inner_text()
+    assert "匹配" in preview
+    # 唯一选择器（id 定位）不应标「多元素」
+    assert "多元素" not in preview

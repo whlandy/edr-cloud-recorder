@@ -856,8 +856,12 @@ export const RECORDER = () => {
         button.primary { background:#1a73e8; color:#fff; border-color:#1a73e8; }
         button[disabled] { opacity:.45; cursor:not-allowed; }
         .empty { display:flex; align-items:center; gap:4px; font-size:12px; color:#666; }
+        .target { font-size:11px; color:#555; background:#f4f4f6; border:1px solid #e3e3e8;
+                  border-radius:3px; padding:5px 7px; margin-bottom:6px;
+                  word-break:break-all; max-height:40px; overflow:auto; }
       </style>
       <div class="box">
+        <div class="target" id="targetPreview"></div>
         <div class="row"><label>断言类型</label>
           <select id="t">${Object.entries(ASSERTIONS)
             .map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></div>
@@ -878,6 +882,9 @@ export const RECORDER = () => {
             <option value="true">true</option><option value="false">false</option>
           </select>
           <input type="text" id="es"></div>
+        <div class="row" id="confirmRow" style="display:none"><label></label>
+          <span class="empty"><input type="checkbox" id="confirm"><label for="confirm"
+            style="flex:none;cursor:pointer">确认使用当前值</label></span></div>
         <div class="hint" id="hint"></div>
         <div class="acts">
           <span class="empty"><input type="checkbox" id="allowEmpty"><label for="allowEmpty"
@@ -915,6 +922,10 @@ export const RECORDER = () => {
     // 时长框一旦被用户碰过，就不再自动覆盖 —— 自动默认值只在「人没管过它」时
     // 跟随起点粒度（HH:MM → 60 秒整分钟；HH:MM:SS → 1 秒）。
     let rangeDurTouched = false;
+    // 文本/输入值断言的 expected 预填自元素当前值。预填只是「读到的东西」，
+    // 不是用户意图 —— 只有用户改了值或勾了「确认使用当前值」才算确认（§4.2）。
+    let expectedEdited = false;
+    let prefilledExpected = '';
     const fillOps = (key) => {
       const ops = opsFor(key);
       if (!ops) { $('opRow').style.display = 'none'; return; }
@@ -959,9 +970,23 @@ export const RECORDER = () => {
         $('dur').value = (m && m[1].length === 8) ? 1 : 60;
         rangeDurTouched = false;
       }
-      else $('es').value = String(a.of(el) ?? '');
-      if (a.kind === 'timewindow')
-        $('es').value = valueByTimeFormat(a.of(el), $('fmt').value);
+      else {
+        $('es').value = String(a.of(el) ?? '');
+        prefilledExpected = $('es').value;
+      }
+      // 切换断言类型会重置 expected 的确认状态（预填值跟着变了）
+      expectedEdited = false;
+      $('confirmRow').style.display = a.kind === 'string' ? 'flex' : 'none';
+      $('confirm').checked = false;
+      // P0（§4.2 目标预览）：选择器 + 匹配数量，让用户确认读的是哪个目标。
+      // pageId 由 record.py 落盘时分配，页面内拿不到，这里只预显选择器与命中数。
+      try {
+        const s = selectorFor(meaningful(el));
+        const count = (s.matches ?? '?');
+        $('targetPreview').textContent =
+          `${s.code}${s.ambiguous ? ' ⚠ 多元素' : ''} · 匹配 ${count}`;
+      } catch { $('targetPreview').textContent = '无法预览目标'; }
+      if (a.kind === 'timewindow') $('es').value = valueByTimeFormat(a.of(el), $('fmt').value);
       validate();
       fit();                     // 控件行数变了，高度跟着变，得重新收边
     };
@@ -1036,10 +1061,18 @@ export const RECORDER = () => {
       if (!bad && a.kind !== 'bool' && !opNeedsNoExpected
               && !$('es').value && !$('allowEmpty').checked)
         bad = 'Expected 为空。确实要断言空字符串就勾「允许空值」';
+      // P0（common-web-assertion-design §4.2/§6）：文本/输入值的 expected 预填自
+      // 当前元素值，那只是「读到的东西」，不是用户意图。未修改、未确认前保存被禁用。
+      const confirmed = $('confirm').checked || expectedEdited;
+      if (!bad && a.kind === 'string' && !opNeedsNoExpected
+              && !confirmed && $('es').value && $('es').value === prefilledExpected)
+        bad = 'Expected 预填自当前元素值。修改它，或勾选「确认使用当前值」';
       $('hint').textContent = bad;
       $('ok').disabled = !!bad;
     };
     sh.addEventListener('input', validate);
+    // P0：用户在 expected 框里亲手输入 = 确认这是命题（与「勾选确认」等价）
+    $('es').addEventListener('input', () => { expectedEdited = true; });
     $('dur').addEventListener('input', () => { rangeDurTouched = true; });
     $('t').addEventListener('change', sync);
     $('cancel').addEventListener('click', closeMenu);
@@ -1048,6 +1081,13 @@ export const RECORDER = () => {
       const a = ASSERTIONS[type];
       const expected = a.kind === 'bool' ? $('eb').value === 'true' : $('es').value;
       const op = opsFor(type) ? $('op').value : null;
+      // P0：负断言需要稳定窗口（§6）—— 不可见 / 不包含 / 不等于 / count=0
+      const negative = (a.kind === 'bool' && !expected)
+        || op === 'not_equals' || op === 'not_contains'
+        || (type === 'count' && Number(expected) === 0);
+      const wait = { timeoutMs: 5000, pollMs: 100, stableMs: negative ? 300 : 0 };
+      // 文本/输入值要确认「读取值」；其余类型用户亲手填/选即显式确认
+      const confirmed = a.kind !== 'string' || $('confirm').checked || expectedEdited;
       if (a.kind === 'time') {
         // 断言类型仍然是 text —— 变的只是「期望值从哪来」。
         // 这样回放侧读取文本的那套逻辑一行都不用改。
@@ -1056,7 +1096,7 @@ export const RECORDER = () => {
           kind: 'localtime',
           format: $('fmt').value.trim() || TIME_FORMAT_DEFAULT,
           match: 'contains',
-        });
+        }, wait, confirmed);
       } else if (a.kind === 'timewindow') {
         pushAssert(el, timeSourceOf(el) === 'value' ? 'value' : 'text',
                    expected, undefined, {
@@ -1064,7 +1104,7 @@ export const RECORDER = () => {
           format: $('fmt').value.trim() || TIME_FORMAT_DEFAULT,
           match: 'prefix',
           fluctuationMinutes: Number($('slack').value) || 0,
-        });
+        }, wait, confirmed);
       } else if (a.kind === 'timerange') {
         // 期望值是一个「时间区间」，不是字面文本：expected 存区间起点，
         // 时长进 expectedFrom。回放端按 [起点, 起点+时长) 半开区间匹配
@@ -1073,13 +1113,16 @@ export const RECORDER = () => {
                    expected.trim(), undefined, {
           kind: 'timerange',
           durationSeconds: Number($('dur').value),
-        });
+        }, wait, confirmed);
       } else if (a.kind === 'count') {
         // 数量断言：expected 是整数，算子走 op（equals / at_least / at_most）。
-        const step = pushAssert(el, 'count', Number(expected.trim()));
+        const step = pushAssert(el, 'count', Number(expected.trim()), undefined,
+                                undefined, wait, confirmed);
         if (step && op && op !== 'equals') step.op = op;
       } else {
-        const step = pushAssert(el, type, expected, a.kind === 'attr' ? $('attr').value.trim() : undefined);
+        const step = pushAssert(el, type, expected,
+                                a.kind === 'attr' ? $('attr').value.trim() : undefined,
+                                undefined, wait, confirmed);
         // op 缺省 equals 不写字段 —— 老回放端没有 op 概念，按严格等于跑。
         // 只有显式选了别的算子才落字段，老录制与老回放之间逐字节兼容。
         if (step && op && op !== 'equals') step.op = op;
@@ -1121,7 +1164,7 @@ export const RECORDER = () => {
     };
   };
 
-  const pushAssert = (el, assertion, expected, attribute, expectedFrom) => {
+  const pushAssert = (el, assertion, expected, attribute, expectedFrom, wait, confirmed) => {
     try {
       const t = meaningful(el);
       let sel = selectorFor(t);
@@ -1140,7 +1183,13 @@ export const RECORDER = () => {
         url: location.pathname + location.search + location.hash,
         inFrame: window !== window.top,
         framePath: window !== window.top ? location.pathname : undefined,
+        // P0（common-web-assertion-design §5/§6）：因果前置步骤 + 等待策略 +
+        // expected 确认标志。afterStepId 生成器据此保证不断言抢跑在触发动作之前。
+        afterStepId: steps[steps.length - 1]?.id,
+        expectedConfirmed: !!confirmed,
+        wait: wait || undefined,
       };
+      if (!step.afterStepId) delete step.afterStepId;
       if (attribute) step.attribute = attribute;
       // 录下来的 expected 保留作证据（当时看到的是什么），但回放时不用它比对
       if (expectedFrom) step.expectedFrom = expectedFrom;

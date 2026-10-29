@@ -262,6 +262,56 @@ class TestUnknownOpFailsClosedAtGeneration:
         compile(spec, "generated.py", "exec")
 
 
+class TestExpectedUnconfirmedRejectsWholeSpec:
+    """P0（common-web-assertion-design §5/§6）：需要 expected 的断言，expected
+    未确认（expectedConfirmed=false）必须拒发整份 spec —— 系统不得把「当前看到
+    什么」当成用户意图（§2 期望值由用户确认）。老录制缺字段视为已确认，保持兼容。"""
+
+    @pytest.mark.parametrize("assertion", ["text", "value", "attribute", "count",
+                                           "visible", "checked"],
+                             ids=["text", "value", "attribute", "count",
+                                  "visible", "checked"])
+    def test_unconfirmed_expected_rejects(self, assertion):
+        expected = {"text": "x", "value": "x", "attribute": "x", "count": 1,
+                    "visible": True, "checked": True}[assertion]
+        extra = {"attribute": "href"} if assertion == "attribute" else {}
+        step = _assert_step(assertion, expected, **extra)
+        step["expectedConfirmed"] = False          # 显式未确认
+        with pytest.raises(SpecGenerationError) as ei:
+            generate_spec([step], [], start_url=URL, name="unconf")
+        assert "expectedConfirmed" in str(ei.value)
+
+    @pytest.mark.parametrize("assertion", ["text", "count", "visible"],
+                             ids=["text", "count", "visible"])
+    def test_confirmed_expected_is_accepted(self, assertion):
+        expected = {"text": "x", "count": 1, "visible": True}[assertion]
+        step = _assert_step(assertion, expected)
+        step["expectedConfirmed"] = True
+        spec = generate_spec([step], [], start_url=URL, name="conf")
+        compile(spec, "generated.py", "exec")      # 必须能生成
+
+    def test_legacy_no_field_is_accepted(self):
+        # 老录制没有 expectedConfirmed 字段 → 视为已确认，保持兼容
+        spec = generate_spec([_assert_step("text", "x")],
+                             [], start_url=URL, name="legacy")
+        compile(spec, "generated.py", "exec")
+
+    def test_is_blank_op_needs_no_confirmation(self):
+        # is_blank / is_not_blank 不需要 expected，未确认字段不影响
+        step = _assert_step("text", None, op="is_blank")
+        step["expectedConfirmed"] = False
+        spec = generate_spec([step], [], start_url=URL, name="blankop")
+        compile(spec, "generated.py", "exec")
+
+    def test_dynamic_expected_needs_no_confirmation(self):
+        # expectedFrom（localtime/timewindow/timerange）的期望值由回放时钟决定，
+        # 没有「预填自当前值」问题，未确认字段不拒发
+        step = _assert_step("text", "12:00", expectedFrom={"kind": "timerange"})
+        step["expectedConfirmed"] = False
+        spec = generate_spec([step], [], start_url=URL, name="dyn")
+        compile(spec, "generated.py", "exec")
+
+
 # ── 2b. 生成调用的方法必须真实存在（AST 结构检查） ───────────────────
 
 PLAYWRIGHT_TEXT_METHODS = {

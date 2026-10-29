@@ -518,9 +518,25 @@ def generate_spec(steps, net, start_url, name):
         # ── 断言步骤 ──
         # expected 一律从录制数据里取，不在生成时重新推导。
         if s["type"] == "assert":
+            dyn = s.get("expectedFrom") or {}
+            # P0（common-web-assertion-design §5/§6）：需要静态 expected 的断言，
+            # expected 必须已由用户确认。老录制缺 expectedConfirmed 字段视为已确认
+            # （兼容）；只有显式 expectedConfirmed=false 才拒发整份 spec —— 系统
+            # 不得把「当前看到什么」直接当作用户意图。
+            a0, op0, exp0 = s.get("assertion"), s.get("op"), s.get("expected")
+            needs_expected = (
+                a0 in ("text", "value", "attribute", "count", "visible", "checked",
+                       "enabled", "editable", "selected")
+                and op0 not in ("is_blank", "is_not_blank") and not dyn
+            )
+            if needs_expected and s.get("expectedConfirmed") is False:
+                lines.append("    # ⚠ 需要 expected 但 expectedConfirmed=false，已拒发")
+                problems.append(
+                    f"step#{i} (id={s.get('id')}): 断言需要 expected 但 "
+                    "expectedConfirmed=false —— expected 未获用户确认，拒发而不是少断言")
+                continue
             loc = f"{root}.{sel}"
             a, exp = s.get("assertion"), s.get("expected")
-            dyn = s.get("expectedFrom") or {}
             if dyn.get("kind") == LOCALTIME_KIND:
                 # 期望值由回放那一刻的本机时钟决定，不用录制时的字面量。
                 # 录制时看到的值留在注释里作证据 —— 它说明当时那个位置显示的是时间。
