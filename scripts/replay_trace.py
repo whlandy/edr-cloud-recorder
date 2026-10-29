@@ -16,7 +16,7 @@ from rec_assert import (
     LOCALTIME_KIND, TIMEWINDOW_KIND, TIMETRANGE_KIND, ANY_STR, assert_subset,
     expect_local_time, expect_time_window, local_time_value,
     expect_count, expect_value, expect_attribute, expect_time_range,
-    expect_page_url, expect_page_title, expect_state, matches_assert,
+    expect_page_url, expect_page_title, expect_page_count, expect_state, matches_assert,
     COUNT_OPS, STRING_OPS, VALUE_OPS, _poll_stable,
 )
 from rec_session import restore_context_session
@@ -668,6 +668,18 @@ def _assert_page(page, param: dict, timeout_ms: int) -> None:
     _reject_unconfirmed(param)
     timeout, poll, stable = _split_wait(param, timeout_ms)
     op = param.get("op") or "equals"
+    if assertion == "page_count":
+        # 页面数量：统计当前 browser context 的 page 数（count 类算子）
+        if op not in COUNT_OPS:
+            raise TraceReplayError(f"page_count 不支持算子 {op!r}")
+        if (isinstance(expected, bool) or not isinstance(expected, int)
+                or expected < 0):
+            raise TraceReplayError(
+                f"page_count 要求非负整数期望值与算子 {'/'.join(COUNT_OPS)}: "
+                f"expected={expected!r}")
+        expect_page_count(page, expected, op,
+                          timeout=timeout, poll=poll, stable=stable)
+        return
     if assertion not in ("url", "title"):
         raise TraceReplayError(f"不支持的页面断言: {assertion!r}")
     if not isinstance(op, str) or op not in STRING_OPS:

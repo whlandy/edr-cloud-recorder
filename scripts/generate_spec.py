@@ -113,7 +113,8 @@ from rec_assert import (
     ANY_NUM, ANY_STR, COUNT_OPS, STRING_OPS, VALUE_OPS, assert_subset,
     expect_local_time, expect_time_window, expect_count, expect_value,
     expect_attribute, expect_time_range, expect_state, expect_text,
-    expect_page_url, expect_page_title, local_time_value, poll_until,
+    expect_page_url, expect_page_title, expect_page_count, local_time_value,
+    poll_until,
     matches_assert,
 )
 from rec_helpers import (
@@ -596,7 +597,23 @@ def generate_spec(steps, net, start_url, name):
                 problems.append(
                     f"step#{i} (id={s.get('id')}): 页面断言 expected 未确认，拒发而不是少断言")
                 continue
-            if a in ("url", "title"):
+            if a == "page_count":
+                # 页面数量：统计当前 browser context 的 page 数（count 类算子）
+                op = op0 or "equals"
+                if not (isinstance(op, str) and op in COUNT_OPS):
+                    lines.append(f"    # ⚠ {a} 不支持算子 {op!r}，已拒发")
+                    problems.append(
+                        f"step#{i} (id={s.get('id')}): {a} 不支持算子 {op!r}")
+                elif not (isinstance(exp, int) and not isinstance(exp, bool) and exp >= 0):
+                    lines.append(f"    # ⚠ {a} 的期望须为非负整数 {exp!r}，已拒发")
+                    problems.append(
+                        f"step#{i} (id={s.get('id')}): {a} 期望须为非负整数 {exp!r}")
+                else:
+                    w_args = _wait_kwargs(s)
+                    arg = f", {w_args}" if w_args else ""
+                    lines.append(
+                        f"    expect_page_count(page, {_lit(exp)}, op={_lit(op)}{arg}){warn}")
+            elif a in ("url", "title"):
                 op = op0 or "equals"
                 if not isinstance(op, str) or op not in STRING_OPS:
                     lines.append(f"    # ⚠ {a} 不支持算子 {op!r}，已拒发")

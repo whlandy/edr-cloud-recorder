@@ -768,10 +768,11 @@ export const RECORDER = () => {
   };
 
   // 页面级断言（P1）：比较当前页面自身的 URL / 标题，而非某个 DOM 元素。
-  // 与元素断言共用同一套 expected 确认 + 统一轮询语义。
+  // 与元素断言共用同一套 expected 确认 + 统一轮询语义。P2：页面数量（page_count）。
   const PAGE_ASSERTIONS = {
     url:   { label: '页面 URL',  kind: 'string', of: () => String(location.href || '') },
     title: { label: '页面标题',  kind: 'string', of: () => String(document.title || '') },
+    page_count: { label: '页面数量', kind: 'count', of: () => '' },
   };
 
   // 断言范围：目标元素 / 当前页面（§4.1/§4.2）。页面范围内类型换成 url/title。
@@ -791,7 +792,7 @@ export const RECORDER = () => {
   const COUNT_OPS = [['equals', '等于'], ['at_least', '至少'], ['at_most', '至多']];
   const opsFor = (key) =>
     key === 'value' ? VALUE_OPS
-    : key === 'count' ? COUNT_OPS
+    : key === 'count' || key === 'page_count' ? COUNT_OPS
     // url / title 用字符串算子集（equals/contains/starts_with/matches 等）
     : (key === 'text' || key === 'attribute' || key === 'url' || key === 'title')
         ? STRING_OPS : null;
@@ -1209,8 +1210,10 @@ export const RECORDER = () => {
           ? ($('confirmBool').checked || boolEdited)
           : true;
       if (scope === 'page') {
-        // 页面级断言（url/title）：无 DOM 选择器，绑定当前页面（§5 scope=page）
-        const step = pushPageAssert(type, expected, op, wait, confirmed);
+        // 页面级断言（url/title/page_count）：无 DOM 选择器，绑定当前页面（§5 scope=page）。
+        // page_count（count 类）的 expected 是数字框里的字符串，转成整数再落盘。
+        const finalExpected = a.kind === 'count' ? Number(expected) : expected;
+        const step = pushPageAssert(type, finalExpected, op, wait, confirmed);
         closeMenu();
         return;
       }

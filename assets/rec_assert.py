@@ -628,6 +628,93 @@ def expect_page_title(page, expected, op: str = "equals", *,
     )
 
 
+def expect_page_count(page, expected: int, op: str = "equals", *,
+                      timeout: float = 5.0, poll: float = 0.1,
+                      stable: float = 0.0) -> int:
+    """轮询当前 browser context 的 page 数直到满足算子（P2，§5.1 页面范围 page_count）。
+
+    默认只统计当前 browser context（`page.context.pages`），不含其他 context。
+    count 类算子走 matches_assert 的数值比较（equals/at_least/at_most）。
+    读取失败（context detached 等）不是观测值：重试，超时带最后异常失败。
+    """
+    def err(last, last_error):
+        if last_error is not None:
+            return AssertionError(
+                f"页面数量断言失败: 读取持续失败 op={op!r} expected={expected!r}: "
+                f"{type(last_error).__name__}: {last_error}"
+            )
+        return AssertionError(
+            f"页面数量断言失败: actual={last!r} expected={expected!r} op={op!r}"
+        )
+    return _poll_stable(
+        lambda: len(page.context.pages),
+        lambda n: matches_assert(n, expected, op),
+        timeout=timeout, poll=poll, stable=stable, make_error=err,
+    )
+
+
+# ────────────────────────── 网络契约断言（P2） ─────────────────────────────────
+#
+# 最近请求选择器 + status / request_body / response_body subset，以及
+# request_count=0 的有界观察窗（§5.1 网络范围、§6 负断言语义）。生成链与回放链
+# 共用同一套比较语义（assert_subset / matches_assert + 统一 deadline/stable 轮询）。
+
+
+def expect_response_status(response, expected: int, *, timeout: float = 5.0,
+                           poll: float = 0.1, stable: float = 0.0) -> int:
+    """轮询响应的 status 直到等于 expected（网络断言）。"""
+    def err(last, last_error):
+        if last_error is not None:
+            return AssertionError(
+                f"响应状态断言失败: 读取持续失败 expected={expected!r}: "
+                f"{type(last_error).__name__}: {last_error}"
+            )
+        return AssertionError(
+            f"响应状态断言失败: actual={last!r} expected={expected!r}"
+        )
+    return _poll_stable(
+        lambda: response.status,
+        lambda s: matches_assert(s, expected, "equals"),
+        timeout=timeout, poll=poll, stable=stable, make_error=err,
+    )
+
+
+def matches_body_subset(actual: Any, expected: Any) -> bool:
+    """body 用 subset 语义匹配：多出来的字段不算失败，少字段 / 改值才算。
+    复用 assert_subset 的 _match 定义，只返回布尔不抛。"""
+    problems: list[str] = []
+    _match(actual, expected, "$", problems)
+    return not problems
+
+
+def request_count_zero(watcher, url_filter, start_t: float, end_t: float, *,
+                       stable: float = 0.3, timeout: float = 2.0,
+                       poll: float = 0.1) -> bool:
+    """断言 [start_t, end_t) 观察窗内没有匹配 url_filter 的请求（§6 负断言语义）。
+
+    watcher.count(url_filter) 在窗内统计请求数。**不得在动作刚发生时就判 0** ——
+    请求可能还在路上；负断言带稳定窗口，只有「连续稳定地 0」才通过。
+    窗由调用方（录制/生成）记录动作的起止边界，避免把窗外的自我请求算进来。
+    """
+    def count():
+        return watcher.count(url_filter)
+    def err(actual, last_error):
+        if last_error is not None:
+            return AssertionError(
+                f"请求数为 0 断言失败: 读取持续失败: {type(last_error).__name__}: {last_error}"
+            )
+        return AssertionError(
+            f"请求数为 0 断言失败: 窗 [{int(start_t)},{int(end_t)}) 内实际请求数 "
+            f"actual={actual!r}（期望 0）"
+        )
+    _poll_stable(
+        count,
+        lambda n: int(n) == 0,
+        timeout=timeout, poll=poll, stable=stable, make_error=err,
+    )
+    return True
+
+
 # ────────────────────────── 布尔状态断言（P1：enabled/editable/selected 等） ──
 #
 # visible / checked / enabled / editable / selected 五类布尔状态统一走这一个
