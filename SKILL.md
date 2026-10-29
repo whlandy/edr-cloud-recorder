@@ -71,9 +71,12 @@ Right-click an element to add a manual assertion. If the page, remote desktop, o
 device suppresses the context menu, hold **Alt** (**Option** on macOS) and left-click the
 element instead. The shortcut click must only select the assertion target: it must not reach
 the page or be recorded as an ordinary click. Each assertion separates **what** is
-checked (text, input value, attribute, visibility, checked state, element count, or one of
-three time kinds) from **how** it is compared (equals, contains, starts/ends with, regex,
-blank/non-blank, numeric greater/less, count at-least/at-most). The full table of types,
+checked (text, input value, attribute, visibility, checked state, enabled/editable/
+selected, element count, or one of three time kinds) from **how** it is compared
+(equals, contains, starts/ends with, regex, blank/non-blank, numeric greater/less,
+count at-least/at-most). The menu's 范围 switch also allows page-level URL / title
+assertions (the page itself, no DOM selector), and preset shortcuts (提示出现/消失、
+加载完成、表单错误) that only fill type + operator. The full table of types,
 operators, and time semantics is in [assertions.md](references/assertions.md). The user must
 confirm the expected value; the recorder must not infer intent from the current value
 without confirmation.
