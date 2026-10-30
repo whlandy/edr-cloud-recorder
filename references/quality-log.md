@@ -21,6 +21,7 @@
 | page_count | ✅ | ⚠️ | ✅ | ✅ | ✅ | ❌ | test_p2_page_network（两链同判，真实 Chromium） |
 | **网络 status/request_body/response_body** | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 201→500 双链失败） | ❌ | recordings/p2-network-scope-recording, test_p2_network_scope |
 | **request_count=0 有界观察窗** | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（真发请求双链失败 actual=1 + 污染 reqUrl 双链失败） | ❌ | recordings/p2-request-count-zero-recording, test_p2_request_count_zero |
+| **网络断言 × popup（跨页请求归属）** | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（opener 违规请求双链失败 actual=1 + 污染口径双链失败 + 方法隔离正例） | ❌ | recordings/p2-popup-network-recording, test_p2_popup_network |
 | **网络断言「最近请求」菜单交互** | ✅（P2.2 轮） | ✅ headed | n/a | n/a | ✅ | ❌ | test_assert_menu（真实菜单 iframe 交互；P2.6 轮补 count=0 保存/稳定窗 2 条回归） |
 | iframe / frameChain | ✅ | ✅ | ✅ | ✅ | ⚠️ | ❌ | fixture_drive, test_record_replayability |
 | popup / 新标签页 pageId 因果 | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | test_acceptance_p1_scenarios, acd9b8c |
@@ -32,9 +33,77 @@
 | 网络失败 / 读取异常非通过 | ✅ | n/a | ✅ | ✅ | ✅ | ❌ | test_review_trace_edges, test_failure_categories |
 | Windows headed Chrome 启动/录制/回放 | ⚠️ | ✅（旧轮） | ✅ | ✅ | ⚠️ | ⚠️ | test_windows_compat, test_windows_smoke |
 | 短命标签页闪开闪关 | ✅ | ✅（旧轮） | ✅ | ✅ | ⚠️ | ✅ | aa941af（Windows storage restore tab 修复） |
-| 回放节奏 / 导航等待 | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ | 无专项场景 |
+| 回放节奏 / 导航等待 | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ | 无专项场景（本轮正向录制回放暴露了节奏差形态，见 P2.7） |
 
 ## 轮次记录
+
+### 2026-10-30 — P2.7 网络断言 × popup（跨页请求归属，三缺陷：观察口径、产码缩进、回放观察窗锚定）
+
+- 提交：`4c66a7c`（分支 maa-dp；验收录制产物
+  recordings/p2-popup-network-recording/ 由
+  scripts/record_p2_popup_network_acceptance.py 在该提交工作树上复现）。
+- 起点基线：`maa-dp` @ 23b456c（edr-cloud-recorder-p2 worktree）。
+- 选择缺口：矩阵「网络断言 × popup」——连续五轮遗留（P2.2 起就在候选清单）。
+- 失败测试先行：test/test_p2_popup_network.py（5 条，实现前 2 条失败——
+  生成链与 trace 链对 popup/opener 发出的违规请求双链假绿 DID NOT RAISE）。
+- 根因与修复（本轮 3 个独立缺陷）：
+  1. **D1 观察口径与录制侧不一致**：录制侧（record.py on_request）在
+     browser context 级抓请求，popup 里发的请求照常进菜单、照常可绑定
+     断言；但 NetRequestWatcher 只 page.on("request") 单页监听——
+     「不应发请求」的「不」被回放端观察窗口缩小，观察者页面之外的请求
+     永远数不到，负断言假绿。修复：NetRequestWatcher 升级
+     context.on("request")（probe 证实 ctx 级事件能收到 popup 请求）。
+  2. **D2 同动作共存自动写断言 + count=0 产码语法错误**（P2.6 风险清单
+     第 5 条专项覆盖）：_emit_network_assert 的观察者创建行固定 4 空格，
+     落进 expect_request 的 with 块后缩进少一层——生成的 pytest 一执行
+     IndentationError。修复：pre 行缩进跟 with 内层（inner 参数）走。
+  3. **D3 trace 链观察窗锚定错位**：replay_trace 在断言节点本身才建
+     观察者——因果动作（afterStepId 指向的节点）自己发出的请求在断言
+     节点之前发生，已经漏掉。修复：主循环预扫描 count=0 断言节点的
+     afterStepId → 触发节点映射，在触发节点执行前建观察者
+     （validate_trace 已保证因果序），断言节点复用。
+- 真实录制闭环（scripts/record_p2_popup_network_acceptance.py →
+  recordings/p2-popup-network-recording/，headed Chrome 真录）：
+  opener 点 write（真发 POST /api/save）→ 开 popup（target=_blank）→
+  popup 点 quiet（静默动作=观察窗因果锚）→ **在 popup 页**开菜单选
+  count=0 绑定 POST → 确认。断言步骤落在 popup（pageId=page-0002、
+  afterStepId=popup 的 quiet 点击）。四环境验收：
+  A 正向双链 PASS；B 口径隔离（opener 发 GET ping，POST 口径不计）双链
+  PASS；C 缺陷反向（opener 发 POST /api/save）双链失败 actual=1；
+  D 污染口径（reqUrl 篡改成真会发的 GET /api/ping）双链失败 actual=1。
+- 验收脚本自身的教训（记给后续轮次）：
+  a) **Chrome 88+ 对 target=_blank 隐式 rel=noopener**——popup 里
+     window.opener 恒为 null，opener.fetch 静默失败，反向永远打不响。
+     跨页触发要经服务端信号（popup fetch /signal?set=1，opener 轮询
+     拿信号自己发违规请求）；
+  b) 信号轮询间隔必须 < 负断言稳定窗（300ms），否则信号落在稳定窗
+     之外，反向假绿（200ms 实测稳定）；
+  c) 回放链生成 spec 时必须把录制 net 事件一并 retarget 传进去——
+     否则自动写断言等待块被丢，#write 的 POST 在回放节奏下迟到、
+     落进观察窗，正向假红（录制↔回放节奏差的真实形态）；
+  d) 录制环境不要掺轮询噪音（/signal 每 500ms 一条会把菜单最近请求
+     清单冲掉）——录制环境关轮询，只在回放反向环境开。
+- 反向验证（3 组突变，全部先失败后恢复，恢复后 SHA 校验字节一致）：
+  1. NetRequestWatcher 去掉 context 挂接 → 双链失败测试回归（2 条）；
+  2. generate_spec 缩进修复回滚 → 生成的 spec compile 抛
+     IndentationError（与原始缺陷同形态）；
+  3. replay_trace 观察者锚定回滚 → trace 链假绿（两链不同判）。
+- 门禁：定向 test_p2_popup_network 5 passed；相邻回归 12 文件
+  212 passed；check_visual 通过；git diff --check 通过；
+  trace validate ok（5 节点 ready）；全量 pytest 902 passed / 2 skipped /
+  1 failed——唯一失败仍是基线
+  test_orchestrate.py::test_identity_match_rejects_ip_prefix_false_positive
+  （干净 maa-dp HEAD 已有，非本轮引入）。
+- Windows headed：本机 macOS，未验证（记入剩余风险）。
+- 剩余风险（下一轮候选）：
+  1. Windows headed 未验证（连续七轮遗留）；
+  2. 正向网络断言（status/body 绑 popup 发出的请求）在生成链的
+     expect_request 也是 page 级——popup 发的请求、断言锚在 opener 动作
+     时 expect_request 等不到（正向假红形态）；本次只闭环了负断言
+     （count=0 观察口径已修），正向配对归属未动；
+  3. 录制↔回放节奏差（setTimeout 迟到的请求落不落窗）无专项场景；
+  4. request_count 与自动写断言同动作共存的 trace 链表现（D2 只修了
+     生成链产码，trace 链 verifier 不受 with 块影响但语义未对齐验证）。
 
 ### 2026-10-30 — P2.6 request_count=0 有界观察窗真实闭环（五缺陷：产码 NameError、泵饥饿、trace 静默丢、菜单两处、稳定窗丢失）
 
