@@ -92,7 +92,9 @@
 
 ### 2026-10-30 — P2.3 页面导航事件（reload / 前进后退）录制与双链回放
 
-- 分支：`maa-dp` @ b54620e（edr-cloud-recorder-p2 worktree，干净起步）。
+- 提交：`070b244`（分支 maa-dp；验收录制产物 recordings/p2-nav-events-recording/
+  由 scripts/record_p2_nav_events_acceptance.py 在该提交工作树上复现）。
+- 起点基线：`maa-dp` @ b54620e（worktree 干净）（edr-cloud-recorder-p2 worktree，干净起步）。
   主 checkout `codex/fix-windows-recorder-storage-restore` 的并行未提交修改未触碰。
 - 选择缺口：矩阵「页面 reload/前进后退/关闭」——录制器对 F5/后退零步骤产出，
   历史导航在 recording.json 里完全不可见，回放少做导航且失败误导。
