@@ -367,13 +367,19 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
     network_pairs = pair_network_events(net or [])
     # 用户手选的网络契约断言（scope=network）按 afterStepId 预分组，动作节点
     # 构建时合并期望（expectedConfirmed=false 由断言节点自己的回放门拒）。
+    # afterStepId 缺失的断言进不了分组 —— 拒发整条 trace：观察起点不明，
+    # count=0 的窗起点会错、status/body 的绑定请求会漂，静默收下就是
+    # 「spec 链拒、trace 链收」的生成门不对称（真实录制闭环实测）。
     steps_by_action: dict[str, list] = {}
+    orphan_network: list[dict] = []
     for _s in steps:
         if (_s.get("type") == "assert" and _s.get("scope") == "network"
-                and _s.get("afterStepId") and _s.get("expectedConfirmed") is not False
                 and isinstance(_s.get("reqUrl"), str) and _s["reqUrl"]
                 and isinstance(_s.get("reqMethod"), str) and _s["reqMethod"]):
-            steps_by_action.setdefault(_s["afterStepId"], []).append(_s)
+            if _s.get("afterStepId") and _s.get("expectedConfirmed") is not False:
+                steps_by_action.setdefault(_s["afterStepId"], []).append(_s)
+            else:
+                orphan_network.append(_s)
     # 二次确认型开关：确认框只在开关**真的需要拨**的时候才弹。回放遇到开关已经
     # 在目标状态就跳过点击（拨开关是幂等的），于是确认框根本不出现，后面那几步
     # 就成了无处可点的孤儿步骤。标成可选 —— 现有语义是「证实不存在才跳过」，
@@ -507,13 +513,17 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
     # 网络断言挂靠的动作步骤不存在（afterStepId 指向被丢弃/不存在的步骤）→
     # 观察起点无从确定，拒发整条 trace —— 与 generate_spec 同一红线，不能
     # 静默丢断言：同一份录制一条链报错、另一条链少断言，两链就不同判了。
-    if steps_by_action:
-        raise SpecGenerationError([
-            f"网络断言 (id={na.get('id')}) 的因果动作步骤 {after_id!r} "
-            "不在生成后的步骤序列里 —— 无法确定观察起点，拒发而不是猜"
-            for after_id, nas in sorted(steps_by_action.items())
-            for na in nas
-        ])
+    # afterStepId 缺失（注入器没绑上因果动作）同罪：断言进不了分组，没有
+    # 观察起点 —— 与 spec 链的「afterStepId 缺失拒发」对称。
+    if steps_by_action or orphan_network:
+        raise SpecGenerationError(
+            [f"网络断言 (id={na.get('id')}) 的因果动作步骤 {after_id!r} "
+             "不在生成后的步骤序列里 —— 无法确定观察起点，拒发而不是猜"
+             for after_id, nas in sorted(steps_by_action.items())
+             for na in nas]
+            + [f"网络断言 (id={na.get('id')}) 缺 afterStepId —— "
+               "无法确定请求归属的动作，拒发而不是猜"
+               for na in orphan_network])
 
     incomplete = any(
         node["attach"]["provenance"].get("status") == "missing_template"

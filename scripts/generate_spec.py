@@ -828,21 +828,32 @@ def generate_spec(steps, net, start_url, name):
         # 这类步骤没有选择器；丢掉它，回放的状态就和录制时对不上（历史导航会
         # 清掉未提交的输入、重载会把页面打回初始态）。未知 navType 不猜 ——
         # 拒发整份 spec，与未知断言/动作同一红线。
+        #
+        # 断言菜单的 afterStepId 绑「最近一步」，navigate 步骤就是合法的因果
+        # 动作（reload 后不发请求的负断言真实可达）—— 必须走 emit_action 领走
+        # 自己名下的网络断言并生成观察窗，不然 leftover 检查拒发整份 spec，
+        # 而 trace 链的 Navigate 节点照常接受 —— 同一录制两链不同判。
         if s["type"] == "navigate":
             nav = s.get("navType")
             if nav == "reload":
-                lines.append("    page.reload()")
+                nav_expr = "page.reload()"
             elif nav == "back_forward":
-                lines.append("    page.go_back()")
+                nav_expr = "page.go_back()"
             else:
                 lines.append(f"    # ⚠ 未知导航类型 {nav!r}，已拒发")
                 problems.append(
                     f"step#{i} (id={s.get('id')}): 未知导航类型 {nav!r} —— "
                     "回放会少做一次导航，拒发而不是静默跳过")
+                if s.get("id"):
+                    lines.append(f"    # rec-step: {s['id']}")
+                for c in calls:
+                    lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
+                continue
+            lines.extend(emit_action(
+                nav_expr, calls, "",
+                network_asserts=_network_by_action.pop(s.get("id"), None)))
             if s.get("id"):
                 lines.append(f"    # rec-step: {s['id']}")
-            for c in calls:
-                lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
             continue
 
         # ── 页面关闭（Ctrl+W / 关标签页 / window.close）：无 DOM 目标 ──

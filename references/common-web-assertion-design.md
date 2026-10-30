@@ -129,6 +129,12 @@ P3 是可延后的高级能力。
 - `scope`：`element | page | network`，缺省为 `element`。
 - `expectedConfirmed`：新录制必须为 true；老录制缺省视为已确认，保证兼容。
 - `afterStepId`：断言的直接因果前置步骤。生成器可以插入等待，不得把断言移到它前面。
+  合法的因果动作**包括页面级步骤**（navigate/reload、page_close）：断言菜单绑
+  「最近一步」，reload 后立刻下的网络断言锚的就是这次 reload（P2.12 轮真实录制
+  闭环确认）。两条生成链必须对称：spec 链的 navigate 分支同样要领走挂在
+  navigate 名下的网络断言生成观察窗；afterStepId 缺失时两链都必须拒发整份
+  产物（观察起点不明 —— count=0 窗起点会错、status/body 绑定请求会漂，静默
+  收下就是「spec 拒、trace 收」的生成门不对称）。
 - `wait.timeoutMs`：总预算，不允许每层重试分别消耗一份完整预算。
 - `wait.stableMs`：条件首次满足后需连续保持的时间；0 表示首次满足即通过。
 - `pageId/openerPageId`：沿用页面因果模型；页面断言也必须绑定页面。

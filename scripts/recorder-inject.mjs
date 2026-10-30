@@ -1788,7 +1788,7 @@ export const RECORDER = () => {
     return undefined;
   })();
   if (navType === 'reload' || navType === 'back_forward') {
-    steps.push({
+    const step = {
       id: `${tag}-${++seq}`, t: Date.now(),
       type: 'navigate', navType,
       url: location.pathname + location.search + location.hash,
@@ -1798,7 +1798,13 @@ export const RECORDER = () => {
       pageOrigin: location.origin || undefined,
       inFrame: window !== window.top,
       framePath: window !== window.top ? location.pathname : undefined,
-    });
+    };
+    steps.push(step);
+    // lastStepId 必须跟着更新（普通步骤路径在 pushStepRecord 里做的事）：
+    // 断言菜单的 afterStepId 绑「最近一步」，reload 后立刻下的断言因果动作
+    // 就是这次 reload —— 漏更新，断言丢 afterStepId，生成链拒发整份录制
+    // （真实录制闭环实测）。
+    lastStepId = step.id;
     if (typeof window.__recPush === 'function') {
       try { window.__recPush(steps[steps.length - 1]); }
       catch { /* 页面正在卸载，靠副通道 */ }
