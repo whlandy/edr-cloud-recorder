@@ -21,7 +21,7 @@
 | page_count | ✅ | ⚠️ | ✅ | ✅ | ✅ | ❌ | test_p2_page_network（两链同判，真实 Chromium） |
 | **网络 status/request_body/response_body** | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 201→500 双链失败） | ❌ | recordings/p2-network-scope-recording, test_p2_network_scope |
 | **request_count=0 有界观察窗** | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（真发请求双链失败 actual=1 + 污染 reqUrl 双链失败） | ❌ | recordings/p2-request-count-zero-recording, test_p2_request_count_zero |
-| **网络断言 × popup（跨页请求归属）** | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（opener 违规请求双链失败 actual=1 + 污染口径双链失败 + 方法隔离正例） | ❌ | recordings/p2-popup-network-recording, test_p2_popup_network |
+| **网络断言 × popup（跨页请求归属）** | ✅（2026-10-30 P2.7/P2.8） | ✅ headed | ✅ | ✅ | ✅（负：opener 违规双链失败 actual=1；正向：期望篡改 500 双链失败 + 无请求不假通过 + 方法隔离） | ❌ | recordings/p2-popup-network-recording, test_p2_popup_network |
 | **网络断言「最近请求」菜单交互** | ✅（P2.2 轮） | ✅ headed | n/a | n/a | ✅ | ❌ | test_assert_menu（真实菜单 iframe 交互；P2.6 轮补 count=0 保存/稳定窗 2 条回归） |
 | iframe / frameChain | ✅ | ✅ | ✅ | ✅ | ⚠️ | ❌ | fixture_drive, test_record_replayability |
 | popup / 新标签页 pageId 因果 | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | test_acceptance_p1_scenarios, acd9b8c |
@@ -36,6 +36,52 @@
 | 回放节奏 / 导航等待 | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ | 无专项场景（本轮正向录制回放暴露了节奏差形态，见 P2.7） |
 
 ## 轮次记录
+
+### 2026-10-30 — P2.8 网络断言 × popup 的**正向**配对（status/body 绑 popup 发出的请求，双链假红）
+
+- 提交：`8653629`（分支 maa-dp；作业区 /Users/edr-test/ai-projects/edr-cloud-recorder-p2）。
+- 选择缺口：P2.7 剩余风险 #2 —— 正向网络断言（status/body 绑 popup 发出的
+  请求）在生成链的 `expect_request` 是 page 级；popup 发的请求、断言锚在 opener
+  动作时 `expect_request` 等不到（**正向假红**：请求明明 201，等待却超时）。
+  P2.7 只闭环了负断言（count=0），正向配对归属未动。
+- 失败测试先行：test/test_p2_popup_network.py::TestPopupPositiveNetworkAssert
+  （5 条，实现前 status 双链假红：`TimeoutError waiting for event "request"`）。
+- 反例 fixture：opener 点 #openload（target=_blank）打开「加载即发 POST
+  /api/save」的 popup —— Chrome 88+ 对 target=_blank 隐式 rel=noopener，
+  popup 自身 fetch，opener 页的 `page.expect_request` 永远看不到它；断言
+  scope=network status=201 anchored on opener 动作。无测试单链不覆盖。
+- 根因与最小修复（观察口径对齐录制侧 context 级）：
+  1. **generate_spec._emit_action**：`page.expect_request(...)` →
+     `page.context.expect_event("request", nth_request(...))` —— 等待跨所有
+     页面，popup 发出的请求照常被捕获（录制侧 record.py on_request 本就在
+     **browser context 级**抓请求）。
+  2. **replay_trace._perform**：`page.expect_response(...)` → `_response_waiter(
+     page, ...)` —— 有真实 context（`hasattr(ctx,"expect_event")`）时用
+     context 级（跨页面抓 popup 响应，保证与生成链同判）；历史 mock 测试页
+     （_SilentPage/_NetworkPage 无 .context 或 `page.context=Context()` 假对象）
+     退回 `page.expect_response`，保住单测（P2.7 `_assert_node_page` 教训延伸）。
+- 反向验证：
+  a) **篡改 expected 201→500** → 两条链都失败（context 观察不因放宽而假绿）；
+  b) **无请求事件**（net=[]，popup 不发）→ 两条链都失败（读取异常不假通过；
+     生成端对不可绑定的正向断言诚实拒发 = 合法非通过，测试辅助把
+     SpecGenerationError 转成双失败而非误判错误）；
+  c) **修复前**（page 级 expect_request）→ status 正向假红 TimeoutError（已实测）。
+- 门禁：定向 test_p2_popup_network 全绿（含 P2.7 count=0 5 条回归）；
+  相邻回归：test_trace_replay + popup-network 55 passed、generation/menu/network
+  217 passed、test_verify 116 passed；check_visual 通过；skill validator 通过。
+  全量 pytest 906 passed / 2 skipped / 2 failed —— 两处失败：(a) test_verify 的
+  写请求结构断言仍查 `page\.expect_request`（本轮升级为 context 级 expect_event
+  的回归，已在本轮修复后定向通过）；(b) 基线
+  test_orchestrate.py::test_identity_match_rejects_ip_prefix_false_positive
+  （干净 maa-dp HEAD 已有，非本轮引入）。故最终仅剩基线失败，
+  **不宣称最终完成**（orchestrate 基线 + Windows headed 未验收两道关卡未过）。
+- Windows headed：本机 macOS，未验证（记入剩余风险，**未宣称最终完成**）。
+- 剩余风险（下一轮候选）：
+  1. Windows headed 未验证（连续多轮遗留）；
+  2. 录制↔回放节奏差（setTimeout 迟到的请求落不落观察窗）无专项场景；
+  3. request_count 与自动写断言同动作共存的 trace 链语义未对齐验证；
+  4. 正向网络断言的**真实 headed 录制**（record.py 真录 popup → 断言 → 回放）
+     证据未补（本轮为手构 steps + 双链真实 Chromium 运行）。
 
 ### 2026-10-30 — P2.7 网络断言 × popup（跨页请求归属，三缺陷：观察口径、产码缩进、回放观察窗锚定）
 
