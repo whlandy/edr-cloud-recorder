@@ -448,13 +448,18 @@ def generate_spec(steps, net, start_url, name):
     text_seq = 0
     popup_seq = 0
 
-    def _emit_network_assert(na, writes, names, req_names):
+    def _emit_network_assert(na, writes, names, req_names, inner="    "):
         """把一条 scope=network 断言落成等待块里的比较行。
 
         请求对象按录制时的 reqMethod/reqUrl 与等待块里的 writes 配对：多条请求
         时按「断言绑的请求是哪条」选对象，不能默认拿最后一个。匹配不上属于
         生成配置错误 —— 断出来的不是绑定那条就等于没断，进 problems 拒发。
         request_count=0 走 request_count_zero（有界观察窗 + 稳定窗）。
+
+        inner 是等待块的**内层**缩进：request_count 的观察者创建行（pre）落
+        在动作行之前、expect_request 的 with 块**内部** —— 动作自己的请求
+        也必须落在窗内。缩进不跟 with 走会生成语法不成立的代码（真实闭环
+        实测：同动作共存自动写断言 + count=0 时 watcher 行缩进少一层）。
         """
         a, exp = na.get("assertion"), na.get("expected")
         url_part = na["reqUrl"]
@@ -494,7 +499,8 @@ def generate_spec(steps, net, start_url, name):
             # method 就对 POST 噪音误报、两链不同判（真实录制闭环实测）。
             method_arg = f", method={_lit(method)}" if method else ""
             marker = f"    # rec-assert: {na['id']}" if na.get("id") else None
-            pre = [f"    {watcher} = NetRequestWatcher(page{method_arg})"]
+            pad = inner
+            pre = [f"{pad}{watcher} = NetRequestWatcher(page{method_arg})"]
             post = [f"    request_count_zero({watcher}, {_lit(url_part)}{arg})"]
             if marker:
                 post.append(marker)
@@ -560,6 +566,7 @@ def generate_spec(steps, net, start_url, name):
         # 多个写请求 → 嵌套 with，等价于 JS 的 Promise.all([...waitForRequest])
         occurrences: dict[str, int] = {}
         out = []
+        inner = "    " + "    " * len(writes)
         # 用户手选的网络契约断言（scope=network）先收集，按观察窗语义分插：
         # request_count=0 的观察者创建在**动作行之前**（窗起点=动作发生前，
         # 不然动作自己发的请求会漏掉），稳定窗轮询在动作行之后（请求在途
@@ -568,7 +575,7 @@ def generate_spec(steps, net, start_url, name):
         post: list[str] = []
         for na in network_asserts:
             pre_lines, post_lines = _emit_network_assert(
-                na, writes, names, req_names)
+                na, writes, names, req_names, inner=inner)
             pre.extend(pre_lines)
             post.extend(post_lines)
         for i, w in enumerate(writes):
@@ -582,7 +589,8 @@ def generate_spec(steps, net, start_url, name):
                 f"nth_request({_lit(p)}, {_lit(w['method'])}, {nth})"
                 f") as {req_names[i]}_info:"
             )
-        inner = "    " + "    " * len(writes)
+        # 观察者创建行在 with 块内部、动作行之前（窗起点=动作前）—— 缩进
+        # 必须跟 with 的内层走，动作行的缩进就是 inner。
         out.extend(pre)
         out.append(f"{inner}{action_expr}{warn}")
         for i, w in enumerate(writes):

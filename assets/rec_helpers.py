@@ -183,10 +183,16 @@ def nth_request(url_part: str, method: str, n: int = 1):
 
 
 class NetRequestWatcher:
-    """request_count=0 的观察者：从创建时刻起统计页面上匹配的请求。
+    """request_count=0 的观察者：从创建时刻起统计**整个 browser context**里
+    匹配的请求。
 
     观察窗由创建时刻界定（生成链把它放进因果动作的等待块里，窗起点=动作
     发生前），匹配口径与 nth_request 一致（url 包含 + method 相同）。
+
+    观察口径必须与录制侧一致：record.py 在 context 级捕获请求（popup 里发的
+    请求照常进菜单、照常可绑定断言），回放端的观察者就不能只看一个 page ——
+    「不应发请求」的「不」不会被回放端的观察窗口缩小。所以这里挂
+    context.on("request")，popup 弹出前后发出的请求都在窗内。
 
     count() 里必须 wait_for_timeout 驱动事件分发 —— sync Playwright 的
     request 事件只在事件循环被驱动时分发，time.sleep 轮询期间一条都不会到，
@@ -198,7 +204,9 @@ class NetRequestWatcher:
         self._page = page
         self._method = method
         self._hits: list[tuple[str, str]] = []
-        page.on("request", self._record)
+        context = getattr(page, "context", None)
+        if context is not None:
+            context.on("request", self._record)
 
     def _record(self, request) -> None:
         self._hits.append((request.method, request.url))

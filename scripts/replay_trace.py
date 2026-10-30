@@ -697,7 +697,8 @@ def _assert_page(page, param: dict, timeout_ms: int) -> None:
 
 def _execute_action(page, node: dict, template_root: Path, targeting: str,
                     timeout_ms: int, env: dict,
-                    focused_selector: str | None) -> dict:
+                    focused_selector: str | None,
+                    net_watcher: "NetRequestWatcher | None" = None) -> dict:
     action = node["action"]
     action_type, param = action["type"], action.get("param") or {}
     assertion = ts.assertion_of(node)
@@ -707,7 +708,10 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
         return {"mode": "verifier", "scope": "page"}
     # 网络范围断言无需 DOM 定位。status/request_body/response_body 在本步的
     # 响应等待块里按用户确认的 expected 校验；request_count=0 是负断言，
-    # 观察窗从本节点开始 —— 在这里跑有界观察（稳定窗内持续为 0 才通过）。
+    # 在这里跑有界观察（稳定窗内持续为 0 才通过）。观察者**不在这里创建**：
+    # 它的窗起点是因果动作（afterStepId 指向的节点）发生前，由主循环在执行
+    # 那个动作之前就建好（net_watcher）—— 到本节点再建，动作自己发出的
+    # 请求已经从指缝里漏掉了（popup 请求真录制闭环实测）。
     if assertion and assertion.get("scope") == "network":
         _reject_unconfirmed(assertion)
         if assertion.get("assertion") == "request_count":
@@ -720,7 +724,7 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
             # 稳定窗下限 300ms（§6 负断言，与生成链同一下限）：老录制把
             # request_count 记成 stableMs=0，直接回放会「动作刚发生就判 0」。
             stable = max(stable, 0.3)
-            watcher = NetRequestWatcher(page, method=method)
+            watcher = net_watcher or NetRequestWatcher(page, method=method)
             request_count_zero(watcher, url_part, timeout=timeout,
                                poll=poll, stable=stable)
         return {"mode": "verifier", "scope": "network"}
@@ -835,7 +839,8 @@ def _failure_category(error: BaseException) -> str:
 
 
 def _perform(page, node: dict, root: Path, targeting: str, timeout_ms: int,
-             env: dict, focused_selector: str | None) -> tuple[dict, list]:
+             env: dict, focused_selector: str | None,
+             net_watcher: "NetRequestWatcher | None" = None) -> tuple[dict, list]:
     """执行一步，并校验它应当触发的响应。返回 (target, responses)。"""
     responses: list = []
     optional_waiters = []
@@ -868,6 +873,7 @@ def _perform(page, node: dict, root: Path, targeting: str, timeout_ms: int,
                 optional_waiters.append((waiter, waiter.__enter__(), expected))
             target = _execute_action(
                 page, node, root, targeting, timeout_ms, env, focused_selector,
+                net_watcher=net_watcher,
             )
         for info, expected in zip(response_infos, required):
             responses.append(_validate_response(info.value, expected))
@@ -939,6 +945,24 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
     # 因为挡路而被提前做掉的关浮层步骤：轨迹走到它时会发现已经没得关
     performed_early: set[str] = set()
     recorded_pages: dict[str, object] = {}
+    # request_count=0 的观察者必须赶在因果动作（afterStepId 指向的节点）执行
+    # **之前**创建：到断言节点本身再建，动作自己发出的请求（以及 popup 打开
+    # 后发出的请求）已经漏掉，负断言假绿（真实闭环实测）。预扫描把每个
+    # count=0 断言节点映到它的触发节点，主循环在执行触发节点前建观察者。
+    _countzero_trigger: dict[str, str] = {}
+    for node_id in order:
+        node = golden[node_id]
+        assertion = ts.assertion_of(node)
+        if (assertion and assertion.get("scope") == "network"
+                and assertion.get("assertion") == "request_count"):
+            after = ts.provenance(node).get("afterStepId")
+            # afterStepId → 触发节点 id（validate_trace 已保证存在且在前）
+            src_to_node = {
+                ts.provenance(golden[n]).get("sourceStepId"): n
+                for n in order
+            }
+            _countzero_trigger[node_id] = src_to_node[after]
+    _pending_watchers: dict[str, "NetRequestWatcher"] = {}
     for node_id in order:
         node = golden[node_id]
         started = time.perf_counter()
@@ -954,9 +978,19 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
         try:
             node_page = _page_for_node(page, node, recorded_pages, timeout_ms)
             _assert_node_page(node_page, node)
+            # 轮到本节点是某个 count=0 断言的因果动作：动作执行**前**建观察者
+            # （窗起点=动作前），断言节点执行时用它轮询。
+            for assert_id, trigger_id in list(_countzero_trigger.items()):
+                if trigger_id == node_id and assert_id not in _pending_watchers:
+                    assertion = ts.assertion_of(golden[assert_id]) or {}
+                    method = assertion.get("reqMethod") or None
+                    _pending_watchers[assert_id] = NetRequestWatcher(
+                        node_page, method=method)
             node_focus = focused_selector if node_page is focused_page else None
             result["target"], result["responses"] = _perform(
-                node_page, node, root, targeting, timeout_ms, runtime_env, node_focus,
+                node_page, node, root, targeting, timeout_ms, runtime_env,
+                node_focus,
+                net_watcher=_pending_watchers.get(node_id),
             )
             result["status"] = "success"
             if targeting == "visual_only" and result["target"]["mode"] == "visual":
@@ -1018,8 +1052,9 @@ def replay_trace(page, trace: dict | str | Path, *, template_root: str | Path | 
                         _assert_node_page(node_page, node)
                         node_focus = focused_selector if node_page is focused_page else None
                         result["target"], result["responses"] = _perform(
-                            node_page, node, root, targeting, timeout_ms, runtime_env,
-                            node_focus,
+                            node_page, node, root, targeting, timeout_ms,
+                            runtime_env, node_focus,
+                            net_watcher=_pending_watchers.get(node_id),
                         )
                         result["status"] = "success"
                     except Exception as retry_error:
