@@ -38,7 +38,7 @@
 
 ### 2026-10-30 — P2.4 页面关闭（tab/popup close）录制与双链回放
 
-- 提交：本提交（分支 maa-dp；验收录制产物 recordings/p2-page-close-recording/
+- 提交：`9c9bcf8`（分支 maa-dp；验收录制产物 recordings/p2-page-close-recording/
   由 scripts/record_p2_page_close_acceptance.py 在该提交工作树上复现）。
 - 起点基线：`maa-dp` @ 7a9a77e（edr-cloud-recorder-p2 worktree，干净起步）。
   主 checkout `codex/fix-windows-recorder-storage-restore` 的并行未提交修改未触碰。
