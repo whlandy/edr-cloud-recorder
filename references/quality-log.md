@@ -37,6 +37,37 @@
 
 ## 轮次记录
 
+### 2026-10-31 — 全量门禁 0-failed 首阻：test_orchestrate 身份匹配「基线」判定与修复（测试夹具/脱敏问题，非产品缺陷）
+
+- 提交：`9fe1496`（分支 maa-dp；作业区 /Users/edr-test/ai-projects/edr-cloud-recorder-p2）。
+- 选择缺口：全量 pytest 唯一失败
+  `test_orchestrate.py::test_identity_match_rejects_ip_prefix_false_positive`
+  —— 多轮被当「既有基线」跳过，本轮按指令不再跳过、单独稳定复现并读真实契约。
+- 契约复核（orchestrate/endpoint.py）：`assert_matches` 用 `_valid_ipv4s`
+  只认**合法 IPv4**（正则提取 + ipaddress.IPv4Address 校验）；匹配是 IP **精确
+  相等**（set 成员），hostname 用词边界正则 —— 都不是 startswith 子串匹配。
+  端侧 `identity()` 也只用 IPv4 正则取回 ip。
+- 根因判定：**测试夹具 / 环境脱敏问题，非产品缺陷**。旧夹具（自 633c2db 起）
+  把 IP 写成了脱敏占位串 `REDACTED-INTERNAL-IP-1` —— 它不是合法 IPv4，
+  `_valid_ipv4s` 正确返回空集 → 「精确 IP 匹配」断言永远无法满足（假红）。
+  产品行为（对非 IPv4 当 IP 拒绝）是正确的；与仓库 redaction 纪律
+  （test_windows_smoke 用 `REDACTED-INTERNAL-IP-` 当 banned 标记）不冲突。
+- 反例与修复（测试先行，不改产品代码）：
+  - 用真实 IPv4 重写原测试（保留意图：`192.168.1.5` 不得匹配前缀
+    `192.168.1.50`；精确一致必须匹配）；
+  - 新增边界覆盖 `test_identity_match_ip_and_hostname_boundaries`：
+    相似前缀更长 octet、IPv6 期望串不触发 v4 匹配、hostname 词边界（全词匹配、
+    前缀 WIN-A ⊄ WIN-ABC 拒）、端口 `192.168.1.5:8080` 精确 IP 仍匹配；
+  - 新增 `test_identity_match_refuses_non_ipv4_placeholder`：把旧夹具的假想行为
+    （占位串当 IP 能匹配）钉成「必须拒绝」，防未来再把占位串当 IP。
+- 验证（回填）：test_orchestrate **13 passed**；check_visual 通过；全量 pytest
+  **912 passed / 2 skipped / 0 failed**（长期「基线失败」已消除）。
+- Windows headed：本机 macOS，未验证 —— **单列为最终阻塞**，不伪造成过。
+- 剩余风险（下一轮候选）：
+  1. Windows headed 未验证（最终阻塞）；
+  2. 录制↔回放节奏差专项、request_count+自动写断言共存 trace 语义未专项；
+  3. `identity()` 目前只认 IPv4，IPv6-only 端侧主机身份无法匹配（记录，未做）。
+
 ### 2026-10-30 — P2.9 网络断言 × popup 的**真实 headed 录制**证据（status/body 正向绑定）
 
 - 提交：`2970665`（分支 maa-dp；作业区 /Users/edr-test/ai-projects/edr-cloud-recorder-p2）。
