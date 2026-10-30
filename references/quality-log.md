@@ -34,8 +34,89 @@
 | Windows headed Chrome 启动/录制/回放 | ⚠️ | ✅（旧轮） | ✅ | ✅ | ⚠️ | ⚠️ | test_windows_compat, test_windows_smoke |
 | 短命标签页闪开闪关 | ✅ | ✅（旧轮） | ✅ | ✅ | ⚠️ | ✅ | aa941af（Windows storage restore tab 修复） |
 | **回放节奏 / 导航等待（慢导航 >5s 双链同判）** | ✅（2026-10-31 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 expected 双链失败 + 禁用修复重放真实录制「路径不符」复现） | ❌ | recordings/p2-nav-pacing-recording, test_p2_nav_pacing |
+| **慢写响应 5–30s（响应等待预算双链同判）** | ✅（2026-10-31 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 expected 双链失败 + 禁用修复重放真实录制 TimeoutError 复现） | ❌ | recordings/p2-slow-response-recording, test_p2_slow_response |
 
 ## 轮次记录
+
+### 2026-10-31 — P2.11 慢写响应（5–30s）双链同判（trace 链响应等待错用单步定位预算）
+
+- 提交：`5facd20`（分支 maa-dp；作业区 /Users/edr-test/ai-projects/edr-cloud-recorder-p2）。
+- 选择缺口：P2.10 风险 #3「慢导航 × 网络断言共存的观察窗起点」——
+  调研结论：count=0 观察窗两链都在因果动作前建观察者、动作后轮询
+  （菜单 afterStepId 恒绑同文档 lastStepId），窗语义一致，**该风险不成立**；
+  真正的缝隙在**响应等待预算**（P2.8 风险 #2 的姊妹形态）：
+  - 生成链：`context.expect_event("request", ...)` 用 Playwright 缺省
+    30s；抓到后 `req.response()` 是无 timeout 参数的 channel 调用，
+    同样没有 5s 上限；
+  - trace 链：`_response_waiter(page, pred, timeout_ms)` 把单步定位预算
+    （缺省 5s）同时用在响应等待上。
+- 失败测试先行：test/test_p2_slow_response.py（2 条，修复前**双链分歧**红：
+  同一录制 pytest 链 PASS（等满 7s）、trace 链 5.0s
+  `TimeoutError: Timeout 5000ms exceeded while waiting for event "response"`
+  failureCategory=automation，durationMs≈5011 实测）。
+  - T1 慢写响应（无用户断言）：点 #save 发 POST /api/save，服务器延迟
+    7s 回 201 —— 自动写断言（status==201 + assert_subset 请求体）落在
+    等待块里，生成链照常等到、trace 链提前放弃。
+  - T2 慢响应 + 用户网络断言：同上 + 菜单录 status=201（afterStepId=
+    save 点击）。用户 expected 合并进 verification.responses 后，trace
+    链在响应等待上校验 —— 同一预算缝隙。
+- 根因与最小修复（scripts/replay_trace.py）：「等写请求的响应」是
+  **网络等待**不是元素定位，预算必须与生成链同源。新增
+  `NET_RESPONSE_WAIT_MS = 30_000`（与 Playwright 缺省一致），
+  `_perform` 的必发响应等待改用它；非必发（读请求）的
+  `min(timeout_ms, 2000)` 上限不变（语义是「状态已变就不重发」，不是
+  慢响应）；元素定位仍按 timeout_ms。
+- 反向验证：
+  a) **禁用修复**（NET_RESPONSE_WAIT_MS → 5_000，等价回旧预算）跑 2 条
+     单测 → 双双以 TimeoutError 复现（红灯形态与修复前一致，
+     SHA-verified 恢复）；注：设 0 不是禁用 —— Playwright 把 0 当
+     「无超时」，第一版反向假绿，已换正确突变。
+  b) 真实录制验收脚本内第 4 道反向：用真实录制产物 trace 重放、
+     禁用修复 → trace 链以 TimeoutError 失败 —— 证明真实录制确实暴露
+     了被修复的缺陷；
+  c) 篡改 expected（用户断言 201→500；T1 篡改请求体 p:1→p:2）→ 双链
+     都失败（防测试空转）。篡改位教训：**状态码不能当自动写断言的
+     篡改位** —— generate_spec 对 ≥400 的响应不生成自动写断言（只留
+     注释），改 net 事件状态只会让断言消失（DID NOT RAISE），改请求体
+     才是真篡改。
+- 真实 headed 录制闭环（scripts/record_p2_slow_response_acceptance.py →
+  recordings/p2-slow-response-recording/）：headed Chrome 真录
+  （点 #save 真发 POST → 等 7s 慢 201 回来 → 菜单「最近请求」绑定该
+  POST → status=201，net-status 亲手填即显式确认），record.py 管线原子
+  落盘三产物；录制核验（click css 兜底 button#save、net req→res 间隔
+  7.0s ≥ 6s 下限、断言 afterStepId=点击、expectedConfirmed）通过；
+  生成链正向 PASS（等满 7s）、trace 链正向 PASS（7.1s）、篡改双链失败、
+  禁用修复重放 TimeoutError 复现 —— ALL GATES PASS。三产物断言 id
+  一致（rec==spec==trace == 'b0luxc-2'）；trace validator ok:true
+  （2 节点 ready）。
+- 验收脚本自身的教训（记给后续轮次）：
+  a) 断言菜单驱动：先 `#sc` 选 network 范围，`#netReq` 才显示并填充；
+     绑定请求用 option 的 value（JSON.stringify({m,u})）逐个匹配，别按
+     index 选（占位项会漂）；
+  b) net-status 类型**没有**确认框：#confirm 只在 string 类型下显示，
+     非 string/bool 类型「用户亲手填/选即显式确认」（injector
+     confirmed=true）——对它 check() 会 30s 超时（与 P2.10 轮
+     「#es 先于 #confirm」教训同源但相反：这次是**不该**碰 #confirm）；
+  c) 录制器对 getByRole 优先：点 #save 落盘 `getByRole("button", …)`，
+     产物核验按 css 兜底字段（`css: 'button#save'`）匹配，不按 sel。
+- 门禁：定向 test_p2_slow_response 2 passed（修复后）；相邻回归
+  test_trace_replay 45 passed（含 _NetworkPage 响应等待预算钉子更新：
+  `assert timeout == NET_RESPONSE_WAIT_MS`）+ p2 全家族 48 passed；
+  check_visual 通过；git diff --check 通过；trace validator ok:true
+  （2 节点 ready）；三产物断言一致性 PASS。
+- Windows headed：本机 macOS，未验证（记入剩余风险，**未宣称最终完成**）。
+- 剩余风险（下一轮候选）：
+  1. Windows headed 未验证（连续多轮遗留，最高优先）；
+  2. 锚在 reload/navigate 步骤上的 count=0 网络断言：generate_spec 的
+     navigate 分支不 emit 动作等待块 → 断言走「因果动作不在生成序列」
+     拒发整份 spec；generate_trace 却接受（Navigate 是独立节点）——
+     **两链生成门不对称**（一拒一收，同录制不同判）未专项闭环；
+  3. 30s 响应预算与 20s 导航预算都是常量而非从录制数据推导（同 P2.10
+     风险 #2）；>30s 响应双链同败（同判但都红）；
+  4. 非必发（读请求）等待 `min(timeout_ms, 2000)` 与慢读请求的交互：
+     读请求确实 3s 才回且状态真的变化时，trace 链会记「未出现」警告
+     而生成链（无读断言）不受影响 —— 警告不改变 success，双链仍同判，
+     但 responses 记录形态不同，未专项验证。
 
 ### 2026-10-31 — P2.10 回放节奏 / 慢导航（>5s）双链同判（trace 链导航等待预算错用单步定位预算）
 
