@@ -4,7 +4,8 @@ import cv2
 import numpy as np
 import pytest
 
-from replay_trace import TraceReplayError, _assert_node_page, _locator, _page_for_node
+from replay_trace import (NET_RESPONSE_WAIT_MS, TraceReplayError,
+                          _assert_node_page, _locator, _page_for_node)
 from replay_trace import evaluate_trace as _evaluate_trace
 from replay_trace import replay_trace as _replay_trace
 from replay_trace import validate_trace as _validate_trace
@@ -104,7 +105,9 @@ class _NetworkPage:
         return _Locator(self)
 
     def expect_response(self, predicate, *, timeout):
-        assert timeout == 5000
+        # 响应等待吃网络响应预算（NET_RESPONSE_WAIT_MS，与生成链同源），
+        # 不再是单步定位预算 —— P2.11 慢响应双链同判修复的钉子。
+        assert timeout == NET_RESPONSE_WAIT_MS
         return _ResponseContext(self, predicate)
 
 

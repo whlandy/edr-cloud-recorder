@@ -192,6 +192,15 @@ def _page_matches_node(page, node: dict) -> bool:
 # 元素定位仍按 timeout_ms —— 只有路线等待吃导航预算。
 NAV_ROUTE_WAIT_MS = 20_000
 
+# 写请求响应等待的预算必须与生成链同源：生成链的
+# context.expect_event("request", ...) 用 Playwright 缺省 30s，抓到后
+# req.response() 是无 timeout 参数的 channel 调用，同样没有 5s 上限 ——
+# 慢响应（服务器 5–30s 才回）在生成链照常等到；trace 链若把单步定位预算
+# （timeout_ms=5s）用在响应等待上，同一份录制就是 pytest PASS / trace
+# TimeoutError 的双链分歧（真实闭环实测：7s 慢 201，trace 链 5.0s 放弃）。
+# 这是**网络等待**不是元素定位 —— 单独预算类，与定位预算解耦。
+NET_RESPONSE_WAIT_MS = 30_000
+
 
 def _wait_page_matches(page, node: dict, timeout_ms: int) -> bool:
     deadline = time.monotonic() + timeout_ms / 1000
@@ -885,7 +894,7 @@ def _perform(page, node: dict, root: Path, targeting: str, timeout_ms: int,
                 occurrences[key] = occurrences.get(key, 0) + 1
                 response_infos.append(stack.enter_context(_response_waiter(
                     page, _response_predicate(expected, occurrences[key]),
-                    timeout_ms
+                    NET_RESPONSE_WAIT_MS
                 )))
             # 非必发的也必须在动作**之前**布置监听，否则请求会漏掉；
             # 只是退出时单独处理，不让它的超时打断整步。
