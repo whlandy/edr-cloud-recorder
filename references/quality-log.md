@@ -37,6 +37,9 @@
 
 ### 2026-10-30 — P2.2 网络范围断言端到端（scope=network）
 
+- 提交：`c4ae305`（分支 maa-dp；验收录制产物路径
+  recordings/p2-network-scope-recording/ 在该提交的工作树上可由
+  scripts/record_p2_network_scope_acceptance.py 复现）。
 - 基线：分支 `maa-dp` @ 9c8be5d（edr-cloud-recorder-p2 worktree，干净）。
   主 checkout `codex/fix-windows-recorder-storage-restore` 上有并行会话未提交修改
   （rec_session.py/record.py/test_record_headless_smoke.py + 未跟踪 test），未触碰。
