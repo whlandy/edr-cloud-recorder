@@ -75,7 +75,9 @@ checked (text, input value, attribute, visibility, checked state, enabled/editab
 selected, element count, or one of three time kinds) from **how** it is compared
 (equals, contains, starts/ends with, regex, blank/non-blank, numeric greater/less,
 count at-least/at-most). The menu's 范围 switch also allows page-level URL / title
-assertions (the page itself, no DOM selector), and preset shortcuts (提示出现/消失、
+assertions (the page itself, no DOM selector), network-contract assertions against a
+recent request (status code, request/response body subset, and request_count=0 with a
+bounded observation window), and preset shortcuts (提示出现/消失、
 加载完成、表单错误) that only fill type + operator. The full table of types,
 operators, and time semantics is in [assertions.md](references/assertions.md). The user must
 confirm the expected value; the recorder must not infer intent from the current value

@@ -528,6 +528,15 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
         # （登录按钮是最典型的）会随页面卸载一起消失。
         context.expose_binding("__recPush", lambda source, step: accept(step, source))
 
+        # 断言菜单的「最近请求」清单（scope=network）。页面脚本看不到 context 级
+        # 网络事件，这里把已捕获的请求摘要回给菜单选择。只回 xhr/fetch 且经
+        # api_filter 的（与 net 一致），不含请求体 —— body 不进页面上下文。
+        def recent_requests():
+            reqs = [n for n in net if n["phase"] == "req"]
+            return [{"method": r["method"], "url": r["url"]} for r in reqs[-50:]]
+
+        context.expose_binding("__recNet", lambda source: recent_requests())
+
         context.add_init_script(script=recorder_source())
 
         # storage_state 不含 sessionStorage。有些站点把登录态放在 sessionStorage 里，

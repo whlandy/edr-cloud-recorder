@@ -115,7 +115,7 @@ from rec_assert import (
     expect_attribute, expect_time_range, expect_state, expect_text,
     expect_page_url, expect_page_title, expect_page_count, local_time_value,
     poll_until,
-    matches_assert,
+    matches_assert, net_status_fail,
 )
 from rec_helpers import (
     dismiss_overlays, is_present, nth_request, recorded_page_for,
@@ -448,15 +448,77 @@ def generate_spec(steps, net, start_url, name):
     text_seq = 0
     popup_seq = 0
 
-    def emit_action(action_expr, calls, warn):
-        """一次操作；若触发了写请求，包成「等响应 + 断言」。"""
+    def _emit_network_assert(na, writes, names, req_names):
+        """把一条 scope=network 断言落成等待块里的比较行。
+
+        请求对象按录制时的 reqMethod/reqUrl 与等待块里的 writes 配对：多条请求
+        时按「断言绑的请求是哪条」选对象，不能默认拿最后一个。匹配不上属于
+        生成配置错误 —— 断出来的不是绑定那条就等于没断，进 problems 拒发。
+        request_count=0 走 request_count_zero（有界观察窗 + 稳定窗）。
+        """
+        a, exp = na.get("assertion"), na.get("expected")
+        url_part = na["reqUrl"]
+        method = na["reqMethod"]
+        # 与等待器配对：strip 后路径含 url_part 且 method 相同的第一条。
+        # 落盘的请求 URL 是绝对的（含 origin），reqUrl 来自录制菜单的请求清单
+        # —— 可能是完整绝对 URL，也可能是用户改过的相对片段。两边都过 strip
+        # 再比；仍是绝对 URL 的（跨 origin 请求）按原样参与包含判断。
+        idx = None
+        for wi, w in enumerate(writes):
+            stripped = strip(w["url"])
+            if w["method"] == method and (url_part in stripped
+                                          or url_part in w["url"]):
+                idx = wi
+                break
+        if a == "request_count":
+            # 负断言不需要请求对象；观察窗由动作本身界定（等待块进出之间），
+            # 计数用页面侧收集的匹配请求（_net_watcher 由模板提供）。
+            w_args = _wait_kwargs(na, default_stable_ms=300)
+            arg = f", {w_args}" if w_args else ""
+            return [
+                f"    request_count_zero(_net_watcher, {_lit(url_part)}{arg})",
+            ]
+        if idx is None:
+            problems.append(
+                f"step id={na.get('id')}: 网络断言绑定的请求 "
+                f"{method} {url_part} 不在本动作触发的请求里，拒发而不是断错对象")
+            return []
+        req_var = req_names[idx]
+        resp_var = names[idx]
+        out = []
+        if a == "status":
+            # 失败要能指回这条断言：给出实际值和期望值（§8 失败报告）。
+            out.append(f"    if {resp_var} is None or {resp_var}.status != {exp}:")
+            out.append(
+                f"        net_status_fail({resp_var}.status if {resp_var} "
+                f"is not None else None, {exp}, {_lit(na.get('id'))})")
+        elif a == "request_body":
+            out.append(
+                f"    assert_subset({req_var}.post_data_json, {_to_matcher(exp)})")
+        elif a == "response_body":
+            out.append(
+                f"    assert_subset({resp_var}.json(), {_to_matcher(exp)})")
+        if na.get("id"):
+            # P0（§8）：一致性校验按行首 rec-assert 标记提取断言 id，必须单独成行
+            out.append(f"    # rec-assert: {na['id']}")
+        return out
+
+    def emit_action(action_expr, calls, warn, network_asserts=None):
+        """一次操作；若触发了写请求，包成「等响应 + 断言」。
+
+        network_asserts 是用户在录制菜单选「最近请求」范围落下的 scope=network
+        断言步骤（afterStepId 指向本动作）。它们与自动生成的写请求断言共用同一条
+        pre-armed expect_request 等待链 —— 因果动作发出请求、等待块抓到 request、
+        用户契约断在同一个 request/response 对象上，观察起点/终点就是动作本身。
+        """
         nonlocal resp_seq
+        network_asserts = network_asserts or []
         # 按请求**发出**次序生成等待，而不是响应完成次序 —— 并发请求可能后发先回
         writes = sorted(
             (c for c in calls if c["method"] != "GET" and c["status"] < 400),
             key=lambda c: (req_of(c) or c)["t"],
         )
-        if not writes:
+        if not writes and not network_asserts:
             out = [f"    {action_expr}{warn}"]
             for c in calls:
                 out.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
@@ -499,6 +561,12 @@ def generate_spec(steps, net, start_url, name):
             if isinstance(body, dict):
                 out.append(f"    assert_subset({req_names[i]}.post_data_json, "
                            f"{_to_matcher(body)})")
+        # 用户手选的网络契约断言：按录制时绑定的请求逐条断在已抓到的
+        # request/response 对象上。多请求时等待块按 writes 次序排，断言引用
+        # 最后一个抓到的对象之后必须指明配对 —— 这里按「断言步的 method/url
+        # 与哪个等待器匹配」选择对象，匹配不上属配置错误，进 problems 拒发。
+        for na in network_asserts:
+            out.extend(_emit_network_assert(na, writes, names, req_names))
         for c in calls:
             if c["method"] == "GET":
                 out.append(f"    #   ↳ GET {strip(c['url'])} -> {c['status']}")
@@ -523,6 +591,27 @@ def generate_spec(steps, net, start_url, name):
     # 无法如实转译的步骤：收集全部问题，最后统一拒发（SpecGenerationError）。
     # 注释照写 —— 错误文本里已有诊断，代码文本只是第二份证据。
     problems: list[str] = []
+    # scope=network 断言按 afterStepId 预分组：动作步骤先于断言被遍历，等待块
+    # 生成时就能拿到自己名下的网络断言（不能靠 pop 时序）。
+    _network_by_action: dict[str, list] = {}
+    for _s in steps:
+        if (_s.get("type") == "assert" and _s.get("scope") == "network"
+                and _s.get("afterStepId") and not _s.get("expectedConfirmed") is False):
+            a = _s.get("assertion")
+            exp = _s.get("expected")
+            pre_ok = (
+                a in ("status", "request_body", "response_body", "request_count")
+                and isinstance(_s.get("reqUrl"), str) and _s["reqUrl"]
+                and isinstance(_s.get("reqMethod"), str) and _s["reqMethod"]
+                and (a != "status" or (isinstance(exp, int)
+                                       and not isinstance(exp, bool)
+                                       and 100 <= exp <= 599))
+                and (a != "request_count" or (isinstance(exp, int)
+                                              and not isinstance(exp, bool)
+                                              and exp == 0))
+            )
+            if pre_ok:
+                _network_by_action.setdefault(_s["afterStepId"], []).append(_s)
     for i, s in enumerate(steps):
         hi = steps[i + 1]["t"] if i + 1 < len(steps) else float("inf")
         calls = between(s["t"], hi)
@@ -631,6 +720,64 @@ def generate_spec(steps, net, start_url, name):
                     f"step#{i} (id={s.get('id')}): 未知页面断言类型 {_lit(a)}")
             if s.get("id"):
                 lines.append(f"    # rec-assert: {s['id']}")
+            for c in calls:
+                lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
+            continue
+
+        # ── 网络范围断言（scope="network"，P2 §9.2）：挂到因果动作的等待块 ──
+        # 断言本身不生成独立代码 —— 比较落在 afterStepId 指向的动作的
+        # expect_request 等待块里（观察起点=动作、终点=块退出）。先校验+暂存，
+        # 动作步骤处理时取出。无法归属的动作、坏算子、未确认 expected 都拒发。
+        if s["type"] == "assert" and s.get("scope") == "network":
+            a, exp = s.get("assertion"), s.get("expected")
+            sid = s.get("id")
+            ok = True
+            if a not in ("status", "request_body", "response_body", "request_count"):
+                lines.append(f"    # ⚠ 未知网络断言类型 {a!r}，已拒发")
+                problems.append(
+                    f"step#{i} (id={sid}): 未知网络断言类型 {a!r} —— "
+                    "拒发而不是少断言")
+                ok = False
+            elif a != "request_count":
+                # 静态期望值必须已确认（P0 红线在网络范围同样成立）
+                if s.get("expectedConfirmed") is False:
+                    lines.append("    # ⚠ 网络断言需要 expected 但未确认，已拒发")
+                    problems.append(
+                        f"step#{i} (id={sid}): 网络断言 expected 未确认，拒发而不是少断言")
+                    ok = False
+                if a == "status" and not (isinstance(exp, int)
+                                          and not isinstance(exp, bool)
+                                          and 100 <= exp <= 599):
+                    lines.append(f"    # ⚠ status 期望须为三位整数 {exp!r}，已拒发")
+                    problems.append(
+                        f"step#{i} (id={sid}): status 期望须为 100–599 的整数 {exp!r}")
+                    ok = False
+            if ok and not s.get("afterStepId"):
+                # 没有因果前置动作 → 无法确定观察起点（请求是哪个动作发出来的），
+                # 按动作窗口猜测会引入「最后一条同 URL」式错配 —— 拒发。
+                lines.append("    # ⚠ 网络断言缺少因果前置步骤，无法确定观察起点，已拒发")
+                problems.append(
+                    f"step#{i} (id={sid}): 网络断言 afterStepId 缺失 —— "
+                    "无法确定请求归属的动作，拒发而不是猜")
+                ok = False
+            if ok and not (isinstance(s.get("reqUrl"), str) and s["reqUrl"]
+                           and isinstance(s.get("reqMethod"), str) and s["reqMethod"]):
+                lines.append("    # ⚠ 网络断言缺少请求匹配条件（reqMethod/reqUrl），已拒发")
+                problems.append(
+                    f"step#{i} (id={sid}): 网络断言缺 reqMethod/reqUrl，拒发而不是猜")
+                ok = False
+            if ok and a == "request_count" and not (
+                    isinstance(exp, int) and not isinstance(exp, bool) and exp == 0):
+                # request_count 只支持「应为 0」的负断言；非 0 计数无法给出
+                # 可靠观察窗（窗内没有匹配请求也可能是请求还没发）—— 拒发。
+                lines.append(f"    # ⚠ request_count 仅支持期望 0，收到 {exp!r}，已拒发")
+                problems.append(
+                    f"step#{i} (id={sid}): request_count 仅支持期望 0，收到 {exp!r}")
+                ok = False
+            if ok:
+                pass            # 已在预扫描阶段进 _network_by_action，等动作 emit
+            # 不在这里放 rec-assert 标记：断言的比较行在因果动作的等待块里
+            # （_emit_network_assert 已带标记），这里再放会重复计数。
             for c in calls:
                 lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
             continue
@@ -1009,7 +1156,9 @@ def generate_spec(steps, net, start_url, name):
             and next_step.get("pageId") != s.get("pageId")
             and next_step.get("openerPageId") == s.get("pageId")
         )
-        emitted = emit_action(action, calls, warn)
+        emitted = emit_action(
+            action, calls, warn,
+            network_asserts=_network_by_action.pop(s.get("id"), None))
         if opens_popup:
             popup_seq += 1
             info = f"popup{popup_seq}_info"
@@ -1050,6 +1199,13 @@ def generate_spec(steps, net, start_url, name):
     ]
 
     lines.append("")
+    # 网络断言挂靠的动作步骤不存在（afterStepId 指向被丢弃/不存在的步骤）→
+    # 观察起点无从确定，拒发整份 spec —— 不能静默丢断言。
+    for after_id, nas in _network_by_action.items():
+        for na in nas:
+            problems.append(
+                f"网络断言 (id={na.get('id')}) 的因果动作步骤 {after_id!r} "
+                "不在生成后的步骤序列里 —— 无法确定观察起点，拒发而不是猜")
     if problems:
         raise SpecGenerationError(problems)
     return "\n".join(lines)

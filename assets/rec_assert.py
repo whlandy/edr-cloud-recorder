@@ -879,3 +879,11 @@ def expect_time_range(locator, prefix: str,
                 "（区间内没有时间记号）"
             )
         time.sleep(0.1)
+
+
+def net_status_fail(actual, expected, assert_id: str) -> None:
+    """网络断言 status 不符时的统一失败出口：失败信息必须能指回这条断言，
+    并同时给出实际值与期望值（§8 失败报告）。仅在不满足时被生成代码调用。"""
+    raise AssertionError(
+        f"网络断言失败 (rec-assert: {assert_id}): 响应状态 actual={actual!r} "
+        f"expected={expected!r}")

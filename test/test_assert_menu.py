@@ -415,3 +415,53 @@ def test_editable_target_is_enabled_on_input(rec_page):
     menu.get_by_role("button", name="添加断言").click()
     step = _last_assert_step(rec_page)
     assert step["assertion"] == "editable" and step["expected"] is True
+
+
+def test_network_scope_requires_recent_requests(rec_page):
+    """P2（§5.1）：范围切到「最近请求」但宿主没有 __recNet/没有请求 → 保存被禁。"""
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#sc").select_option("network")
+    labels = [menu.locator("#t option").nth(i).inner_text()
+              for i in range(menu.locator("#t option").count())]
+    assert "响应状态码" in labels and "不应发请求(count=0)" in labels
+    # 无请求 → 保存被禁用（不能落在无法归属的请求上）
+    assert menu.get_by_role("button", name="添加断言").is_disabled()
+
+
+def test_network_scope_binds_recent_request(rec_page):
+    """P2（§5.1）：有 __recNet 提供的请求清单时，网络断言绑定选中请求与因果动作。"""
+    rec_page.evaluate("""() => {
+      window.__recNet = () => [
+        { method: 'GET', url: 'http://x/api/list' },
+        { method: 'POST', url: 'http://x/api/save' },
+      ];
+    }""")
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#sc").select_option("network")
+    menu.locator("#t").select_option("status")
+    menu.locator("#es").fill("200")
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step.get("scope") == "network"
+    assert step["assertion"] == "status"
+    assert step["expected"] == 200
+    assert step["reqMethod"] == "POST" and step["reqUrl"] == "http://x/api/save"
+    assert step["expectedConfirmed"] is True
+
+
+def test_network_scope_bad_json_rejected(rec_page):
+    """P2：request_body 期望必须是合法 JSON，坏的直接禁保存。"""
+    rec_page.evaluate("""() => {
+      window.__recNet = () => [{ method: 'POST', url: 'http://x/api/save' }];
+    }""")
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#sc").select_option("network")
+    menu.locator("#t").select_option("request_body")
+    menu.locator("#es").fill("{not json")
+    assert menu.get_by_role("button", name="添加断言").is_disabled()
+    menu.locator("#es").fill('{"ok": true}')
+    assert menu.get_by_role("button", name="添加断言").is_enabled()
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["assertion"] == "request_body"
+    assert step["expected"] == {"ok": True}

@@ -271,7 +271,8 @@ def _visual_ui(node: dict) -> dict:
 def _target(page, node: dict, template_root: Path, targeting: str, timeout_ms: int,
             focused_selector: str | None):
     action_type = (node.get("action") or {}).get("type")
-    if ts.assertion_of(node):
+    assertion = ts.assertion_of(node)
+    if assertion:
         locator = _locator(page, ts.selector_of(node))
         if locator is None:
             raise TraceReplayError("断言步骤缺少 DOM 选择器")
@@ -698,6 +699,11 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
     if assertion and assertion.get("scope") == "page":
         _assert_page(page, assertion, timeout_ms)
         return {"mode": "verifier", "scope": "page"}
+    # 网络范围断言无需 DOM 定位：期望（status/request_body/response_body）在本步
+    # 的响应等待块里按用户确认的 expected 校验（_network_assertions 注入期望）。
+    if assertion and assertion.get("scope") == "network":
+        _reject_unconfirmed(assertion)
+        return {"mode": "verifier", "scope": "network"}
     mode, locator, visual, dom_error = _target(
         page, node, template_root, targeting, timeout_ms, focused_selector
     )

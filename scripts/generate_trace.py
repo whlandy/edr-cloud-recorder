@@ -316,11 +316,48 @@ def _network_expectation(request: dict | None, response: dict) -> dict:
     return param
 
 
+def _merge_user_network_expectation(na: dict,
+                                    responses: list) -> list | None:
+    """把一条 scope=network 断言的期望合并进因果动作的 responses 期望列表。
+
+    返回合并后的列表；绑定请求不在本步触发的请求里时返回 None（调用方拒发）。
+    覆盖规则：status 断言覆盖 expectedStatus；request_body 覆盖 request.body；
+    response_body 覆盖 expectedBody。命中的期望带 userAssertId，回放失败信息
+    能指回具体断言。
+    """
+    a, exp = na.get("assertion"), na.get("expected")
+    url_part, method = na.get("reqUrl"), na.get("reqMethod")
+    for expected in responses:
+        # 请求 URL 可能带或不带 origin（reqUrl 来自菜单请求清单，多为绝对 URL）
+        if (expected["method"] != method
+                or not (url_part in expected["url"]
+                        or url_part.split("://")[-1] in expected["url"])):
+            continue
+        if a == "status":
+            expected["expectedStatus"] = exp
+        elif a == "request_body":
+            expected.setdefault("request", {})["body"] = exp
+        elif a == "response_body":
+            expected["expectedBody"] = json.dumps(exp, ensure_ascii=False)
+        expected["userAssertId"] = na.get("id")
+        return responses
+    return None
+
+
 def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
                    name: str, start_url: str) -> dict[str, Any]:
     _, steps = prepare_steps(steps)
     steps = _fold_input_focus(steps)
     network_pairs = pair_network_events(net or [])
+    # 用户手选的网络契约断言（scope=network）按 afterStepId 预分组，动作节点
+    # 构建时合并期望（expectedConfirmed=false 由断言节点自己的回放门拒）。
+    steps_by_action: dict[str, list] = {}
+    for _s in steps:
+        if (_s.get("type") == "assert" and _s.get("scope") == "network"
+                and _s.get("afterStepId") and _s.get("expectedConfirmed") is not False
+                and isinstance(_s.get("reqUrl"), str) and _s["reqUrl"]
+                and isinstance(_s.get("reqMethod"), str) and _s["reqMethod"]):
+            steps_by_action.setdefault(_s["afterStepId"], []).append(_s)
     # 二次确认型开关：确认框只在开关**真的需要拨**的时候才弹。回放遇到开关已经
     # 在目标状态就跳过点击（拨开关是幂等的），于是确认框根本不出现，后面那几步
     # 就成了无处可点的孤儿步骤。标成可选 —— 现有语义是「证实不存在才跳过」，
@@ -404,10 +441,11 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
             mapped = _assert_recognition(step)
             if mapped is not None:
                 recognition = mapped
-            elif spec.get("scope") != "page":
+            elif spec.get("scope") not in ("page", "network"):
                 # 桌面侧没有对应能力，显式标出来，别让它以为验过了。
                 # 页面级断言（scope=page）由我们自己的回放链读页面 url/title 校验，
-                # 不是「桌面验证不了」的 web-only —— 保留录制时的 scope=page。
+                # 网络级断言（scope=network）由回放链在因果动作的响应等待上校验
+                # —— 两者都不是「桌面验证不了」的 web-only，保留录制时的 scope。
                 spec["scope"] = VERIFY_SCOPE_WEB
             verification["assertion"] = spec
 
@@ -435,6 +473,13 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
             for request, response in network_pairs
             if step.get("t", 0) <= (request or response).get("t", 0) < high
         ]
+        # 用户手选的网络契约断言（scope=network，afterStepId 指向本步）：期望值
+        # 以**用户确认的 expected** 为准 —— 合并进本步的 responses，回放链等完
+        # 响应即按它校验。录制时抓到的 status/body 只在用户没覆盖的字段上作缺省。
+        for na in steps_by_action.pop(step.get("id"), []):
+            merged = _merge_user_network_expectation(na, responses)
+            if merged is not None:
+                responses = merged
         if responses:
             verification["responses"] = responses
         if verification:

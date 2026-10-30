@@ -705,6 +705,10 @@ export const RECORDER = () => {
       // 完成的极早期，以及 binding 调用本身失败的情况。
       // 两个通道都带同一个 id，Node 侧按 id 去重。
       steps.push(step);
+      // 宿主侧 pump 会把本地数组 drain 走（步骤对象还在，数组清空）。
+      // 断言菜单的 afterStepId 需要「最近一步的 id」，drain 后本地数组是空的，
+      // 所以另存一份最后步骤 id —— afterStepId 不能指向不存在的因果步骤。
+      lastStepId = step.id;
       if (typeof window.__recPush === 'function') {
         try { window.__recPush(step); } catch { /* 页面正在卸载，靠副通道 */ }
       }
@@ -714,6 +718,7 @@ export const RECORDER = () => {
   };
 
   let seq = 0;
+  let lastStepId = null;
   const tag = Math.random().toString(36).slice(2, 8);
 
   // 定位是动作的前置条件，必须从动作发生前的 DOM 状态采集。
@@ -775,10 +780,22 @@ export const RECORDER = () => {
     page_count: { label: '页面数量', kind: 'count', of: () => '' },
   };
 
+  // 网络级断言（P2 §5.1）：对最近请求做契约断言。请求清单由宿主侧（record.py）
+  // 经 __recNet 提供 —— 页面脚本看不到 context 级网络事件，不造第三套监听。
+  // of: () => '' 与页面/元素断言的读值接口对齐（网络类型没有「元素当前值」可读，
+  // 但 sync() 的通用路径会调用 of()，缺了会 throw 并打断整个菜单同步）。
+  const NETWORK_ASSERTIONS = {
+    status:        { label: '响应状态码', kind: 'net-status', of: () => '' },
+    request_body:  { label: '请求体(subset)', kind: 'net-json', of: () => '' },
+    response_body: { label: '响应体(subset)', kind: 'net-json', of: () => '' },
+    request_count: { label: '不应发请求(count=0)', kind: 'net-zero', of: () => '' },
+  };
+
   // 断言范围：目标元素 / 当前页面（§4.1/§4.2）。页面范围内类型换成 url/title。
   let scope = 'element';
 
-  const assertionSet = () => (scope === 'page' ? PAGE_ASSERTIONS : ASSERTIONS);
+  const assertionSet = () => (scope === 'page' ? PAGE_ASSERTIONS
+    : scope === 'network' ? NETWORK_ASSERTIONS : ASSERTIONS);
 
   // 比较算子：对齐商用测试系统的通用面（Playwright expect / Katalon 的
   // verify 关键字）。缺省「等于」与旧录制逐字节兼容 —— 老步骤没有 op 字段
@@ -886,7 +903,10 @@ export const RECORDER = () => {
         <div class="target" id="targetPreview"></div>
         <div class="row"><label>范围</label>
           <select id="sc"><option value="element">目标元素</option>
-            <option value="page">当前页面</option></select></div>
+            <option value="page">当前页面</option>
+            <option value="network">最近请求</option></select></div>
+        <div class="row" id="netRow" style="display:none"><label>最近请求</label>
+          <select id="netReq"></select></div>
         <div class="row" id="presetRow"><label>预设</label>
           <select id="ps">
             <option value="">— 自选 —</option>
@@ -974,6 +994,32 @@ export const RECORDER = () => {
       if ($('op').value) $('op').value = 'equals';
       $('op').dispatchEvent(new Event('change'));
     };
+    // 最近请求清单来自宿主侧（record.py 的 __recNet 绑定，context 级监听）。
+    // 页面脚本自己听不到 XHR/fetch 全量事件，不造第三套网络监听。
+    // expose_binding 的返回值是 Promise（绑定协议如此），同步 list 也得走
+    // .then；菜单里拿到后再填。首帧无数据时保持占位项，下次 sync 再试。
+    const fillNetRequests = () => {
+      const sel = $('netReq');
+      const apply = (recent) => {
+        recent = (recent || []).slice(-30).reverse();
+        sel.innerHTML = recent.length
+          ? recent.map((r) => {
+              const label = `${r.method} ${r.url.length > 42 ? r.url.slice(0, 42) + '…' : r.url}`
+                + (r.status ? ` → ${r.status}` : '');
+              const value = JSON.stringify({ m: r.method, u: r.url });
+              return `<option value='${value.replace(/'/g, '&#39;')}'>${label
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')}</option>`;
+            }).join('')
+          : '<option value="">（暂无最近请求）</option>';
+        sel.dispatchEvent(new Event('change'));
+      };
+      try {
+        if (typeof window.__recNet !== 'function') { apply([]); return; }
+        const out = window.__recNet();
+        if (out && typeof out.then === 'function') out.then(apply, () => apply([]));
+        else apply(out);
+      } catch { apply([]); }
+    };
     // 让 #t 的选项符合当前范围（元素/页面）。范围变化时才重排；同一范围内
     // 切换类型不重排（否则会把用户刚选的类型打回第一个）。
     const ensureTypeOptions = () => {
@@ -1014,6 +1060,9 @@ export const RECORDER = () => {
       $('presetRow').style.display = scope === 'page' ? 'none' : 'flex';
       const isTime = a.kind === 'time' || a.kind === 'timewindow';
       const isRange = a.kind === 'timerange';
+      // 网络范围：显示请求选择行，由宿主侧 __recNet 提供最近请求清单
+      $('netRow').style.display = scope === 'network' ? 'flex' : 'none';
+      if (scope === 'network') fillNetRequests();
       $('attrRow').style.display = a.kind === 'attr' ? 'flex' : 'none';
       fillOps(a.kind === 'count' ? 'count' : $('t').value);
       $('fmtRow').style.display = isTime ? 'flex' : 'none';
@@ -1021,15 +1070,18 @@ export const RECORDER = () => {
       $('durRow').style.display = isRange ? 'flex' : 'none';
       $('fmtPreview').style.display = (isTime || isRange) ? 'flex' : 'none';
       $('eb').style.display = a.kind === 'bool' ? 'block' : 'none';
-      // time 类型没有要人填的期望值 —— 它由回放时的时钟决定。
-      // 仍然把录制当时看到的文本显示出来（只读），好让人确认选的是不是那个元素。
-      $('es').style.display = a.kind === 'bool' ? 'none' : 'block';
-      $('es').type = a.kind === 'count' ? 'number' : 'text';
+      // 网络类型里 status 是数字、body 是 JSON；其余没有要填的期望值
+      $('es').style.display =
+        a.kind === 'bool' || a.kind === 'net-zero' ? 'none' : 'block';
+      $('es').type = (a.kind === 'count' || a.kind === 'net-status')
+        ? 'number' : 'text';
       $('es').readOnly = a.kind === 'time';
       // 时间类型下这个框**不是**期望值 —— 期望值由回放时的时钟算出。
       // 还叫 Expected 会直接误导人：实测有人据此以为断言比的是这个字符串。
       if (a.kind === 'time') $('esLabel').textContent = '录制时看到';
       else if (isRange) $('esLabel').textContent = '区间起点';
+      else if (a.kind === 'net-json') $('esLabel').textContent = 'Expected (JSON)';
+      else if (a.kind === 'net-zero') $('esLabel').textContent = '';
       else $('esLabel').textContent = 'Expected';
       if (isTime || !isRange) $('fmt').value = guessTimeFormat(a.of(el));
       // 切换到 bool 类型时预填当前状态；记录预填值用于确认判断
@@ -1038,6 +1090,14 @@ export const RECORDER = () => {
         prefilledBool = $('eb').value;
       }
       else if (a.kind === 'count') $('es').value = '';
+      else if (a.kind === 'net-zero') $('es').value = '';
+      else if (a.kind === 'net-status') { $('es').value = ''; prefilledExpected = ''; }
+      else if (a.kind === 'net-json') {
+        // body 期望没有「当前值预填」可比 —— 用户手填 JSON。预览最近请求的
+        // method/URL 供确认选没选对请求。
+        $('es').value = '';
+        prefilledExpected = '';
+      }
       else if (isRange) {
         // 区间起点必须是纯时间值（HH:MM / HH:MM:SS），从显示文本里抠出来。
         // 带日期前缀的显示值（2026-10-21 00:28:56）只取时间部分。
@@ -1065,6 +1125,10 @@ export const RECORDER = () => {
       if (scope === 'page') {
         const label = a.label;
         $('targetPreview').textContent = `${label}（当前）—— ${String(a.of(el))}`;
+      } else if (scope === 'network') {
+        const pick = $('netReq').value;
+        $('targetPreview').textContent = pick
+          || '宿主侧还没有可用请求（__recNet 未提供）';
       } else {
         try {
           const s = selectorFor(meaningful(el));
@@ -1141,7 +1205,21 @@ export const RECORDER = () => {
       } else if (a.kind === 'count') {
         const n = $('es').value.trim();
         if (n === '' || !/^\d+$/.test(n)) bad = '数量须为不小于 0 的整数';
+      } else if (a.kind === 'net-status') {
+        const n = Number($('es').value.trim());
+        if (!Number.isInteger(n) || n < 100 || n > 599)
+          bad = '状态码须为 100–599 的整数';
+      } else if (a.kind === 'net-json') {
+        const raw = $('es').value.trim();
+        if (raw) {
+          try { JSON.parse(raw); } catch { bad = 'Expected 须为合法 JSON（subset 语义）'; }
+        } else bad = '请填写期望的 JSON';
+      } else if (a.kind === 'net-zero') {
+        // 无期望值；请求必须已选
+        if (!$('netReq').value) bad = '没有可选请求（宿主侧暂无最近请求）';
       } else if (a.kind === 'attr' && !$('attr').value.trim()) bad = '请填写属性名';
+      if (scope === 'network' && a.kind !== 'net-zero' && !$('netReq').value && !bad)
+        bad = '没有可选请求（宿主侧暂无最近请求）';
       // expected 不能默默为空：空字符串是合法断言，但必须是明确的选择。
       // 空值类算子不需要期望值 —— 命题本身就是「是否为空」。
       const op = $('op').value;
@@ -1214,6 +1292,19 @@ export const RECORDER = () => {
         // page_count（count 类）的 expected 是数字框里的字符串，转成整数再落盘。
         const finalExpected = a.kind === 'count' ? Number(expected) : expected;
         const step = pushPageAssert(type, finalExpected, op, wait, confirmed);
+        closeMenu();
+        return;
+      }
+      if (scope === 'network') {
+        // 网络级断言（§5 scope=network）：绑定最近请求 + 因果前置动作。
+        // status 是数字；body 是用户填的 JSON；count=0 无期望值。
+        let finalExpected;
+        if (a.kind === 'net-status') finalExpected = Number(expected);
+        else if (a.kind === 'net-json') finalExpected = JSON.parse(expected);
+        else finalExpected = 0;
+        const bound = JSON.parse($('netReq').value || '{}');
+        const step = pushNetworkAssert(
+          type, finalExpected, bound.m, bound.u, wait, confirmed);
         closeMenu();
         return;
       }
@@ -1320,7 +1411,7 @@ export const RECORDER = () => {
         framePath: window !== window.top ? location.pathname : undefined,
         // P0（common-web-assertion-design §5/§6）：因果前置步骤 + 等待策略 +
         // expected 确认标志。afterStepId 生成器据此保证不断言抢跑在触发动作之前。
-        afterStepId: steps[steps.length - 1]?.id,
+        afterStepId: steps[steps.length - 1]?.id || lastStepId,
         expectedConfirmed: !!confirmed,
         wait: wait || undefined,
       };
@@ -1350,12 +1441,41 @@ export const RECORDER = () => {
         url: location.pathname + location.search + location.hash,
         inFrame: window !== window.top,
         framePath: window !== window.top ? location.pathname : undefined,
-        afterStepId: steps[steps.length - 1]?.id,
+        afterStepId: steps[steps.length - 1]?.id || lastStepId,
         expectedConfirmed: !!confirmed,
         wait: wait || undefined,
       };
       if (!step.afterStepId) delete step.afterStepId;
       if (op && op !== 'equals') step.op = op;
+      steps.push(step);
+      if (typeof window.__recPush === 'function') {
+        try { window.__recPush(step); } catch { /* 页面正在卸载 */ }
+      }
+      return step;
+    } catch { /* 录制出错不能影响用户操作 */ }
+    return null;
+  };
+
+  /**
+   * 网络级断言（P2 §5.1 scope=network）：对因果动作发出的请求做契约断言。
+   * reqMethod/reqUrl 绑定请求（生成器按它与动作触发的请求配对）；
+   * afterStepId 绑定因果动作（观察起点=动作，不能靠「最后一条同 URL」猜）。
+   */
+  const pushNetworkAssert = (assertion, expected, reqMethod, reqUrl, wait, confirmed) => {
+    try {
+      const step = {
+        id: `${tag}-${++seq}`, t: Date.now(),
+        type: 'assert', scope: 'network', assertion, expected,
+        reqMethod: reqMethod || '', reqUrl: reqUrl || '',
+        expectedConfirmed: !!confirmed,
+        afterStepId: steps[steps.length - 1]?.id || lastStepId,
+        url: location.pathname + location.search + location.hash,
+        inFrame: window !== window.top,
+        pageId: undefined,
+        wait: wait || undefined,
+      };
+      if (!step.afterStepId) delete step.afterStepId;
+      if (!reqUrl) delete step.reqUrl;
       steps.push(step);
       if (typeof window.__recPush === 'function') {
         try { window.__recPush(step); } catch { /* 页面正在卸载 */ }
