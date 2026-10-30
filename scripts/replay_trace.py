@@ -184,6 +184,15 @@ def _page_matches_node(page, node: dict) -> bool:
     return f"{actual.scheme}://{actual.netloc}" == expected_origin
 
 
+# 「等页面到达录制路线」的预算必须与生成链的导航等待同源（rec_helpers
+# wait_for_recorded_url / recorded_page_for 的缺省 20s）：这是一次**导航**，
+# 不是元素定位 —— 慢导航（服务器 5–20s 才响应 / setTimeout 迟跳）提交时间
+# 超过单步定位预算，用 timeout_ms 会在这类真实录制上造成双链分歧：
+# 生成链等到了（PASS），trace 链提前放弃报「页面路径不符」（FAIL）。
+# 元素定位仍按 timeout_ms —— 只有路线等待吃导航预算。
+NAV_ROUTE_WAIT_MS = 20_000
+
+
 def _wait_page_matches(page, node: dict, timeout_ms: int) -> bool:
     deadline = time.monotonic() + timeout_ms / 1000
     while not _page_matches_node(page, node):
@@ -202,7 +211,9 @@ def _page_for_node(page, node: dict, page_map: dict | None = None,
     if page_map is not None and page_id:
         known = page_map.get(page_id)
         if known is not None:
-            _wait_page_matches(known, node, timeout_ms)
+            # 等的是录制时的导航落点（本页地址会变）——用导航预算，不用
+            # 本步定位预算（慢导航下 5s 定位预算放弃 → 双链分歧，实测）。
+            _wait_page_matches(known, node, NAV_ROUTE_WAIT_MS)
             return known
         if not opener_id and not page_map:
             page_map[page_id] = page
@@ -214,7 +225,10 @@ def _page_for_node(page, node: dict, page_map: dict | None = None,
             page_map[page_id] = page
         return page
     context = getattr(page, "context", None)
-    deadline = time.monotonic() + timeout_ms / 1000
+    # 新标签页解析同样等的是「到达录制 URL」——生成链 recorded_page_for
+    # 用 20s 缺省等 popup（可能还在 about:blank），这里必须同预算，否则
+    # 慢 popup（服务器 5–20s 才响应）下双链分歧（实测）。
+    deadline = time.monotonic() + NAV_ROUTE_WAIT_MS / 1000
     while True:
         candidates = []
         for candidate in (getattr(context, "pages", None) or []):
