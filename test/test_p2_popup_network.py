@@ -40,7 +40,18 @@ def _start_server():
             pass
 
         def do_GET(self):
-            if self.path.startswith("/popup"):
+            if self.path.startswith("/popup_load"):
+                # 正向网络断言的缺陷形态：popup 打开后**加载时**发 POST /api/save。
+                # Chrome 88+ 对 target=_blank 隐式 rel=noopener，popup 内外脚本分流；
+                # 这里 popup 自身 fetch，opener 页的 page.expect_request 永远看不到它。
+                body = (b"<!doctype html><html><head><meta charset='utf-8'>"
+                        b"<title>popup_load</title></head><body>"
+                        b"<div id='marker'>pl</div>"
+                        b"<script>setTimeout(function(){"
+                        b"fetch('/api/save',{method:'POST',"
+                        b"body:JSON.stringify({p:'1'})})},150)</script>"
+                        b"</body></html>")
+            elif self.path.startswith("/popup"):
                 body = (b"<!doctype html><html><head><meta charset='utf-8'>"
                         b"<title>popup</title></head><body>"
                         b"<button id='go' onclick=\"setTimeout(function(){"
@@ -50,6 +61,8 @@ def _start_server():
                 body = (b"<!doctype html><html><head><meta charset='utf-8'>"
                         b"<title>opener</title></head><body>"
                         b"<a id='open' href='/popup' target='_blank'>open popup</a>"
+                        b"<a id='openload' href='/popup_load' target='_blank'>"
+                        b"open load-popup</a>"
                         b"<div id='marker'>o</div></body></html>")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -297,3 +310,156 @@ class TestPopupAttributionConsistency:
         assert assertion.get("scope") == "network"
         assert page_id == "p2", (
             f"断言归属被挪走：pageId={page_id!r}（录制时在 popup p2 上）")
+
+
+# ── P2.8：popup 发起的**正向**网络断言（status / body）双链同判 ──────────────
+#
+# P2.7 只闭环了负断言（count=0）。正向缺口（quality-log 剩余风险 #2）：
+# popup **加载时**发的请求（被 opener 的 #openload 点击因果引发），断言锚在
+# opener 动作上；生成的 `page.expect_request` 绑 opener page，看不到 popup 的
+# 请求 → 正向假红（请求明明 201，等却超时）。
+
+
+def _open_popup_load_step(origin):
+    """opener 点 #openload 打开加载即发请求的 popup（pageId=p1）。"""
+    return {
+        "id": "openload", "t": 1000, "type": "click",
+        "sel": 'locator("#openload")', "kind": "css", "url": "/", "pageId": "p1",
+        "pageOrigin": origin,
+        "ui": {"templates": {"element": "openload.png"},
+               "pageRect": {"x": 0, "y": 0, "width": 50, "height": 20},
+               "pageViewport": {"width": 1280, "height": 720},
+               "deviceScaleFactor": 1},
+    }
+
+
+def _load_net_events(origin):
+    """popup 加载时发起的写请求（录制 context 级抓到，无 page 归属）。"""
+    return [
+        {"id": 7, "t": 1300, "phase": "req", "method": "POST",
+         "url": origin + "/api/save", "body": '{"p": "1"}'},
+        {"requestId": 7, "t": 1350, "phase": "res", "method": "POST",
+         "url": origin + "/api/save", "status": 201},
+    ]
+
+
+def _load_status_step(origin, expected=201, after="openload"):
+    """popup-load 请求的 status 断言，锚在 opener 的 openload 动作上（pageId=p1）。"""
+    return {
+        "id": "st-load", "t": 2600, "type": "assert", "scope": "network",
+        "assertion": "status", "expected": expected,
+        "reqMethod": "POST", "reqUrl": "/api/save",
+        "expectedConfirmed": True, "afterStepId": after,
+        "url": "/", "pageId": "p1", "pageOrigin": origin,
+    }
+
+
+def _load_body_step(origin, assertion, expected, after="openload", sid="bd-load"):
+    return {
+        "id": sid, "t": 2700, "type": "assert", "scope": "network",
+        "assertion": assertion, "expected": expected,
+        "reqMethod": "POST", "reqUrl": "/api/save",
+        "expectedConfirmed": True, "afterStepId": after,
+        "url": "/", "pageId": "p1", "pageOrigin": origin,
+    }
+
+
+def _both_outcomes(steps, net, origin, tag):
+    """跑生成链与回放链，返回 (gen_ok, trace_ok)。各自独立新 context。
+
+    SpecGenerationError 是「正向断言没有可绑定的请求记录」的诚实非通过（生成
+    端拒发而不是发一份会假绿的代码）—— 对「无请求」用例它正是两条链都失败的
+    合法形态，转成 (False, False) 而不是让上层误判为测试错误。
+    """
+    from generate_spec import generate_spec, SpecGenerationError
+    from generate_trace import generate_trace
+    from replay_trace import replay_trace
+    try:
+        spec = generate_spec(steps, net, start_url=origin + "/", name=tag)
+        trace = generate_trace(steps, net, name=tag, start_url=origin + "/")
+    except SpecGenerationError:
+        return False, False
+    gen_ok = trace_ok = None
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True, executable_path=resolve_chrome())
+        # 生成链
+        ctx = browser.new_context(base_url=origin + "/")
+        page = ctx.new_page(); page.goto(origin + "/")
+        try:
+            _run_spec(spec, page, tag + ".py")(page)
+            gen_ok = True
+        except Exception:
+            gen_ok = False
+        ctx.close()
+        # 回放链
+        ctx2 = browser.new_context(base_url=origin + "/")
+        page2 = ctx2.new_page(); page2.goto(origin + "/")
+        execution = replay_trace(page2, trace, navigate=False, timeout_ms=6000)
+        trace_ok = execution["status"] == "success"
+        ctx2.close()
+        browser.close()
+    return gen_ok, trace_ok
+
+
+class TestPopupPositiveNetworkAssert:
+    """popup 加载时发出的请求，正向 status/body 断言必须在两条链都被抓到（不假红）。"""
+
+    def test_pytest_chain_catches_popup_load_status(self, popup_origin):
+        from generate_spec import generate_spec
+        steps = [_open_popup_load_step(popup_origin),
+                 _load_status_step(popup_origin, expected=201)]
+        spec = generate_spec(steps, _load_net_events(popup_origin),
+                             start_url=popup_origin + "/", name="pload")
+        assert "rec-assert: st-load" in spec, spec
+        compile(spec, "pload.py", "exec")          # 语法必须成立
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True, executable_path=resolve_chrome())
+            ctx = browser.new_context(base_url=popup_origin + "/")
+            page = ctx.new_page(); page.goto(popup_origin + "/")
+            try:
+                _run_spec(spec, page, "pload.py")(page)
+            except Exception as e:
+                pytest.fail(
+                    f"生成链对 popup-load 请求假红（请求明明 201 却没等到）: "
+                    f"{type(e).__name__}: {str(e)[:160]}")
+            browser.close()
+
+    def test_popup_load_status_dual_chain_agree(self, popup_origin):
+        """两链同判：popup-load 的正向 status 断言在 pytest 与 trace 都通过。"""
+        steps = [_open_popup_load_step(popup_origin),
+                 _load_status_step(popup_origin, expected=201)]
+        gen_ok, trace_ok = _both_outcomes(
+            steps, _load_net_events(popup_origin), popup_origin, "pload2")
+        assert gen_ok is True, "生成链正向断言假红"
+        assert trace_ok is True, "回放链正向断言假红"
+        assert gen_ok == trace_ok
+
+    def test_tampered_status_fails_both_chains(self, popup_origin):
+        """反突变：把期望 201 篡改成 500，两条链都必须失败（不因松等待假绿）。"""
+        steps = [_open_popup_load_step(popup_origin),
+                 _load_status_step(popup_origin, expected=500)]
+        gen_ok, trace_ok = _both_outcomes(
+            steps, _load_net_events(popup_origin), popup_origin, "ptam")
+        assert gen_ok is False, "生成链对篡改过的 status 假绿"
+        assert trace_ok is False, "回放链对篡改过的 status 假绿"
+
+    def test_popup_load_body_subset_dual_chain(self, popup_origin):
+        """正向 request_body / response_body subset 在两条链同判（正例通过）。"""
+        steps = [_open_popup_load_step(popup_origin),
+                 _load_body_step(popup_origin, "request_body", {"p": "1"}),
+                 _load_body_step(popup_origin, "response_body", {}, sid="bd2")]
+        gen_ok, trace_ok = _both_outcomes(
+            steps, _load_net_events(popup_origin), popup_origin, "pbody")
+        assert gen_ok is True, f"生成链 body 断言失败: "
+        assert trace_ok is True, "回放链 body 断言失败"
+        assert gen_ok == trace_ok
+
+    def test_absent_request_fails_both_chains_not_false_pass(self, popup_origin):
+        """读取异常不能假通过：popup 的请求始终不发（无 net）时，status 断言在
+        两条链都必须失败 —— 不能因为观察不到就把「期望的状态」当成满足。"""
+        steps = [_open_popup_load_step(popup_origin),
+                 _load_status_step(popup_origin, expected=201)]
+        gen_ok, trace_ok = _both_outcomes(
+            steps, [], popup_origin, "pnone")   # 无请求事件
+        assert gen_ok is False, "生成链在无请求时报绿（假通过）"
+        assert trace_ok is False, "回放链在无请求时报绿（假通过）"

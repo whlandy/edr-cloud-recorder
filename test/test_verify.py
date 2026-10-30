@@ -630,7 +630,11 @@ def _(rec):
     )
     # CSS 只是定位手段；写操作不能因为元素一时找不到就静默跳过。
     assert "if is_present(" not in spec
-    assert re.search(r"page\.expect_request[\s\S]*locator\(\"\.icon-save\"\)\.click\(\)",
+    # P2.8：写请求等待从 page.expect_request 升级为 context 级 expect_event("request")
+    # （跨页面观察，popup 发出的请求也能接住）—— 语义不变，仍是「CSS 定位的写
+    # 动作是必经步骤、包在请求等待里」。
+    assert re.search(r"page\.context\.expect_event\(\"request\", "
+                     r"[\s\S]*locator\(\"\.icon-save\"\)\.click\(\)",
                      spec), spec
     assert "is not None and resp1.status == 200" in spec, spec
     assert re.search(r"assert_subset\(req1\.post_data_json", spec), spec

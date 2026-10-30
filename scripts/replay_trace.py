@@ -432,6 +432,17 @@ def _response_predicate(expected: dict, occurrence: int):
     return predicate
 
 
+def _response_waiter(page, predicate, timeout_ms: int):
+    """响应等待器：有真实 context 时用 context 级（跨所有页面，能抓到 popup 发出
+    的请求）；mock/无 context 的测试页退回 page.expect_response（P2.8 双链通判的
+    观察口径必须与录制侧 context 级一致，但历史 mock 页要么无 .context 要么 context
+    是假对象没用 expect_event）。"""
+    ctx = getattr(page, "context", None)
+    if ctx is not None and hasattr(ctx, "expect_event"):
+        return ctx.expect_event("response", predicate, timeout=timeout_ms)
+    return page.expect_response(predicate, timeout=timeout_ms)
+
+
 def _response_body(response):
     try:
         return response.text()
@@ -858,17 +869,18 @@ def _perform(page, node: dict, root: Path, targeting: str, timeout_ms: int,
             for expected in required:
                 key = (expected["method"], expected["url"])
                 occurrences[key] = occurrences.get(key, 0) + 1
-                response_infos.append(stack.enter_context(page.expect_response(
-                    _response_predicate(expected, occurrences[key]), timeout=timeout_ms
+                response_infos.append(stack.enter_context(_response_waiter(
+                    page, _response_predicate(expected, occurrences[key]),
+                    timeout_ms
                 )))
             # 非必发的也必须在动作**之前**布置监听，否则请求会漏掉；
             # 只是退出时单独处理，不让它的超时打断整步。
             for expected in optional:
                 key = (expected["method"], expected["url"])
                 occurrences[key] = occurrences.get(key, 0) + 1
-                waiter = page.expect_response(
-                    _response_predicate(expected, occurrences[key]),
-                    timeout=min(timeout_ms, 2_000),
+                waiter = _response_waiter(
+                    page, _response_predicate(expected, occurrences[key]),
+                    min(timeout_ms, 2_000),
                 )
                 optional_waiters.append((waiter, waiter.__enter__(), expected))
             target = _execute_action(

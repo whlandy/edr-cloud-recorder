@@ -585,7 +585,7 @@ def generate_spec(steps, net, start_url, name):
             occurrences[key] = nth
             pad = "    " + "    " * i
             out.append(
-                f"{pad}with page.expect_request("
+                f"{pad}with page.context.expect_event(\"request\", "
                 f"nth_request({_lit(p)}, {_lit(w['method'])}, {nth})"
                 f") as {req_names[i]}_info:"
             )
