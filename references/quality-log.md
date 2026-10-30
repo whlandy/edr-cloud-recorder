@@ -37,6 +37,38 @@
 
 ## 轮次记录
 
+### 2026-10-30 — P2.9 网络断言 × popup 的**真实 headed 录制**证据（status/body 正向绑定）
+
+- 提交：`2970665`（分支 maa-dp；作业区 /Users/edr-test/ai-projects/edr-cloud-recorder-p2）。
+- 选择缺口：P2.8 剩余风险 #4 —— 正向网络断言的**真实 headed 录制**证据未补
+  （P2.8 为手构 steps + 双链真实 Chromium）。本轮用 record.py 真录补足。
+- 证据：scripts/record_p2_popup_positive_acceptance.py → 产物
+  recordings/p2-popup-positive-recording/（recording.json / trace.json /
+  test_p2_popup_positive_recording.py；recordings/ 按仓库策略 gitignore，
+  由验收脚本复现）。驱动 on_ready：opener 点 #open（target=_blank）开 popup →
+  popup 加载即发 POST /api/save（body `{"p":"1"}`，201 `{}`）→ **opener 页**
+  开断言菜单选「最近请求」绑定这条 popup-load 的 POST，逐个加 status=201 /
+  request_body={"p":"1"} / response_body={} → 确认。
+- 录制产物核验：三条网络断言均 pageId=opener、afterStepId=opener 的 #open 点击
+  （因果动作；popup 页无步骤，afterStepId 走 lastStepId=opener 最后一步）、
+  reqMethod=POST、reqUrl 含 /api/save、expectedConfirmed 非 false；
+  三产物断言 id/数量一致（spec_ids == rec_ids == tr_ids）；因果序
+  #open.t < 请求.t < 断言.t。
+- 门禁（脚本内 ALL GATES PASS）：
+  - 正向（与录制一致，popup 真发 POST）：生成链 PASS + 回放链 PASS；
+  - 篡改 status 201→500 → 两链都失败；篡改 request_body {p:1}→{p:2} → 两链都失败；
+  - 移除反向（quiet 环境 popup 不发请求）→ 两链都失败（读取异常不假通过）。
+  定向 test_p2_popup_network 10 passed（含 P2.8 5 条 + P2.7 count=0）；check_visual
+  通过；全量 pytest **907 passed / 2 skipped / 1 failed** —— 唯一失败为基线
+  test_orchestrate（干净 maa-dp HEAD 已有，非本轮引入；本轮仅加验收脚本，产品
+  代码零改动）。
+- Windows headed：本机 macOS，未验证（记入剩余风险，**不宣称最终完成**）。
+- 剩余风险（下一轮候选）：
+  1. Windows headed 未验证（连续多轮遗留）；
+  2. 录制↔回放节奏差（setTimeout 迟到的请求落不落观察窗）无专项场景；
+  3. request_count 与自动写断言同动作共存的 trace 链语义未对齐验证；
+  4. 网络断言三契约合一（同一请求上 status+body 在一个断言节点表达）未专项。
+
 ### 2026-10-30 — P2.8 网络断言 × popup 的**正向**配对（status/body 绑 popup 发出的请求，双链假红）
 
 - 提交：`8653629`（分支 maa-dp；作业区 /Users/edr-test/ai-projects/edr-cloud-recorder-p2）。
