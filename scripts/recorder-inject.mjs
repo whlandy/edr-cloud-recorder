@@ -1753,5 +1753,31 @@ export const RECORDER = () => {
     });
   }, true);
 
+  // 导航事件（reload / 前进后退）：这类导航没有「元素」可挂事件，只能在新
+  // 文档启动时从 Navigation Timing 读回来。历史导航会让输入值、未提交的表单
+  // 全部归零 —— 丢了这一步，回放的状态就和录制时对不上，而断言失败会误导人
+  // 去查页面而不是查「少了一次重载」。navigate（首次加载）不记：那一步由
+  // start_url 承担，记了反而和 goto 重复。
+  const navType = (() => {
+    try {
+      const nav = performance.getEntriesByType('navigation')[0];
+      return nav ? nav.type : undefined;
+    } catch { /* 老浏览器没有该 API，宁可漏记不可错记 */ }
+    return undefined;
+  })();
+  if (navType === 'reload' || navType === 'back_forward') {
+    steps.push({
+      id: `${tag}-${++seq}`, t: Date.now(),
+      type: 'navigate', navType,
+      url: location.pathname + location.search + location.hash,
+      inFrame: window !== window.top,
+      framePath: window !== window.top ? location.pathname : undefined,
+    });
+    if (typeof window.__recPush === 'function') {
+      try { window.__recPush(steps[steps.length - 1]); }
+      catch { /* 页面正在卸载，靠副通道 */ }
+    }
+  }
+
   window.__rec = { steps, drain: () => steps.splice(0, steps.length) };
 };

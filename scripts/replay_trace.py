@@ -39,7 +39,7 @@ VOLATILE_DATETIME = re.compile(
 # 「这一步是不是断言」改看 attach.verification.assertion 有没有东西。
 SUPPORTED_ACTIONS = {
     "Click", "DoubleClick", "InputText", "Check", "Uncheck",
-    "SetSwitch", "PressKey", "DoNothing",
+    "SetSwitch", "PressKey", "DoNothing", "Navigate",
 }
 
 # 布尔 UI 状态断言：统一走 rec_assert.expect_state（与生成链同核心同稳定语义）
@@ -242,6 +242,11 @@ def _page_for_node(page, node: dict, page_map: dict | None = None,
 
 def _assert_node_page(page, node: dict) -> None:
     """Fail before acting when no unique page is on the recorded route."""
+    # Navigate 节点跳过路线断言：reload/前进后退**就是**把页面带回录制路线的
+    # 动作，执行前的路线必然与目标不一致（reload 前是当前页，back 前是前进页）。
+    # 拦下它只会报「路线不符」，把真正该做的导航吞掉。
+    if (node.get("action") or {}).get("type") == "Navigate":
+        return
     want_route = _node_route(node)
     got_route = _page_route(page)
     if want_route is None or got_route is None:
@@ -704,6 +709,18 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
     if assertion and assertion.get("scope") == "network":
         _reject_unconfirmed(assertion)
         return {"mode": "verifier", "scope": "network"}
+    # 页面导航（reload / 前进后退）同样无 DOM 目标：动作本身就是导航。
+    # 做完再返回 —— 后续步骤的定位/URL 校验自然落在导航后的新文档上。
+    if action_type == "Navigate":
+        nav = param.get("navType", "reload")
+        if nav == "reload":
+            page.reload()
+        elif nav == "back_forward":
+            page.go_back()
+        else:
+            raise TraceReplayError(f"不支持的导航类型: {nav!r}")
+        page.wait_for_load_state("load")
+        return {"mode": "navigate", "navType": nav}
     mode, locator, visual, dom_error = _target(
         page, node, template_root, targeting, timeout_ms, focused_selector
     )

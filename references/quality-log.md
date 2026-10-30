@@ -27,7 +27,8 @@
 | afterStepId 因果顺序 | ✅ | ✅（本轮网络断言实测） | ✅ | ✅ | ✅ | ❌ | test_review_p1_completion + 本轮 |
 | 同主机不同端口 / 跨 origin | ⚠️ | ❌ | ⚠️ | ⚠️ | ❌ | ❌ | 无专项场景 |
 | Cookie/localStorage/sessionStorage 恢复 | ⚠️ | ✅ | ⚠️ | ⚠️ | ❌ | ❌ | rec_session 快照有测试（test_session_restore 属并行会话） |
-| 页面 reload/前进后退/关闭 | ⚠️ | ❌ | ⚠️ | ⚠️ | ❌ | ❌ | 无专项场景 |
+| **页面 reload/前进后退导航事件** | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 + 删导航步骤 + 路线断言突变） | ❌ | recordings/p2-nav-events-recording, test_nav_events |
+| 页面关闭（窗口/tab close 后续步骤归属） | ⚠️ | ❌ | ⚠️ | ⚠️ | ❌ | ❌ | popup close 分支未见专项录制 |
 | 网络失败 / 读取异常非通过 | ✅ | n/a | ✅ | ✅ | ✅ | ❌ | test_review_trace_edges, test_failure_categories |
 | Windows headed Chrome 启动/录制/回放 | ⚠️ | ✅（旧轮） | ✅ | ✅ | ⚠️ | ⚠️ | test_windows_compat, test_windows_smoke |
 | 短命标签页闪开闪关 | ✅ | ✅（旧轮） | ✅ | ✅ | ⚠️ | ✅ | aa941af（Windows storage restore tab 修复） |
@@ -88,3 +89,50 @@
   3. Windows headed 未验证本轮新功能（本机为 macOS）；
   4. 网络断言与 popup 场景组合（新标签页里发的请求归属 opener 还是 popup）
      未覆盖。
+
+### 2026-10-30 — P2.3 页面导航事件（reload / 前进后退）录制与双链回放
+
+- 分支：`maa-dp` @ b54620e（edr-cloud-recorder-p2 worktree，干净起步）。
+  主 checkout `codex/fix-windows-recorder-storage-restore` 的并行未提交修改未触碰。
+- 选择缺口：矩阵「页面 reload/前进后退/关闭」——录制器对 F5/后退零步骤产出，
+  历史导航在 recording.json 里完全不可见，回放少做导航且失败误导。
+- 失败测试先行：test/test_nav_events.py（先 5 条后 6 条，实现前全部失败）。
+- 根因与修复（4 处最小改动）：
+  1. **recorder-inject.mjs**：init script 时读 Navigation Timing 的
+     `performance.getEntriesByType('navigation')[0].type`，reload/back_forward
+     推一条 `type=navigate, navType` 步骤（navigate 首载不记——由 start_url 承担）。
+     实测覆盖 bfcache 恢复的跨文档 back（init script 会重新执行）。
+  2. **generate_spec.py**：navigate 步骤转译 `page.reload()/page.go_back()`；
+     未知 navType 拒发整份 spec（与未知断言同一红线）。
+  3. **generate_trace.py**：ACTION_TYPES 增加 `navigate → Navigate`，
+     param.navType 细分；Navigate 不在 MAA_ACTIONS，自动标 actionScope=web-only。
+  4. **replay_trace.py**：SUPPORTED_ACTIONS 增加 Navigate；_execute_action
+     执行 page.reload()/go_back()；**_assert_node_page 对 Navigate 节点跳过
+     路线断言**（本缺陷由真实录制闭环暴露：back_forward 执行前路线是 /next，
+     预检把它报成「页面路径不符」，真正该做的导航被吞掉）。
+- 真实录制过程中顺带确认的既有行为（非本轮缺陷，已写入验收脚本注释）：
+  Playwright 的 fill() 不发 change 事件 —— 填值前先点击聚焦、填完 blur 才有
+  change；菜单 value 断言 expected='' 必须走 is_blank + 勾确认框（P0 红线正确拦截）。
+- 反向验证（4 组突变，全部先失败后恢复，恢复后 SHA 校验字节一致）：
+  1. 注入层 gate 禁用（`if false &&`）→ 2 条录制测试失败；
+  2. generate_spec 转译分支禁用 → 3 条失败（含 KeyError 证明步骤贯穿全链）；
+  3. 回放 Navigate 分支禁用 → 回放后输入框非空（状态错位被抓住）；
+  4. _assert_node_page 的 Navigate 跳过禁用 → test_replay_navigate_skips_pre_route_assert
+     失败（报「页面路径不符」）。
+- 真实 headed 录制闭环：scripts/record_p2_nav_events_acceptance.py →
+  recordings/p2-nav-events-recording/（recording.json + trace.json[ready,6 节点] +
+  test_p2_nav_events_recording.py + assets/step-*.png）。流程：聚焦点击 → fill →
+  blur → F5 重载 → 菜单 is_blank 断言（勾确认框）→ 点链接 /next → 后退。
+  正向：pytest 链 PASS（含 page.reload/go_back 文本）+ trace 链 PASS（Navigate 2 次）。
+  反向 1：篡改 is_blank→hello，双链明确失败。反向 2：删掉 navigate 步骤再生成，
+  回放后输入框仍是 hello（状态错位如实暴露）。
+- 门禁：定向 223 passed / 1 skipped；replay 回归 103 passed；全量
+  **881 passed / 2 skipped / 1 failed**——唯一失败仍是基线
+  test_orchestrate.py::test_identity_match_rejects_ip_prefix_false_positive
+  （干净 maa-dp HEAD 已有，非本轮引入）；check_visual 通过；git diff --check 通过。
+- Windows headed：本机 macOS，未验证（记入剩余风险）。
+- 剩余风险（下一轮候选）：
+  1. 页面关闭（tab close 后 opener 侧后续步骤归属）仍未专项覆盖；
+  2. request_count=0 仍只有单元证据（上一轮遗留）；
+  3. 网络断言 × popup 组合（上一轮遗留）；
+  4. Windows headed 未验证（连续三轮遗留）。

@@ -43,6 +43,7 @@ ACTION_TYPES = {
     "fill": "InputText",
     "press": "PressKey",
     "assert": "DoNothing",     # 断言不产生动作，识别成功本身就是结论
+    "navigate": "Navigate",    # 页面级导航（reload / 前进后退），param.navType 细分
 }
 
 
@@ -169,6 +170,8 @@ def _action(step: dict, *, relative_point: dict | None = None,
             param["focusBeforeInput"] = True
     elif step_type == "press":
         param["key"] = step.get("key", "Enter")
+    elif step_type == "navigate":
+        param["navType"] = step.get("navType", "reload")
     elif step_type == "assert":
         pass                    # 断言规格在 attach.verification.assertion
     else:

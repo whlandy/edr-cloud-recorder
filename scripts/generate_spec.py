@@ -782,6 +782,27 @@ def generate_spec(steps, net, start_url, name):
                 lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
             continue
 
+        # ── 页面导航事件（reload / 前进后退）：无 DOM 目标，直接落在 page 上 ──
+        # 这类步骤没有选择器；丢掉它，回放的状态就和录制时对不上（历史导航会
+        # 清掉未提交的输入、重载会把页面打回初始态）。未知 navType 不猜 ——
+        # 拒发整份 spec，与未知断言/动作同一红线。
+        if s["type"] == "navigate":
+            nav = s.get("navType")
+            if nav == "reload":
+                lines.append("    page.reload()")
+            elif nav == "back_forward":
+                lines.append("    page.go_back()")
+            else:
+                lines.append(f"    # ⚠ 未知导航类型 {nav!r}，已拒发")
+                problems.append(
+                    f"step#{i} (id={s.get('id')}): 未知导航类型 {nav!r} —— "
+                    "回放会少做一次导航，拒发而不是静默跳过")
+            if s.get("id"):
+                lines.append(f"    # rec-step: {s['id']}")
+            for c in calls:
+                lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
+            continue
+
         try:
             sel = to_python(s["sel"])
         except SelectorError as e:
