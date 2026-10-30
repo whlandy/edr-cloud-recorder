@@ -33,9 +33,62 @@
 | 网络失败 / 读取异常非通过 | ✅ | n/a | ✅ | ✅ | ✅ | ❌ | test_review_trace_edges, test_failure_categories |
 | Windows headed Chrome 启动/录制/回放 | ⚠️ | ✅（旧轮） | ✅ | ✅ | ⚠️ | ⚠️ | test_windows_compat, test_windows_smoke |
 | 短命标签页闪开闪关 | ✅ | ✅（旧轮） | ✅ | ✅ | ⚠️ | ✅ | aa941af（Windows storage restore tab 修复） |
-| 回放节奏 / 导航等待 | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ | 无专项场景（本轮正向录制回放暴露了节奏差形态，见 P2.7） |
+| **回放节奏 / 导航等待（慢导航 >5s 双链同判）** | ✅（2026-10-31 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 expected 双链失败 + 禁用修复重放真实录制「路径不符」复现） | ❌ | recordings/p2-nav-pacing-recording, test_p2_nav_pacing |
 
 ## 轮次记录
+
+### 2026-10-31 — P2.10 回放节奏 / 慢导航（>5s）双链同判（trace 链导航等待预算错用单步定位预算）
+
+- 提交：`e68edbb`（分支 maa-dp；作业区 /Users/edr-test/ai-projects/edr-cloud-recorder-p2）。
+- 选择缺口：矩阵唯一整行空白「回放节奏 / 导航等待」（P2.8 风险 #2）——
+  录制↔回放节奏差无专项场景，加载缓慢 / 导航迟到形态未钉死。
+- 失败测试先行：test/test_p2_nav_pacing.py（2 条，修复前**双链分歧**红：
+  同一录制 pytest 链 PASS、trace 链 FAIL）。
+  - T1 同页慢导航：fill → 点按钮（setTimeout 300ms 后跳 /slow-next，
+    服务器延迟 7s）→ /slow-next 上 fill + value 断言。生成链
+    `wait_for_recorded_url` 20s 预算等到；trace 链 `_page_for_node` 的路线
+    等待用**单步定位预算**（timeout_ms=5s）——导航 ~7.3s 才 commit，
+    5s 放弃 → 报「页面路径不符: 当前 /，轨迹此步应在 /slow-next」
+    （failureCategory=infrastructure，durationMs≈5016 实测）。
+  - T2 慢 popup：target=_blank 开 /slow-popup（延迟 7s）。生成链
+    `recorded_page_for` 20s 缺省等到；trace 链候选扫描同样 5s 放弃 →
+    同形态红。
+- 根因与最小修复（scripts/replay_trace.py）：「等页面到达录制路线」是
+  **导航**不是元素定位，预算必须与生成链同源。新增
+  `NAV_ROUTE_WAIT_MS = 20_000`（与 rec_helpers.wait_for_recorded_url /
+  recorded_page_for 缺省一致），`_page_for_node` 两条路线等待路径
+  （known-page `_wait_page_matches`、popup 候选扫描 deadline）改用它；
+  元素定位仍按 timeout_ms 不变。
+- 反向验证：
+  a) **禁用修复**（NAV_ROUTE_WAIT_MS → 0）跑 2 条单测 → 双双以「双链分歧 /
+     页面路径不符」复现（单测红灯形态与修复前一致，SHA-verified 恢复）；
+  b) 真实录制验收脚本内第 4 道反向：用真实录制产物 trace 重放、
+     禁用修复 → trace 链以「路径不符」失败 —— 证明真实录制确实暴露了
+     被修复的缺陷，不是测试构造的假场景；
+  c) 篡改 expected（world → tampered）→ 双链都失败（防测试空转）。
+- 真实 headed 录制闭环（scripts/record_p2_nav_pacing_acceptance.py →
+  recordings/p2-nav-pacing-recording/）：headed Chrome 真录慢导航流
+  （fill hello / → 点慢按钮 /slow-next 7s → fill world + value 断言
+  expectedConfirmed=true），record.py 管线原子落盘三产物；录制核验
+  （慢导航因果：hello 点击落 /、导航后步骤落 /slow-next）通过；
+  生成链正向 PASS（wait_for_recorded_url 等到）、trace 链正向 PASS、
+  篡改双链失败、禁用修复重放「路径不符」复现 —— ALL GATES PASS。
+- 门禁：定向 test_p2_nav_pacing 2 passed（修复后）+ 相邻回归
+  test_nav_events + test_cross_origin + test_p2_page_network +
+  test_page_close 24 passed；test_trace_replay + popup-network +
+  trace-edges 99 passed；replay-check + generated_execution +
+  generation_consistency 190 passed；check_visual 通过；git diff --check
+  通过；skill validator ok:true（6 节点 ready）；**全量 pytest
+  912 passed, 2 skipped, 0 failed**（含并行会话同轮落盘的
+  orchestrate 基线修复，双会话并发跑全量互证）。
+- Windows headed：本机 macOS，未验证（记入剩余风险，**未宣称最终完成**）。
+- 剩余风险（下一轮候选）：
+  1. Windows headed 未验证（连续多轮遗留，最高优先）；
+  2. 20s 导航预算是常量而非从录制数据推导 —— 录制时导航实际耗时 >20s
+     的极端站点仍会双链同败（同判但都红）；若要支持需录制侧记录导航
+     实际耗时并落进 trace（暂不做，先钉住同判性）；
+  3. 慢导航 × 网络断言共存的观察窗起点未专项验证（观察者建在动作前，
+     慢导航下动作前时长被拉长，窗语义可能被拉宽）。
 
 ### 2026-10-31 — 全量门禁 0-failed 首阻：test_orchestrate 身份匹配「基线」判定与修复（测试夹具/脱敏问题，非产品缺陷）
 
