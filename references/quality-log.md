@@ -25,7 +25,7 @@
 | iframe / frameChain | ✅ | ✅ | ✅ | ✅ | ⚠️ | ❌ | fixture_drive, test_record_replayability |
 | popup / 新标签页 pageId 因果 | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | test_acceptance_p1_scenarios, acd9b8c |
 | afterStepId 因果顺序 | ✅ | ✅（本轮网络断言实测） | ✅ | ✅ | ✅ | ❌ | test_review_p1_completion + 本轮 |
-| 同主机不同端口 / 跨 origin | ⚠️ | ❌ | ⚠️ | ⚠️ | ❌ | ❌ | 无专项场景 |
+| 同主机不同端口 / 跨 origin | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 expected 双链失败 + 污染 pageOrigin 状态错位暴露） | ❌ | recordings/p2-cross-origin-recording, test_cross_origin |
 | Cookie/localStorage/sessionStorage 恢复 | ⚠️ | ✅ | ⚠️ | ⚠️ | ❌ | ❌ | rec_session 快照有测试（test_session_restore 属并行会话） |
 | **页面 reload/前进后退导航事件** | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 + 删导航步骤 + 路线断言突变） | ❌ | recordings/p2-nav-events-recording, test_nav_events |
 | **页面关闭（tab/popup close + 关后归属 + page_count）** | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 1→2 双链失败 + 删 page_close 步骤状态错位） | ❌ | recordings/p2-page-close-recording, test_page_close |
@@ -35,6 +35,64 @@
 | 回放节奏 / 导航等待 | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ | 无专项场景 |
 
 ## 轮次记录
+
+### 2026-10-30 — P2.5 同主机不同端口 / 跨 origin 导航（双缺陷：生成侧等待 + 录制侧归属）
+
+- 提交：`62e28cd`（分支 maa-dp；验收录制产物 recordings/p2-cross-origin-recording/
+  由 scripts/record_p2_cross_origin_acceptance.py 在该提交工作树上复现）。
+- 起点基线：`maa-dp` @ 16f2135（edr-cloud-recorder-p2 worktree，干净起步）。
+  主 checkout `codex/fix-windows-recorder-storage-restore` 的并行未提交修改未触碰。
+- 选择缺口：矩阵「同主机不同端口 / 跨 origin」——无真实录制、无反向验证的
+  ⚠️ 行。跨 origin 同路径导航（端口 A / → 端口 B /）在步骤 url（纯路径）上
+  完全不可见，唯一区分依据是 pageOrigin。
+- 失败测试先行：test/test_cross_origin.py（4 条，实现前 3 条失败、1 条防放宽）。
+- 根因与修复（两个独立缺陷，共 3 文件）：
+  1. **D1 生成侧（generate_spec.py）**：「同页地址变化 → wait_for_recorded_url」
+     的判定只比较 pathname+search+hash，不比较 pageOrigin —— 跨 origin 同路径
+     导航被当成「没动」，生成的 pytest 不等导航就执行后续步骤，全部落在旧
+     origin 页面上假绿、随后被跳转抹掉；trace 链按 pageOrigin 校验会等待，
+     **双链对同一录制结论相反**。修复：last_top_urls 基准与比较都改用完整
+     URL（expected_page_url = urljoin(pageOrigin, url)）。
+  2. **D2 录制侧（record.py + recorder-inject.mjs）**：pageOrigin 由泵循环
+     事后补写（resolve_page_identity 读 page.url）。泵间隙里页面已跨 origin
+     导航时，旧 origin 上的步骤被记到新 origin 名下（与 P2.2 afterStepId
+     同款「只有真实泵节奏才暴露」的缺陷；离线手拼步骤测不出）。修复：
+     注入层 5 个步骤构造点在事件现场写 pageOrigin（location.origin），
+     宿主泵结算只在步骤缺失该值时兜底。
+- 确定性触发形态（关键经验）：`<a href>` 直跳不会暴露 D1 —— Playwright 的
+  click 对链接导航有内建等待，导航在下一步前已完成。必须用 **setTimeout
+  延迟跳转**（点击本身不导航）：fill/断言落在 A 上假绿，跳转后状态被抹掉。
+- 反向验证（全部先失败后恢复，恢复后 cp 回字节一致）：
+  1. generate_spec 判定精确回退（基准存路径 + 比较路径，即原始缺陷形态）
+     → T1 + T3 失败（T3 报「fill 落在导航前被抹掉」）；
+  2. record.py 宿主无条件覆盖注入层 pageOrigin → T2 失败（fill 的
+     pageOrigin 变成导航后的 B）。
+- 真实 headed 录制闭环：scripts/record_p2_cross_origin_acceptance.py →
+  recordings/p2-cross-origin-recording/（recording.json + trace.json[ready,
+  6 节点] + test_p2_cross_origin_recording.py + assets/step-*.png）。
+  流程：A 填值 → delayed-go 按钮（800ms 后跳 B，B 慢 1s）→ B 填值 →
+  B 上 value=world 断言（显式确认）。录制产物核验：A 的 fill pageOrigin=A、
+  B 的 fill/断言 pageOrigin=B（D2 生效）；spec 含指向 B 的
+  wait_for_recorded_url（D1 生效）。
+  正向：pytest 链 PASS + trace 链 PASS。
+  反向 1：篡改 expected（world→hello），双链失败且失败信息指向具体断言值。
+  反向 2：把 B 的 fill pageOrigin 篡改成 A（模拟 D2 污染数据）→ 生成器把
+  「B 上的步骤」转译成「等待导航回 A」→ 20s 超时，状态错位如实暴露
+  （失败形态是 TimeoutError 而非 AssertionError —— 验收壳需接任意异常）。
+- 门禁：定向 4 passed；相邻回归（nav/page-close/network-scope/page-network/
+  generation-consistency/replayability）150 passed；全量 **889 passed /
+  2 skipped / 1 failed**——唯一失败仍是基线
+  test_orchestrate.py::test_identity_match_rejects_ip_prefix_false_positive
+  （干净 maa-dp HEAD 已有，非本轮引入）；check_visual 通过；git diff --check
+  通过；trace validator ok:true（6 节点）。
+- Windows headed：本机 macOS，未验证（记入剩余风险）。
+- 剩余风险（下一轮候选）：
+  1. request_count=0 真实录制闭环（连续四轮遗留）；
+  2. 网络断言 × popup 组合（连续四轮遗留）；
+  3. Windows headed 未验证（连续五轮遗留）；
+  4. 同 origin 但 scheme 不同（http→https）的导航行为未专项覆盖；
+  5. recorded_page_for（pytest 链按 pageId 换页）与 _page_for_node（trace 链）
+     对「pageOrigin 与 pageId 组合消歧」的语义一致性未压测。
 
 ### 2026-10-30 — P2.4 页面关闭（tab/popup close）录制与双链回放
 
