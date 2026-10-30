@@ -124,6 +124,24 @@ expect_time_range(page.locator(".time"), "00:28:56", 1)         # 秒级区间
 - pytest 链在等待块里断（`net_status_fail` / `assert_subset`），trace 链在
   响应等待上断（`_validate_response`，期望以用户确认为准）—— 两链同判。
 
+### request_count=0 的观察窗实现（P2.6）
+
+count=0 与 status/body 走的不是同一条路 —— 它没有响应对象可等：
+
+- 观察者 `NetRequestWatcher`（rec_helpers）在**因果动作执行前**创建
+  （窗起点 = 动作发生前，不然动作自己发的请求会漏掉），按 method + url
+  包含匹配累计请求；
+- 稳定窗轮询在动作**之后**跑（`request_count_zero`，生成链在等待块里、
+  trace 链在 network 断言分支里），窗内「连续稳定地 0」才通过；
+  stableMs 下限 300ms（§6），老录制记成 0 的也会被抬到下限；
+- **count() 必须驱动事件分发**：sync Playwright 的 request 事件只在事件
+  循环被驱动时到达，time.sleep 轮询期间一条都不来 —— 观察者数恒 0，
+  负断言永远假绿。count() 里 `page.wait_for_timeout(1)` 是语义的一部分，
+  不是实现细节；
+- 两链观察口径一致：method + url 过滤，任何一侧丢 method 都会与另一侧
+  不同判（实测：method 盲的生成链把 POST 噪音数进去，method 感知的
+  trace 链不数 —— 同一录制一败一过）。
+
 ## 兼容
 
 - 老录制没有 `op` 字段 → 回放端按「等于」跑，逐字节不变；

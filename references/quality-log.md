@@ -20,8 +20,8 @@
 | 页面 URL/title 断言 | ✅ | ⚠️ | ✅ | ✅ | ✅ | ❌ | test_p2_page_network |
 | page_count | ✅ | ⚠️ | ✅ | ✅ | ✅ | ❌ | test_p2_page_network（两链同判，真实 Chromium） |
 | **网络 status/request_body/response_body** | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 201→500 双链失败） | ❌ | recordings/p2-network-scope-recording, test_p2_network_scope |
-| **request_count=0 有界观察窗** | ⚠️ | ❌ | ✅ 单元 | ✅ 单元 | ⚠️ 单元 | ❌ | test_p2_page_network |
-| **网络断言「最近请求」菜单交互** | ✅（本轮） | ✅ headed | n/a | n/a | ✅ | ❌ | test_assert_menu（真实菜单 iframe 交互） |
+| **request_count=0 有界观察窗** | ✅（2026-10-30 本轮） | ✅ headed | ✅ | ✅ | ✅（真发请求双链失败 actual=1 + 污染 reqUrl 双链失败） | ❌ | recordings/p2-request-count-zero-recording, test_p2_request_count_zero |
+| **网络断言「最近请求」菜单交互** | ✅（P2.2 轮） | ✅ headed | n/a | n/a | ✅ | ❌ | test_assert_menu（真实菜单 iframe 交互；P2.6 轮补 count=0 保存/稳定窗 2 条回归） |
 | iframe / frameChain | ✅ | ✅ | ✅ | ✅ | ⚠️ | ❌ | fixture_drive, test_record_replayability |
 | popup / 新标签页 pageId 因果 | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | test_acceptance_p1_scenarios, acd9b8c |
 | afterStepId 因果顺序 | ✅ | ✅（本轮网络断言实测） | ✅ | ✅ | ✅ | ❌ | test_review_p1_completion + 本轮 |
@@ -35,6 +35,92 @@
 | 回放节奏 / 导航等待 | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ | 无专项场景 |
 
 ## 轮次记录
+
+### 2026-10-30 — P2.6 request_count=0 有界观察窗真实闭环（五缺陷：产码 NameError、泵饥饿、trace 静默丢、菜单两处、稳定窗丢失）
+
+- 提交：`fc93c7f`（分支 maa-dp；验收录制产物
+  recordings/p2-request-count-zero-recording/ 由
+  scripts/record_p2_request_count_zero_acceptance.py 在该提交工作树上复现）。
+- 起点基线：`maa-dp` @ 1feedaa（edr-cloud-recorder-p2 worktree，干净起步）。
+  主 checkout `codex/fix-windows-recorder-storage-restore` 的并行未提交修改未触碰。
+- 选择缺口：矩阵「request_count=0 有界观察窗」——连续四轮只有单元证据
+  （test_p2_page_network 用假 watcher 验证窗口过滤，从不真跑浏览器）。
+- 失败测试先行：test/test_p2_request_count_zero.py（6 条，实现前 4 失败；
+  另 2 条记录缺陷形态，修复后继续有效）。
+- 根因与修复（本轮 5 个独立缺陷）：
+  1. **D1 生成链产码不可执行**：_emit_network_assert 发出
+     `request_count_zero(_net_watcher, ...)`，但 `_net_watcher` 从未定义
+     （注释谎称「由模板提供」）、HEADER 未导入 request_count_zero、调用缺
+     观察窗参数 —— 生成的 pytest 一执行就 NameError，负断言从未真正跑过。
+     修复：HEADER 导入 + 每断言发 `_net_watcher<id> = NetRequestWatcher(page,
+     method=...)`（动作前）+ `request_count_zero(...)`（动作后）+ rec-assert
+     标记（一致性门禁从此能查到这条断言）。
+  2. **D2 事件泵饥饿（本轮最重要发现）**：sync Playwright 的
+     page.on("request") 回调只在事件循环被驱动时分发 —— time.sleep 轮询
+     期间一条都不来（探针实测：延迟 fetch 触发后 600ms 内计数恒 0）。
+     负断言「数不到」= 永远假绿。修复：新 helper
+     rec_helpers.NetRequestWatcher.count() 里 page.wait_for_timeout(1) 驱动
+     事件分发；观察窗起点 = watcher 创建时刻（动作前）。
+  3. **D3 trace 链静默丢/反向等待**：_merge_user_network_expectation 没有
+     request_count 分支 —— 要么被丢（一致性门禁必拒真实产物），要么落成
+     「必有响应」等待（语义相反：正确应用回放失败、坏应用反而通过）。
+     修复：request_count 不走 responses 合并；_assertion_spec 带 reqUrl/
+     reqMethod 进 trace，replay_trace 的 network 分支真正执行有界观察
+     （watcher + request_count_zero，稳定窗下限 300ms）。
+  4. **D4 trace 侧孤儿因果静默丢**：afterStepId 指向被丢弃/不存在步骤的
+     网络断言，generate_spec 拒发而 generate_trace 静默丢 —— 同一录制两链
+     不同判。修复：generate_trace 循环后对残留 steps_by_action 拒发
+     （SpecGenerationError，与 spec 侧同一红线）。
+  5. **D5 菜单两处（只有真实录制闭环才暴露）**：a) net-zero 无期望值但
+     「Expected 为空」校验只排除 bool/is_blank —— count=0 断言保存恒禁用，
+     根本录不下来；b) 负断言稳定窗判定漏 request_count（只认
+     `type==='count' && expected===0`）—— 记成 stableMs=0，回放一进窗读到 0
+     就放行，迟到的请求永远数不到（实测：回放进程在 fetch 发出前就跑完）。
+     修复：injector 两个判定都补上；generate_spec/replay_trace 对
+     request_count 强制 stableMs>=300 下限（老录制兼容）。
+- 真实录制闭环（scripts/record_p2_request_count_zero_acceptance.py →
+  recordings/p2-request-count-zero-recording/，headed Chrome 真录）：
+  点 write（真发 POST /api/save）→ 点 net zero check（观察窗因果动作）→
+  菜单选最近请求 + 不应发请求(count=0)，绑定 POST → 确认。产物：recording.json
+  + trace.json[ready,3 节点] + test_*.py + assets/step-*.png；三产物断言
+  一致（rec-assert: <id> 双链同序）。正向：pytest 链 PASS + trace 链 PASS。
+  反向 1：服务端换成「check 也发请求」→ 双链失败，生成链报
+  `请求数为 0 断言失败: 观察窗 内实际请求数 actual=1（期望 0）`。
+  反向 2：篡改 reqUrl 口径（指向真实会发的 GET /api/ping）→ 双链失败。
+- 验收脚本自身的教训（记给后续轮次）：
+  a) 想在页面里关掉请求（onclick=null）验证正向 —— 生成链第一行
+  page.goto("/") 会重置补丁，「关请求」必须在服务端做；
+  b) 换端口回放时 _retarget 只该动 pageOrigin/reqUrl，且必须先 retarget 再
+  做数据污染 —— 顺序反了污染被 retarget 冲掉（反向假通过的又一形态）；
+  c) 正向「通过」可能是 vacuous：观察窗断言立刻读 0 通过、浏览器随即关闭，
+  迟到的 fetch 根本没机会发出 —— 没有稳定窗下限的正向证据一文不值。
+- 反向验证（4 组突变，全部先失败后恢复，恢复后 SHA 校验字节一致）：
+  1. generate_spec 只发调用不发观察者定义 → 4 条生成链测试失败
+     （NameError 形态，与原始缺陷一致）；
+  2. NetRequestWatcher.count() 去掉事件泵 → 迟到请求测试失败，失败形态
+     是「DID NOT RAISE」（假绿被测试抓住）；
+  3. replay_trace 的 request_count 分支禁用 → 双链同判测试失败（trace 链
+     对真发请求假通过）；
+  4. generate_trace 残留归属检查禁用 → 孤儿因果测试失败（DID NOT RAISE）。
+- 门禁：定向 test_p2_request_count_zero 6 passed；相邻回归
+  （network-scope/page-network/assert-menu/windows-compat/headless-smoke/
+  generation-consistency/replayability）165 passed；check_visual 通过；
+  git diff --check 通过；validate_trace ok（3 节点，ready）；全量 pytest
+  895 passed / 2 skipped / 1 failed——唯一失败仍是基线
+  test_orchestrate.py::test_identity_match_rejects_ip_prefix_false_positive
+  （干净 maa-dp HEAD 已有，非本轮引入）。
+- Windows headed：本机 macOS，未验证（记入剩余风险）。
+- 剩余风险（下一轮候选）：
+  1. 网络断言 × popup 组合（连续四轮遗留）——popup 里发的请求归属 opener
+     还是 popup、pageId 归属与 scope=network 的组合未覆盖；
+  2. Windows headed 未验证（连续六轮遗留）；
+  3. 同 origin 但 scheme 不同（http→https）的导航行为未专项覆盖；
+  4. NetRequestWatcher 只统计 resource_type 由 page.on("request") 给出的
+     事件（record.py 侧的 wanted() 还限 xhr/fetch）——回放链的观察口径与
+     录制侧 api_filter 不一致时（录制时过滤了某 URL、断言又绑它）行为
+     未验证；
+  5. request_count 断言与自动写请求断言同动作共存时（等待块里既有
+     expect_request 又有 watcher）的相互影响未专项覆盖。
 
 ### 2026-10-30 — P2.5 同主机不同端口 / 跨 origin 导航（双缺陷：生成侧等待 + 录制侧归属）
 
