@@ -35,8 +35,97 @@
 | 短命标签页闪开闪关 | ✅ | ✅（旧轮） | ✅ | ✅ | ⚠️ | ✅ | aa941af（Windows storage restore tab 修复） |
 | **回放节奏 / 导航等待（慢导航 >5s 双链同判）** | ✅（2026-10-31 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 expected 双链失败 + 禁用修复重放真实录制「路径不符」复现） | ❌ | recordings/p2-nav-pacing-recording, test_p2_nav_pacing |
 | **慢写响应 5–30s（响应等待预算双链同判）** | ✅（2026-10-31 本轮） | ✅ headed | ✅ | ✅ | ✅（篡改 expected 双链失败 + 禁用修复重放真实录制 TimeoutError 复现） | ❌ | recordings/p2-slow-response-recording, test_p2_slow_response |
+| **count=0 锚在 navigate 步骤（生成门对称 + afterStepId 绑定）** | ✅（2026-10-31 本轮） | ✅ headed | ✅ | ✅ | ✅（fire/污染口径双链失败 actual=1 + 禁用修复重生成 SpecGenerationError 复现） | ❌ | recordings/p2-navigate-anchored-recording, test_p2_navigate_anchored_net |
 
 ## 轮次记录
+
+### 2026-10-31 — P2.12 count=0 锚在 navigate 步骤：生成门对称 + 注入器 lastStepId 缺陷（真实录制连环暴露三缺陷）
+
+- 提交：`822f73c`（修复，分支 maa-dp；作业区
+  /Users/edr-test/ai-projects/edr-cloud-recorder-p2）。
+- 选择缺口：P2.11 剩余风险 #2「两链生成门不对称」——调研证实该风险成立：
+  count=0 断言锚在 reload 步骤上时，generate_spec 的 navigate 分支只 emit
+  `page.reload()`、从不领走 `_network_by_action` 里挂在自己名下的断言 →
+  leftover 检查拒发整份 spec；generate_trace 的 Navigate 是独立节点、
+  count=0 观察者预扫照常 → 接受。同一录制一拒一收。
+- 真实 headed 录制连环暴露**三个缺陷**（单测调研只找到第一个；真实产物
+  的价值再次兑现）：
+  1. **生成门不对称**（调研预期）：spec 链 navigate 分支不领网络断言 →
+     拒发整份 spec；trace 链接受。修复：navigate 分支走 `emit_action`
+     领走 `_network_by_action.pop(s["id"])`，观察窗/等待块生成与 DOM
+     动作同一管线（reload/go_back 表达式落在 with 块内层，pre 观察者
+     创建在动作行之前 —— 窗起点=动作前，与 click 锚语义同构）。
+  2. **注入器 lastStepId 漏更新**（真实录制暴露）：`recorder-inject.mjs`
+     的 navigate 步骤上报块从不更新 `lastStepId`（普通步骤路径在
+     pushStepRecord 里做）—— reload 后立刻下断言时 `afterStepId` 丢失
+     （实测：断言 afterStepId=null），generate_spec 拒发整份录制
+     （afterStepId 缺失 → 无法确定观察起点，P0 红线保住了原子性：不落
+     半套产物）。修复：navigate 上报块补 `lastStepId = step.id`。
+  3. **trace 生成门收 afterStepId 缺失的网络断言**（真实录制暴露的
+     不对称另一半）：generate_trace 预分组要求 `afterStepId` 真值，缺失
+     的断言静默不进分组、不报错 —— 回放链 count=0 预扫描
+     `src_to_node[None]` 直接 KeyError，status/body 断言被静默丢弃。
+     修复：缺失 afterStepId 的网络断言进 `orphan_network`，与
+     leftover 检查合并统一 SpecGenerationError 拒发 —— 与 spec 链
+     对称。
+- 失败测试先行：test/test_p2_navigate_anchored_net.py（4 条，修复前红）：
+  - T1 同一录制（click → navigate(reload) → count=0 锚在 nav 上）两链都
+    必须接受（修复前 spec 链 SpecGenerationError）；
+  - T2 生成链真实可执行：观察者定义在 reload 之前、稳定窗轮询在 reload
+    之后（真 Chromium 静默环境正向通过）；
+  - T3 双链同判：正向（静默环境）双链通过；反向（页面每次加载发 POST）
+    双链都失败且失败信息指回断言（请求数 actual=1）；
+  - T4 afterStepId 缺失的网络断言：两链都必须拒发（修复前 trace 链
+    DID NOT RAISE）。
+- 反向验证（三类，全部复现）：
+  a) 单测级：禁用修复 1（emit_action 传 None）→ T1/T2/T3 红；
+     禁用修复 3（orphan 判定收窄回「只有 afterStepId 悬空才拒」）→ T4 红；
+     均为 Edit-only + SHA-verified 恢复。
+  b) 真实录制验收脚本内：禁用修复 1 重新生成 spec → SpecGenerationError
+     复现（"因果动作步骤 '…' 不在生成后的步骤序列里"）—— 证明真实录制
+     产物确实暴露了被修复的缺陷。
+  c) 防测试空转：fire 环境（reload 后新文档自己发 POST）双链失败
+     actual=1；污染口径（reqUrl 指向真实存在的 GET /api/ping）双链失败
+     actual=1。
+- 真实 headed 录制闭环（scripts/record_p2_navigate_anchored_acceptance.py →
+  recordings/p2-navigate-anchored-recording/）：headed Chrome 真录
+  （evaluate 真发 POST /api/save 进菜单清单 → page.reload() 产出
+  navigate/reload 步骤 → 菜单「最近请求」范围 count=0 绑定 POST → 保存），
+  afterStepId 实锚在 reload 步骤上（6008yf-2 after 6008yf-1）；record.py
+  管线原子落盘三产物；录制核验（reload 步骤存在、断言锚 reload、
+  三产物断言 id 一致 rec==spec==trace == ['6008yf-2']、trace validator
+  ok:true 2 节点 ready）通过；生成链正向 PASS、trace 链正向 PASS、
+  fire 环境双链失败、污染口径双链失败、禁用修复重生成拒发 ——
+  ALL GATES PASS。
+- 验收脚本自身的教训（记给后续轮次）：
+  a) **setTimeout 定时器不能当 reload 场景的负向触发器** —— reload 会把
+     挂起的定时器一起抹掉，点击发的迟到 POST 在 reload 后根本不存在，
+     负断言假绿（T3 第一版实测 DID NOT RAISE）。触发器必须是「reload 后
+     新文档自己发出的请求」（load 脚本）——这也正是这个场景的真实语义：
+     reload 窗抓的就是新文档的请求，观察窗起点在 reload 之前，
+     reload 前后两个文档的请求都在窗内。
+  b) 单 handler 的 do_GET 必须按路径 dispatch（先 return 再发页面），
+     顺序写反会让 ping 响应叠加两个 HTTP 头（污染口径反向假绿）。
+  c) 正/反向环境的 load 脚本差异要用同一个条件表达式生成，分开赋值会
+     在改一处时漏另一处（第二版实测正向链误发 POST 失败）。
+- 门禁：定向 test_p2_navigate_anchored_net 4 passed（修复后）；p2 家族
+  37 passed；test_trace_replay + test_review_generation_consistency
+  164 passed；全量 pytest 918 passed / 2 skipped / 0 failed；check_visual
+  通过；git diff --check 通过；trace validator ok:true（2 节点 ready）；
+  三产物断言一致性 PASS。
+- 设计文档同步：common-web-assertion-design.md §5 afterStepId 字段规则
+  补「合法因果动作包括页面级步骤（navigate/page_close）；两链对称义务；
+  afterStepId 缺失两链都必须拒发」。
+- Windows headed：本机 macOS，未验证（记入剩余风险，**未宣称最终完成**）。
+- 剩余风险（下一轮候选）：
+  1. Windows headed 未验证（连续多轮遗留，最高优先）；
+  2. page_close 锚定的网络断言与 navigate 同族（ClosePage 分支同样不领
+     `_network_by_action`）—— 本轮只修了 navigate；页面被关后观察窗语义
+     （窗到 close 为止还是到断言节点为止）需要专项定义后闭环；
+  3. 30s 响应预算与 20s 导航预算仍是常量而非从录制数据推导（P2.10/P2.11
+     遗留）；>30s 响应 / >20s 导航双链同败（同判但都红）；
+  4. 非必发（读请求）等待 `min(timeout_ms, 2000)` 与慢读请求的交互
+     （P2.11 遗留）：双链 responses 记录形态不同，未专项验证。
 
 ### 2026-10-31 — P2.11 慢写响应（5–30s）双链同判（trace 链响应等待错用单步定位预算）
 
