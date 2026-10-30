@@ -465,3 +465,41 @@ def test_network_scope_bad_json_rejected(rec_page):
     step = _last_assert_step(rec_page)
     assert step["assertion"] == "request_body"
     assert step["expected"] == {"ok": True}
+
+
+def test_request_count_zero_records_negative_stable_window(rec_page):
+    """本轮（2026-10-30）：request_count=0 是负断言，必须落 stableMs>=300（§6）。
+
+    真实录制闭环实测（record_p2_request_count_zero_acceptance）：菜单的负断言
+    判定漏了 request_count —— 记成 stableMs=0，回放「动作刚发生就判 0」，
+    观察窗里迟到的请求永远数不到（回放进程在 fetch 发出前就跑完了）。
+    """
+    rec_page.evaluate("""() => {
+      window.__recNet = () => [{ method: 'POST', url: 'http://x/api/save' }];
+    }""")
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#sc").select_option("network")
+    menu.locator("#t").select_option("request_count")
+    # net-zero 无期望值，不用填 es；直接保存
+    menu.get_by_role("button", name="添加断言").click()
+    step = _last_assert_step(rec_page)
+    assert step["assertion"] == "request_count" and step["expected"] == 0
+    assert (step.get("wait") or {}).get("stableMs", 0) >= 300, (
+        f"request_count 负断言缺稳定窗: {step.get('wait')}")
+
+
+def test_request_count_zero_savable_without_expected(rec_page):
+    """本轮（2026-10-30）：net-zero 没有期望值，「Expected 为空」校验必须放行。
+
+    真实录制闭环实测：empty-expected 校验只排除了 bool/is_blank，net-zero
+    被拦住 —— 断言根本录不下来（保存按钮恒禁用）。
+    """
+    rec_page.evaluate("""() => {
+      window.__recNet = () => [{ method: 'POST', url: 'http://x/api/save' }];
+    }""")
+    menu = _open_menu(rec_page, "#msg")
+    menu.locator("#sc").select_option("network")
+    menu.locator("#t").select_option("request_count")
+    ok = menu.get_by_role("button", name="添加断言")
+    assert ok.is_enabled(), (
+        f"count=0 不需要 expected，保存不应被拦: {menu.locator('#hint').text_content()}")

@@ -114,12 +114,12 @@ from rec_assert import (
     expect_local_time, expect_time_window, expect_count, expect_value,
     expect_attribute, expect_time_range, expect_state, expect_text,
     expect_page_url, expect_page_title, expect_page_count, local_time_value,
-    poll_until,
+    poll_until, request_count_zero,
     matches_assert, net_status_fail,
 )
 from rec_helpers import (
-    dismiss_overlays, is_present, nth_request, recorded_page_for,
-    wait_for_recorded_url,
+    NetRequestWatcher, dismiss_overlays, is_present, nth_request,
+    recorded_page_for, wait_for_recorded_url,
 )
 from rec_visual import visual_click
 
@@ -471,18 +471,39 @@ def generate_spec(steps, net, start_url, name):
                 idx = wi
                 break
         if a == "request_count":
-            # 负断言不需要请求对象；观察窗由动作本身界定（等待块进出之间），
-            # 计数用页面侧收集的匹配请求（_net_watcher 由模板提供）。
+            # 负断言不需要请求对象。观察窗由动作本身界定，分两半落：
+            #   前半（观察者创建）在动作行**之前** —— 窗起点=动作发生前，
+            #     不然动作自己发的请求会漏掉；
+            #   后半（稳定窗轮询）在动作行**之后** —— 动作先发生，轮询才
+            #     开始数：请求在途时不会立即判 0，迟到的请求也会被数到
+            #     （观察者 count() 驱动事件分发）。
+            # 返回 (pre_action_lines, post_action_lines)。
+            # 稳定窗下限 300ms（§6 负断言）：老录制（菜单缺陷修复前）把
+            # request_count 记成 stableMs=0 —— 一进窗读到 0 就放行，迟到的
+            # 请求永远数不到（真实录制闭环实测）。落生成参数时抬到下限。
+            na = dict(na)
+            wait = dict(na.get("wait") or {})
+            if (wait.get("stableMs") or 0) < 300:
+                wait["stableMs"] = 300
+            na["wait"] = wait
             w_args = _wait_kwargs(na, default_stable_ms=300)
             arg = f", {w_args}" if w_args else ""
-            return [
-                f"    request_count_zero(_net_watcher, {_lit(url_part)}{arg})",
-            ]
+            # 观察者名必须合法：录制 id 可能含连字符等字符（rc-1）
+            watcher = f"_net_watcher{_ident(na.get('id') or 'x')}"
+            # 观察口径必须带 method：回放链按 method+url 过滤，生成链不带
+            # method 就对 POST 噪音误报、两链不同判（真实录制闭环实测）。
+            method_arg = f", method={_lit(method)}" if method else ""
+            marker = f"    # rec-assert: {na['id']}" if na.get("id") else None
+            pre = [f"    {watcher} = NetRequestWatcher(page{method_arg})"]
+            post = [f"    request_count_zero({watcher}, {_lit(url_part)}{arg})"]
+            if marker:
+                post.append(marker)
+            return pre, post
         if idx is None:
             problems.append(
                 f"step id={na.get('id')}: 网络断言绑定的请求 "
                 f"{method} {url_part} 不在本动作触发的请求里，拒发而不是断错对象")
-            return []
+            return [], []
         req_var = req_names[idx]
         resp_var = names[idx]
         out = []
@@ -501,7 +522,7 @@ def generate_spec(steps, net, start_url, name):
         if na.get("id"):
             # P0（§8）：一致性校验按行首 rec-assert 标记提取断言 id，必须单独成行
             out.append(f"    # rec-assert: {na['id']}")
-        return out
+        return [], out
 
     def emit_action(action_expr, calls, warn, network_asserts=None):
         """一次操作；若触发了写请求，包成「等响应 + 断言」。
@@ -539,6 +560,17 @@ def generate_spec(steps, net, start_url, name):
         # 多个写请求 → 嵌套 with，等价于 JS 的 Promise.all([...waitForRequest])
         occurrences: dict[str, int] = {}
         out = []
+        # 用户手选的网络契约断言（scope=network）先收集，按观察窗语义分插：
+        # request_count=0 的观察者创建在**动作行之前**（窗起点=动作发生前，
+        # 不然动作自己发的请求会漏掉），稳定窗轮询在动作行之后（请求在途
+        # 不算 0）；status/body 断言在动作行后、断在已抓到的对象上。
+        pre: list[str] = []
+        post: list[str] = []
+        for na in network_asserts:
+            pre_lines, post_lines = _emit_network_assert(
+                na, writes, names, req_names)
+            pre.extend(pre_lines)
+            post.extend(post_lines)
         for i, w in enumerate(writes):
             p = strip(w["url"]).split("?")[0]
             key = f"{w['method']}\n{p}"
@@ -551,6 +583,7 @@ def generate_spec(steps, net, start_url, name):
                 f") as {req_names[i]}_info:"
             )
         inner = "    " + "    " * len(writes)
+        out.extend(pre)
         out.append(f"{inner}{action_expr}{warn}")
         for i, w in enumerate(writes):
             out.append(f"    {req_names[i]} = {req_names[i]}_info.value")
@@ -561,15 +594,10 @@ def generate_spec(steps, net, start_url, name):
             if isinstance(body, dict):
                 out.append(f"    assert_subset({req_names[i]}.post_data_json, "
                            f"{_to_matcher(body)})")
-        # 用户手选的网络契约断言：按录制时绑定的请求逐条断在已抓到的
-        # request/response 对象上。多请求时等待块按 writes 次序排，断言引用
-        # 最后一个抓到的对象之后必须指明配对 —— 这里按「断言步的 method/url
-        # 与哪个等待器匹配」选择对象，匹配不上属配置错误，进 problems 拒发。
-        for na in network_asserts:
-            out.extend(_emit_network_assert(na, writes, names, req_names))
         for c in calls:
             if c["method"] == "GET":
                 out.append(f"    #   ↳ GET {strip(c['url'])} -> {c['status']}")
+        out.extend(post)
         return out
 
     # 每个顶层 Page 独立推进自己的地址。把 popup 和 opener 共用一个 URL 基准

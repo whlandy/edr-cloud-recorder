@@ -17,8 +17,9 @@ from rec_assert import (
     expect_local_time, expect_time_window, local_time_value,
     expect_count, expect_value, expect_attribute, expect_time_range,
     expect_page_url, expect_page_title, expect_page_count, expect_state, matches_assert,
-    COUNT_OPS, STRING_OPS, VALUE_OPS, _poll_stable,
+    COUNT_OPS, STRING_OPS, VALUE_OPS, _poll_stable, request_count_zero,
 )
+from rec_helpers import NetRequestWatcher
 from rec_session import restore_context_session
 from rec_secrets import REDACTED
 from rec_visual import (
@@ -704,10 +705,24 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
     if assertion and assertion.get("scope") == "page":
         _assert_page(page, assertion, timeout_ms)
         return {"mode": "verifier", "scope": "page"}
-    # 网络范围断言无需 DOM 定位：期望（status/request_body/response_body）在本步
-    # 的响应等待块里按用户确认的 expected 校验（_network_assertions 注入期望）。
+    # 网络范围断言无需 DOM 定位。status/request_body/response_body 在本步的
+    # 响应等待块里按用户确认的 expected 校验；request_count=0 是负断言，
+    # 观察窗从本节点开始 —— 在这里跑有界观察（稳定窗内持续为 0 才通过）。
     if assertion and assertion.get("scope") == "network":
         _reject_unconfirmed(assertion)
+        if assertion.get("assertion") == "request_count":
+            url_part = assertion.get("reqUrl")
+            if not (isinstance(url_part, str) and url_part):
+                raise TraceReplayError(
+                    "request_count 断言缺少 reqUrl —— 观察口径不明，拒绝回放而不是猜")
+            method = assertion.get("reqMethod") or None
+            timeout, poll, stable = _split_wait(assertion, timeout_ms)
+            # 稳定窗下限 300ms（§6 负断言，与生成链同一下限）：老录制把
+            # request_count 记成 stableMs=0，直接回放会「动作刚发生就判 0」。
+            stable = max(stable, 0.3)
+            watcher = NetRequestWatcher(page, method=method)
+            request_count_zero(watcher, url_part, timeout=timeout,
+                               poll=poll, stable=stable)
         return {"mode": "verifier", "scope": "network"}
     # 页面导航（reload / 前进后退）同样无 DOM 目标：动作本身就是导航。
     # 做完再返回 —— 后续步骤的定位/URL 校验自然落在导航后的新文档上。

@@ -687,14 +687,18 @@ def matches_body_subset(actual: Any, expected: Any) -> bool:
     return not problems
 
 
-def request_count_zero(watcher, url_filter, start_t: float, end_t: float, *,
+def request_count_zero(watcher, url_filter, start_t: float = 0.0,
+                       end_t: float = 0.0, *,
                        stable: float = 0.3, timeout: float = 2.0,
                        poll: float = 0.1) -> bool:
-    """断言 [start_t, end_t) 观察窗内没有匹配 url_filter 的请求（§6 负断言语义）。
+    """断言观察窗内没有匹配 url_filter 的请求（§6 负断言语义）。
 
-    watcher.count(url_filter) 在窗内统计请求数。**不得在动作刚发生时就判 0** ——
+    watcher.count(url_filter) 统计请求数。**不得在动作刚发生时就判 0** ——
     请求可能还在路上；负断言带稳定窗口，只有「连续稳定地 0」才通过。
-    窗由调用方（录制/生成）记录动作的起止边界，避免把窗外的自我请求算进来。
+    窗边界有两种给法：显式传 start_t/end_t（时间边界，配合按时间统计的
+    watcher），或用 NetRequestWatcher —— 它在动作发生前创建，创建时刻就是
+    窗起点，稳定窗轮询走完就是窗终点（生成链/回放链都用这种）。start_t/
+    end_t 缺省为 0，只影响失败信息里的窗描述，不参与判定。
     """
     def count():
         return watcher.count(url_filter)
@@ -703,8 +707,10 @@ def request_count_zero(watcher, url_filter, start_t: float, end_t: float, *,
             return AssertionError(
                 f"请求数为 0 断言失败: 读取持续失败: {type(last_error).__name__}: {last_error}"
             )
+        window = (f"窗 [{int(start_t)},{int(end_t)}) " if start_t or end_t
+                  else "观察窗 ")
         return AssertionError(
-            f"请求数为 0 断言失败: 窗 [{int(start_t)},{int(end_t)}) 内实际请求数 "
+            f"请求数为 0 断言失败: {window}内实际请求数 "
             f"actual={actual!r}（期望 0）"
         )
     _poll_stable(

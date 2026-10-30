@@ -182,6 +182,39 @@ def nth_request(url_part: str, method: str, n: int = 1):
     return pred
 
 
+class NetRequestWatcher:
+    """request_count=0 的观察者：从创建时刻起统计页面上匹配的请求。
+
+    观察窗由创建时刻界定（生成链把它放进因果动作的等待块里，窗起点=动作
+    发生前），匹配口径与 nth_request 一致（url 包含 + method 相同）。
+
+    count() 里必须 wait_for_timeout 驱动事件分发 —— sync Playwright 的
+    request 事件只在事件循环被驱动时分发，time.sleep 轮询期间一条都不会到，
+    观察者数恒 0，「不应发请求」就永远假绿。poll 循环（request_count_zero
+    的 _poll_stable）每次读数都会经过这里，事件分发随之被驱动。
+    """
+
+    def __init__(self, page: Page, method: str | None = None) -> None:
+        self._page = page
+        self._method = method
+        self._hits: list[tuple[str, str]] = []
+        page.on("request", self._record)
+
+    def _record(self, request) -> None:
+        self._hits.append((request.method, request.url))
+
+    def count(self, url_filter: str | None) -> int:
+        try:
+            self._page.wait_for_timeout(1)
+        except Exception:
+            pass                        # 页面正在关闭：读已有计数，别添乱
+        return sum(
+            1 for m, u in self._hits
+            if (self._method is None or m == self._method)
+            and (url_filter is None or url_filter in u)
+        )
+
+
 DEFAULT_CLOSERS = [
     "span.eui_Dialog_closeIcon",
     ".eui_tipBox_close",

@@ -1225,10 +1225,11 @@ export const RECORDER = () => {
       if (scope === 'network' && a.kind !== 'net-zero' && !$('netReq').value && !bad)
         bad = '没有可选请求（宿主侧暂无最近请求）';
       // expected 不能默默为空：空字符串是合法断言，但必须是明确的选择。
-      // 空值类算子不需要期望值 —— 命题本身就是「是否为空」。
+      // 空值类算子不需要期望值 —— 命题本身就是「是否为空」；net-zero
+      // （request_count=0）同样没有期望值：0 是断言类型自带的，不是用户填的。
       const op = $('op').value;
       const opNeedsNoExpected = op === 'is_blank' || op === 'is_not_blank';
-      if (!bad && a.kind !== 'bool' && !opNeedsNoExpected
+      if (!bad && a.kind !== 'bool' && a.kind !== 'net-zero' && !opNeedsNoExpected
               && !$('es').value && !$('allowEmpty').checked)
         bad = 'Expected 为空。确实要断言空字符串就勾「允许空值」';
       // P0（common-web-assertion-design §4.2/§6）：文本/输入值的 expected 预填自
@@ -1281,7 +1282,12 @@ export const RECORDER = () => {
       // P0：负断言需要稳定窗口（§6）—— 不可见 / 不包含 / 不等于 / count=0
       const negative = (a.kind === 'bool' && !expected)
         || op === 'not_equals' || op === 'not_contains'
-        || (type === 'count' && Number(expected) === 0);
+        || (type === 'count' && Number(expected) === 0)
+        // request_count=0 是负断言（§6）：「不应发请求」在动作刚发生时不能
+        // 立即判 0 —— 请求可能还在路上。没有稳定窗，回放一进观察窗就读到 0
+        // 直接通过，迟到的请求永远不会被数到（实测：回放进程在 fetch 发出前
+        // 就跑完了）。kind 是 net-zero，type 是 request_count —— 两个都要看。
+        || a.kind === 'net-zero' || type === 'request_count';
       const wait = { timeoutMs: 5000, pollMs: 100, stableMs: negative ? 300 : 0 };
       // 文本/输入值要确认「读取值」；其余类型用户亲手填/选即显式确认
       // P0/F3（审查 2026-10-29）：expected 一律要确认 —— string 勾「确认使用当前值」

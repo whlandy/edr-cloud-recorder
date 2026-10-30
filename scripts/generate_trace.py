@@ -15,7 +15,7 @@ from rec_visual import (
     SCALE_FACTORS,
     VERIFY_THRESHOLD,
 )
-from generate_spec import pair_network_events, prepare_steps
+from generate_spec import SpecGenerationError, pair_network_events, prepare_steps
 from rec_secrets import redact_sensitive_values
 from trace_schema import (
     FULL_FRAME_ROI,
@@ -199,6 +199,12 @@ def _assertion_spec(step: dict) -> dict:
         spec["op"] = step["op"]
     if step.get("attribute") is not None:
         spec["attribute"] = step["attribute"]
+    # request_count=0（网络负断言）的观察口径：回放链按 method/url 前缀
+    # 统计观察窗内的请求 —— 口径必须原样带进 trace，不许回放端自己猜。
+    if step.get("reqUrl"):
+        spec["reqUrl"] = step["reqUrl"]
+    if step.get("reqMethod"):
+        spec["reqMethod"] = step["reqMethod"]
     # 期望值在回放那一刻算，录制里的 expected 只作证据 —— 见 rec_assert 的说明
     if step.get("expectedFrom"):
         spec["expectedFrom"] = step["expectedFrom"]
@@ -497,6 +503,17 @@ def generate_trace(steps: list[dict], net: list[dict] | None = None, *,
         if index + 1 < len(ids):
             node["next"] = [ids[index + 1]]
         nodes[ids[index]] = node
+
+    # 网络断言挂靠的动作步骤不存在（afterStepId 指向被丢弃/不存在的步骤）→
+    # 观察起点无从确定，拒发整条 trace —— 与 generate_spec 同一红线，不能
+    # 静默丢断言：同一份录制一条链报错、另一条链少断言，两链就不同判了。
+    if steps_by_action:
+        raise SpecGenerationError([
+            f"网络断言 (id={na.get('id')}) 的因果动作步骤 {after_id!r} "
+            "不在生成后的步骤序列里 —— 无法确定观察起点，拒发而不是猜"
+            for after_id, nas in sorted(steps_by_action.items())
+            for na in nas
+        ])
 
     incomplete = any(
         node["attach"]["provenance"].get("status") == "missing_template"
