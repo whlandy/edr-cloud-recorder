@@ -39,7 +39,7 @@ VOLATILE_DATETIME = re.compile(
 # 「这一步是不是断言」改看 attach.verification.assertion 有没有东西。
 SUPPORTED_ACTIONS = {
     "Click", "DoubleClick", "InputText", "Check", "Uncheck",
-    "SetSwitch", "PressKey", "DoNothing", "Navigate",
+    "SetSwitch", "PressKey", "DoNothing", "Navigate", "ClosePage",
 }
 
 # 布尔 UI 状态断言：统一走 rec_assert.expect_state（与生成链同核心同稳定语义）
@@ -245,7 +245,7 @@ def _assert_node_page(page, node: dict) -> None:
     # Navigate 节点跳过路线断言：reload/前进后退**就是**把页面带回录制路线的
     # 动作，执行前的路线必然与目标不一致（reload 前是当前页，back 前是前进页）。
     # 拦下它只会报「路线不符」，把真正该做的导航吞掉。
-    if (node.get("action") or {}).get("type") == "Navigate":
+    if (node.get("action") or {}).get("type") in ("Navigate", "ClosePage"):
         return
     want_route = _node_route(node)
     got_route = _page_route(page)
@@ -721,6 +721,16 @@ def _execute_action(page, node: dict, template_root: Path, targeting: str,
             raise TraceReplayError(f"不支持的导航类型: {nav!r}")
         page.wait_for_load_state("load")
         return {"mode": "navigate", "navType": nav}
+    # 页面关闭（Ctrl+W / 关标签页）：无 DOM 目标，动作本身就是关掉这一页。
+    # 关闭对象按录制身份解析（_page_for_node 已按 pageId/opener 关系选页），
+    # 不认当前变量 —— 关的是「录制时的那个标签页」，不是「现在的焦点页」。
+    # 关完即返回：context 页面数回到录制终态，page_count 断言双链同判。
+    if action_type == "ClosePage":
+        try:
+            page.close()
+        except Exception as error:
+            raise TraceReplayError(f"关闭页面失败: {error}") from error
+        return {"mode": "close_page", "pageId": param.get("pageId")}
     mode, locator, visual, dom_error = _target(
         page, node, template_root, targeting, timeout_ms, focused_selector
     )

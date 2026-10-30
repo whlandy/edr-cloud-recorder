@@ -467,7 +467,7 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
             val = f" = {json.dumps(step['value'], ensure_ascii=False)}"
         else:
             val = ""
-        print(f"  [录制] {step['type']:<6} {step['sel']}{val}")
+        print(f"  [录制] {step['type']:<6} {step.get('sel') or ''}{val}")
 
     def capture_pending():
         # binding 回调内不能调用同步 Playwright API，否则会重入死锁。
@@ -587,10 +587,37 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
 
         closed = {"v": False}
         listened_pages = set()
+        openers: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
-        def on_page_closed(_):
+        def on_page_closed(target):
+            """页面被关（Ctrl/W、window.close、程序 close）落一条事件步骤。
+
+            关页没有 DOM 事件可挂：injector 随页面一起销毁，只能由宿主侧的
+            Playwright close 事件兜住。不记的话回放少做一次关页，回放终态比
+            录制多一个标签页 —— page_count 类断言在双链上判成与录制相反。
+            只在会话继续（还有别的活页）时落步骤：关掉最后一页就是会话收尾，
+            是收尾不是业务步骤，落了反而让生成的用例在结尾关掉自己的页面。
+            opener 关系在 listen 时记下 —— close 之后 page.opener 不可靠。
+            """
+            others_alive = False
             try:
-                closed["v"] = not any(not item.is_closed() for item in context.pages)
+                others_alive = any(
+                    not item.is_closed() for item in context.pages)
+                closed["v"] = not others_alive
+            except Exception:
+                pass
+            if not others_alive:
+                return
+            try:
+                step = {
+                    "id": f"close-{page_id(target)}",
+                    "t": _now(),
+                    "type": "page_close",
+                }
+                opener = openers.get(target)
+                if opener is not None:
+                    step["openerPageId"] = page_id(opener)
+                accept(step, {"page": target})
             except Exception:
                 pass
 
@@ -600,6 +627,13 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
             page_id(target)
             listened_pages.add(target)
             frame_histories.setdefault(target, [])
+            try:
+                opener_attr = target.opener
+                opener = opener_attr() if callable(opener_attr) else opener_attr
+                if opener is not None:
+                    openers[target] = opener
+            except Exception:
+                pass
             target.on("request", on_request)
             target.on("response", on_response)
             target.on("close", on_page_closed)
@@ -721,7 +755,13 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
                     break
                 current[0].wait_for_timeout(PUMP_MS)
             except Exception:
-                break                               # 浏览器已关
+                # 等着的页面恰好在 200ms 等待窗里被关掉（用户 Ctrl+W 关 popup
+                # 的时机毫秒级）会抛 TargetClosedError —— 但 context 里可能还有
+                # 别的活页。只有「再问一次仍然全关」才真是浏览器已关；
+                # 还有活页就继续泵，别把整个会话提前掐掉。
+                if not alive_pages():
+                    break                               # 浏览器已关
+                continue
 
             # 无头 + 无驱动：没人会关窗。录不动就基于周期数收尾，别让 CI 挂死。
             if headless_wait:

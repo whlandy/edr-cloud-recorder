@@ -803,6 +803,26 @@ def generate_spec(steps, net, start_url, name):
                 lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
             continue
 
+        # ── 页面关闭（Ctrl+W / 关标签页 / window.close）：无 DOM 目标 ──
+        # 丢掉它，回放终态比录制多一个标签页 —— page_count 类断言（双链共用
+        # expect_page_count）会判成与录制相反的结论。关闭对象按 pageId 从
+        # recorded_pages 取：当前变量 page 可能正指在被关的 popup 上，直接
+        # page.close() 碰巧也对，但换一步骤顺序就错；绑定录制身份才是事实。
+        if s["type"] == "page_close":
+            target_id = s.get("pageId")
+            if not target_id:
+                lines.append("    # ⚠ page_close 缺少 pageId，已拒发")
+                problems.append(
+                    f"step#{i} (id={s.get('id')}): page_close 缺少 pageId —— "
+                    "不知道关哪个页面，拒发而不是猜")
+            else:
+                lines.append(f"    recorded_pages[{_lit(target_id)}].close()")
+            if s.get("id"):
+                lines.append(f"    # rec-step: {s['id']}")
+            for c in calls:
+                lines.append(f"    #   ↳ {c['method']} {strip(c['url'])} -> {c['status']}")
+            continue
+
         try:
             sel = to_python(s["sel"])
         except SelectorError as e:

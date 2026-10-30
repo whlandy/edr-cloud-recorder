@@ -44,6 +44,7 @@ ACTION_TYPES = {
     "press": "PressKey",
     "assert": "DoNothing",     # 断言不产生动作，识别成功本身就是结论
     "navigate": "Navigate",    # 页面级导航（reload / 前进后退），param.navType 细分
+    "page_close": "ClosePage",  # 页面被关（Ctrl+W 等）：回放按 pageId 关掉它
 }
 
 
@@ -172,6 +173,12 @@ def _action(step: dict, *, relative_point: dict | None = None,
         param["key"] = step.get("key", "Enter")
     elif step_type == "navigate":
         param["navType"] = step.get("navType", "reload")
+    elif step_type == "page_close":
+        # 回放按录制身份关页：pageId 指向要关的页，openerPageId 用于在
+        # recorded_pages 没有命中时按 opener 关系消歧（与 _page_for_node 一致）。
+        param["pageId"] = step.get("pageId")
+        if step.get("openerPageId"):
+            param["openerPageId"] = step["openerPageId"]
     elif step_type == "assert":
         pass                    # 断言规格在 attach.verification.assertion
     else:

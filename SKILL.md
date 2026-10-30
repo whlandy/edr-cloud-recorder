@@ -222,6 +222,7 @@ papered over until one run turns green:
    the UI, but it must be labeled as a demo and must not be reported as a successful verified replay.
 
 8. **Commit typed text before Enter.** A search may submit before `change`/blur. Record the current input value before the Enter event, deduplicate the later change, preserve password redaction, and ignore IME composition Enter. Legacy `press → fill` normalization remains for old recordings. An adjacent same-target, same-frame `click → fill → Enter` chain preserves the established input focus for Enter.
+9. **Closing a tab is a step, not session end.** When the user closes a popup tab mid-session (Ctrl+W, no close button on the page), the recorder must emit a `page_close` step from the host-side Playwright close event — the injector dies with the page, and `pagehide` fires on every navigation, so neither is a usable signal. If the close is missing, the replay ends with one extra page and every `page_count` assertion judges the opposite of the recorded state on both replay chains. Only closing the *last* page ends the session (that is teardown, not a business step). The pump must also keep draining when the page it was waiting on closes while other pages are still alive — otherwise every step recorded after the close is silently dropped.
 
 More environment and browser failures are covered by
 [troubleshooting.md](references/troubleshooting.md).
