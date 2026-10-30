@@ -406,6 +406,12 @@ def record_session(*, start_url, name=None, api_filter=None, out_dir="recordings
             opener = None
         if opener is not None:
             step["openerPageId"] = page_id(opener)
+        # 注入层已在事件现场写了 pageOrigin（那一刻的真实 origin）。泵结算
+        # 读 page.url 只能兜底旧录制/无注入值的步骤：跨 origin 导航可能在
+        # 结算前发生，这时 page.url 是导航后的 origin —— 用它覆盖会把
+        # 旧 origin 上的步骤记到新 origin 名下。
+        if step.get("pageOrigin"):
+            return
         try:
             parsed = urlsplit(target.url)
             if parsed.scheme and parsed.netloc:

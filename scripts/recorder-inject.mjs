@@ -685,6 +685,10 @@ export const RECORDER = () => {
         ambiguous: !!sel.ambiguous, matches: sel.matches,
         label: txt(t).slice(0, 60), css: cssPath(t),
         url: location.pathname + location.search + location.hash,
+        // 事件现场的真实 origin：跨 origin 导航可能在宿主泵结算前发生，
+        // 宿主事后读 page.url 会把本步骤记到新 origin 名下（fill 后立刻
+        // 跳转最典型）。undefined 字段 JSON 序列化时被丢弃，无冗余。
+        pageOrigin: location.origin || undefined,
         // 元素在 iframe 里时，回放必须先 frameLocator 进去 —— 直接 page.getByX()
         // 只搜主文档，一定找不到。登录表单放在 iframe 里是很常见的做法。
         inFrame: window !== window.top,
@@ -1407,6 +1411,10 @@ export const RECORDER = () => {
         ambiguous: !!sel.ambiguous, matches: sel.matches,
         label: txt(t).slice(0, 60), css: cssPath(t),
         url: location.pathname + location.search + location.hash,
+        // 事件现场的真实 origin：跨 origin 导航可能在宿主泵结算前发生，
+        // 宿主事后读 page.url 会把本步骤记到新 origin 名下（fill 后立刻
+        // 跳转最典型）。undefined 字段 JSON 序列化时被丢弃，无冗余。
+        pageOrigin: location.origin || undefined,
         inFrame: window !== window.top,
         framePath: window !== window.top ? location.pathname : undefined,
         // P0（common-web-assertion-design §5/§6）：因果前置步骤 + 等待策略 +
@@ -1439,6 +1447,10 @@ export const RECORDER = () => {
         id: `${tag}-${++seq}`, t: Date.now(),
         type: 'assert', scope: 'page', assertion, expected,
         url: location.pathname + location.search + location.hash,
+        // 事件现场的真实 origin：跨 origin 导航可能在宿主泵结算前发生，
+        // 宿主事后读 page.url 会把本步骤记到新 origin 名下（fill 后立刻
+        // 跳转最典型）。undefined 字段 JSON 序列化时被丢弃，无冗余。
+        pageOrigin: location.origin || undefined,
         inFrame: window !== window.top,
         framePath: window !== window.top ? location.pathname : undefined,
         afterStepId: steps[steps.length - 1]?.id || lastStepId,
@@ -1470,6 +1482,10 @@ export const RECORDER = () => {
         expectedConfirmed: !!confirmed,
         afterStepId: steps[steps.length - 1]?.id || lastStepId,
         url: location.pathname + location.search + location.hash,
+        // 事件现场的真实 origin：跨 origin 导航可能在宿主泵结算前发生，
+        // 宿主事后读 page.url 会把本步骤记到新 origin 名下（fill 后立刻
+        // 跳转最典型）。undefined 字段 JSON 序列化时被丢弃，无冗余。
+        pageOrigin: location.origin || undefined,
         inFrame: window !== window.top,
         pageId: undefined,
         wait: wait || undefined,
@@ -1770,6 +1786,10 @@ export const RECORDER = () => {
       id: `${tag}-${++seq}`, t: Date.now(),
       type: 'navigate', navType,
       url: location.pathname + location.search + location.hash,
+      // 事件现场的真实 origin：跨 origin 导航可能在宿主泵结算前发生，
+      // 宿主事后读 page.url 会把本步骤记到新 origin 名下（fill 后立刻
+      // 跳转最典型）。undefined 的字段 JSON 序列化时被丢弃，无冗余。
+      pageOrigin: location.origin || undefined,
       inFrame: window !== window.top,
       framePath: window !== window.top ? location.pathname : undefined,
     });

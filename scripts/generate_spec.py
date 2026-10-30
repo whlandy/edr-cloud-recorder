@@ -631,10 +631,16 @@ def generate_spec(steps, net, start_url, name):
             current_page_id = s["pageId"]
 
         # 同一个 Page 的地址变化必须等导航完成；不同 pageId 已在上面切换页面。
+        # 基准记完整 URL（含 origin）：步骤 url 只有路径，跨 origin 同路径
+        # 导航（同主机不同端口等）在路径上不可见 —— 只比路径会把「跳到
+        # 另一个 origin 的同一页面」当成没动，后续步骤不等导航就执行，
+        # 全部落在旧 origin 的页面上，随后被跳转抹掉（双链分歧：trace 链
+        # 按 pageOrigin 校验，会等到导航完成）。
         prev_url = last_top_urls.get(page_key)
         if not in_frame and s.get("url"):
-            last_top_urls[page_key] = s["url"]
-        if not in_frame and prev_url and s.get("url") and s["url"] != prev_url:
+            last_top_urls[page_key] = expected_page_url or s["url"]
+        if (not in_frame and prev_url and s.get("url")
+                and (expected_page_url or s["url"]) != prev_url):
             if expected_page_url:
                 lines.append(
                     f"    wait_for_recorded_url(page, {_lit(expected_page_url)})"
